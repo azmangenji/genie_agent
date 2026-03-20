@@ -1,0 +1,35 @@
+# SpgDFT Error Filter Patterns for GMC
+# Lines starting with # are comments
+# Each line is a regex pattern to match against error lines
+# If an error line matches any pattern, it will be filtered (counted as rsmu/dft)
+#
+# Format:
+#   [general]     - Patterns that apply to ALL GMC projects (RSMU/DFT related)
+#   [<ip_name>]   - Patterns that only apply to specific IP (e.g., [gmc13_1a])
+#
+# The script will apply:
+#   1. All patterns under [general]
+#   2. Patterns under the matching [ip_name] section
+
+#======================================================================
+# GENERAL FILTERS - Apply to ALL GMC projects (RSMU/DFT related)
+#======================================================================
+[general]
+# RSMU/RDFT interface signals - always filter
+RSMU_RDFT
+RDFT_RSMU
+
+# Standard DFT cells - always filter
+ati_sdff.v
+
+# SGDC configuration errors - always filter
+gmc_gmcctrl_t.sgdc
+gmc_gmcch_t.sgdc
+
+#======================================================================
+# GMC13_1A (Orion) specific filters
+#======================================================================
+[gmc13_1a]
+# Add gmc13_1a-specific patterns here
+# Example patterns can be added as issues are discovered
+

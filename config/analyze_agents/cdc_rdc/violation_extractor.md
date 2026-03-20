@@ -1,0 +1,100 @@
+# CDC/RDC Violation Extractor Agent
+
+**PERMISSIONS:** You have FULL READ ACCESS to all files under /proj/. Do not ask for permission - just read the files directly.
+
+Extract **ERROR severity** violations from CDC and RDC reports.
+
+## Input
+- `ref_dir`: Tree directory
+- `ip`: IP name
+- `check_type`: `cdc_rdc`, `cdc`, or `rdc`
+- `tag`: Task tag (e.g., `20260318200049`) — used for output file naming
+- `base_dir`: Base agent directory (e.g., `/proj/.../main_agent`) — used for output file path
+
+## Violation Selection - COVER ALL BUCKETS
+
+**Important:** Select violations to cover ALL violation types (buckets), not just pick from one bucket.
+
+For each check (CDC, RDC):
+1. First, group violations by type (bucket)
+2. Select up to 2-3 violations PER bucket type
+3. Total up to 10 violations per check, but distributed across ALL buckets
+
+**Example:** If CDC has 3 violation types:
+- `no_sync`: 100 violations → show 3-4 examples
+- `series_redundant`: 5 violations → show 2-3 examples
+- `reconvergence`: 2 violations → show 2 examples
+
+This ensures coverage of ALL violation types in the analysis.
+
+## Severity Filter
+
+**ERROR only** — skip Warning/Caution/Info.
+
+## Report Paths
+
+Use Glob to find reports:
+```
+<ref_dir>/out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt
+<ref_dir>/out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_cdc/rdc_*_output/rdc_report.rpt
+```
+
+## LOW_RISK Patterns to SKIP
+
+Filter out violations where signal path contains (case-insensitive):
+`rsmu`, `rdft`, `dft_`, `jtag`, `scan_`, `bist_`, `test_mode`, `sms_fuse`, `tdr_`
+
+## What to Extract
+
+Read the actual report and extract whatever fields exist. Common fields:
+- Violation ID
+- Violation type
+- Severity
+- Source signal path
+- Destination signal path
+- Clock domains (if present in report)
+- Module name
+- Message
+
+**Do NOT assume any specific violation types or clock names. Extract what the report contains.**
+
+## Instructions
+
+1. Find reports using Glob
+2. Read CDC Section 3 (CDC Results) and RDC Section 5 (RDC Results)
+3. Parse the violation table - extract whatever columns exist
+4. Filter LOW_RISK patterns
+5. **Group by violation type first** (bucket)
+6. **Select 2-3 violations from EACH bucket** (cover all types)
+7. Total up to 10 violations per check, distributed across all buckets
+8. Group by clock domain pairs (whatever domains exist in report)
+
+## Output
+
+Return JSON with:
+- Report paths found
+- Total violation counts per bucket
+- Filtered counts per bucket
+- Violations grouped by type (bucket)
+- Violations grouped by clock pair (extract from report)
+- Selected violations: 2-3 per bucket, covering ALL violation types
+
+## Config File
+
+Constraints: `src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl`
+
+---
+
+## Output Storage
+
+**MANDATORY — Write your JSON output to disk. Do NOT just return results as text.**
+
+Write output file: `<base_dir>/data/<tag>_extractor_cdc.json`
+
+Use the Write tool:
+```
+Write file: <base_dir>/data/<tag>_extractor_cdc.json
+Content: <your JSON output>
+```
+
+The report compiler reads this file from disk. If you do not write it, the final report will be incomplete.

@@ -1,0 +1,269 @@
+# =============================================================================
+# IP Configuration - Single Source of Truth for All IPs
+# =============================================================================
+# This file defines all IP-specific commands, paths, and settings.
+# Agent Teams reads this to understand how to work with each IP.
+# To add a new IP: add a new section following the existing patterns.
+# =============================================================================
+
+version: "1.0"
+last_updated: "2026-03-16"  # Session 6: fixed lint/spg_dft report paths for UMC and OSS
+
+# =============================================================================
+# UMC IP Family
+# =============================================================================
+umc:
+  description: "UMC Unified Memory Controller IP"
+
+  versions:
+    - umc9_2    # Kedar project
+    - umc9_3    # Rosenhorn project
+    - umc9_6    # Medusadt project
+    - umc14_0   # Medusa1 project
+    - umc14_2   # Konark project
+    - umc17_0   # Grimlock project
+
+  tiles:
+    - name: umc_top
+      default: true
+      dropflow: ":umc_top_drop2cad"
+
+  p4:
+    depot: "//depot/umc_ip"
+    branch_pattern: "branches/{branch_name}"
+    waiver_path: "src/meta/tools/cdc0in/waivers"
+    constraint_path: "src/meta/tools/cdc0in/constraints"
+
+  commands:
+    sync_tree:
+      tool: "p4_mkwa"
+      options:
+        codeline: "umc"
+      example: "p4_mkwa -codeline umc"
+
+    cdc_rdc:
+      tool: "lsf_bsub"
+      wrapper: "dj"
+      project: "rtg-mcip-ver"
+      memory: 30000
+      queue: "normal"
+      rhel_detection: true
+      command_template: |
+        lsf_bsub -P {project} -R "select[type=={rhel_type}] rusage[mem={memory}]" -q {queue} -I \
+        dj -c -v -e 'releaseflow::dropflow({dropflow}).build(:rhea_drop,:rhea_cdc)' \
+        -DDROP_TOPS="{tile}" -DRHEA_CDC_OPTS='-CDC_RDC' -l {log_file}
+      log_file: "logs/cdc_rdc.log"
+
+    lint:
+      tool: "lsf_bsub"
+      wrapper: "dj"
+      project: "rtg-mcip-ver"
+      memory: 30000
+      queue: "normal"
+      command_template: |
+        lsf_bsub -P {project} -R "select[type=={rhel_type}] rusage[mem={memory}]" -q {queue} -I \
+        dj -c -v -e 'releaseflow::dropflow({dropflow}).build(:rhea_drop,:rhea_lint)' \
+        -DDROP_TOPS="{tile}" -l {log_file}
+      log_file: "logs/lint.log"
+
+    spg_dft:
+      tool: "lsf_bsub"
+      wrapper: "dj"
+      project: "rtg-mcip-ver"
+      memory: 30000
+      queue: "normal"
+      command_template: |
+        lsf_bsub -P {project} -R "select[type=={rhel_type}] rusage[mem={memory}]" -q {queue} -I \
+        dj -c -v -e 'releaseflow::dropflow({dropflow}).build(:rhea_drop,:rhea_spg)' \
+        -l {log_file}
+      log_file: "logs/spg_dft.log"
+
+  reports:
+    cdc:
+      path_pattern: "out/linux_*/*/config/*/pub/sim/publish/tiles/tile/{tile}/cad/rhea_cdc/cdc_*_output/cdc_report.rpt"
+      extract_script: "cdc_rdc_extract_violation.py"
+    rdc:
+      path_pattern: "out/linux_*/*/config/*/pub/sim/publish/tiles/tile/{tile}/cad/rhea_cdc/rdc_*_output/rdc_report.rpt"
+      extract_script: "cdc_rdc_extract_violation.py"
+    lint:
+      path_pattern: "out/linux_*/*/config/*/pub/sim/publish/tiles/tile/{tile}/cad/rhea_lint/leda_waiver.log"
+      extract_script: "lint_error_extract.pl"
+    spg_dft:
+      path_pattern: "out/linux_*/*/config/*/pub/sim/publish/tiles/tile/{tile}/cad/spg_dft/{tile}/moresimple.rpt"
+      extract_script: "spg_dft_error_extract.pl"
+
+# =============================================================================
+# OSS IP Family
+# =============================================================================
+oss:
+  description: "OSS System IP"
+
+  versions:
+    - oss7_2    # Arcadia variant
+    - oss8_0    # Orion/Grimlock
+
+  tiles:
+    - name: osssys
+      dropflow: ":osssys_dc_elab"
+      bootenv: "osssys_orion"
+    - name: hdp
+      dropflow: ":hdp_dc_elab"
+      bootenv: "hdp_orion"
+    - name: sdma0_gc
+      dropflow: ":sdma_dc_elab"
+      bootenv: "sdma_orion"
+    - name: sdma1_gc
+      dropflow: ":sdma_dc_elab"
+      bootenv: "sdma_orion"
+    - name: lsdma0
+      dropflow: ":lsdma_dc_elab"
+      bootenv: "lsdma_orion"
+    - name: all
+      run_all_tiles: true
+
+  variants:
+    arcadia:
+      applies_to_versions: ["oss7_2"]
+      bootenv_override: "arcadia"
+      command_suffix: "_arcadia"
+
+  p4:
+    depot: "//depot/oss"
+    branch_pattern: "branches/{branch_name}"
+
+  commands:
+    sync_tree:
+      tool: "bootenv"
+      options:
+        env: "orion"
+      example: "bootenv -v orion"
+      variant_arcadia:
+        env: "arcadia"
+
+    cdc_rdc:
+      tool: "lsf_bsub"
+      wrapper: "dj"
+      requires_bootenv: true
+      project: "rtg-mcip-ver"
+      memory: 50000
+      queue: "normal"
+      command_template: |
+        bootenv -v {bootenv_project}
+        lsf_bsub -P {project} -R "select[type=={rhel_type}] rusage[mem={memory}]" -q {queue} -I \
+        dj -c -v -x {bootenv} -e 'releaseflow::dropflow({dropflow}).build(:rhea_drop,:rhea_cdc)' \
+        -DDROP_TOPS='{tile}' -l {log_file}
+      log_file: "logs/{tile}_cdc_agent.log"
+
+    lint:
+      tool: "lsf_bsub"
+      wrapper: "dj"
+      requires_bootenv: true
+      project: "rtg-mcip-ver"
+      memory: 50000
+      queue: "normal"
+      command_template: |
+        bootenv -v {bootenv_project}
+        lsf_bsub -P {project} -R "select[type=={rhel_type}] rusage[mem={memory}]" -q {queue} -I \
+        dj -c -v -x {bootenv} -e 'releaseflow::dropflow({dropflow}).build(:rhea_drop,:rhea_lint)' \
+        -DDROP_TOPS='{tile}' -l {log_file}
+      log_file: "logs/{tile}_lint.log"
+
+    spg_dft:
+      tool: "lsf_bsub"
+      wrapper: "dj"
+      requires_bootenv: true
+      project: "rtg-mcip-ver"
+      memory: 50000
+      queue: "normal"
+      command_template: |
+        bootenv -v {bootenv_project}
+        lsf_bsub -P {project} -R "select[type=={rhel_type}] rusage[mem={memory}]" -q {queue} -I \
+        dj -c -v -x {bootenv} -e 'oss.top.{tile}_spg_dft' -l logs/{tile}_spg_dft.log
+      log_file: "logs/{tile}_spg_dft.log"
+
+  reports:
+    cdc:
+      path_pattern: "out/linux_*.VCS/*/config/*_dc_elab/pub/sim/publish/tiles/tile/{tile}/cad/rhea_cdc/cdc_*_output/cdc_report.rpt"
+    rdc:
+      path_pattern: "out/linux_*.VCS/*/config/*_dc_elab/pub/sim/publish/tiles/tile/{tile}/cad/rhea_cdc/rdc_*_output/rdc_report.rpt"
+    lint:
+      path_pattern: "out/linux_*.VCS/*/config/*_dc_elab/pub/sim/publish/tiles/tile/{tile}/cad/rhea_lint/spyglass_lint.txt"
+      note: "OSS uses spyglass_lint.txt (NOT leda_waiver.log)"
+    spg_dft:
+      path_pattern: "out/linux_*.VCS/*/config/*_dc_elab/pub/sim/publish/tiles/tile/{tile}/cad/spg_dft/*/moresimple.rpt"
+
+# =============================================================================
+# GMC IP Family
+# =============================================================================
+gmc:
+  description: "GMC Graphics Memory Controller IP"
+
+  versions:
+    - gmc13_1a  # Orion project
+
+  tiles:
+    - name: gmc_gmcctrl_t
+    - name: gmc_gmcch_t
+
+  p4:
+    depot: "//depot/gmc_ip"
+    branch_pattern: "branches/{branch_name}"
+
+  commands:
+    sync_tree:
+      tool: "p4_mkwa"
+      options:
+        codeline: "umc4"
+        wacfg: "er"
+      example: "p4_mkwa -codeline umc4 -wacfg er"
+
+    cdc_rdc:
+      tool: "bdji"  # Different tool than UMC/OSS!
+      job_handler: "lsf"
+      command_template: |
+        bdji -e 'releaseflow::dropflow(:gmc_cdc).build(:rhea_drop, :rhea_cdc)' \
+        -J lsf -l {log_file} \
+        -DRHEA_CDC_OPTS='-cdc_yml $STEMS/src/meta/tools/cdc0in/variant/{version}/cdc.yml'
+      log_file: "logs/gmc_cdc_rdc.log"
+
+    lint:
+      tool: "bdji"
+      job_handler: "lsf"
+      command_template: |
+        bdji -e 'releaseflow::dropflow(:gmc_lint).build(:rhea_drop, :rhea_lint)' \
+        -J lsf -l {log_file}
+      log_file: "logs/gmc_lint.log"
+
+    spg_dft:
+      tool: "lsf_bsub"
+      wrapper: "be_dj"
+      project: "rtg-mcip-ver"
+      memory: 79000
+      queue: "regr_high"
+      note: "GMC SPG_DFT uses be_dj (not bdji), explicitly requires RHEL8_64, runs on gmc_w_phy tile"
+      command_template: |
+        lsf_bsub -q regr_high -R "rusage[mem=79000]" -R "select[type==RHEL8_64]" \
+        -P rtg-mcip-ver -W 1000 be_dj -x gmc13_1a -m 16000 \
+        -e "gmc.rhea_dc_dft.build" -DABV_OFF -DRHEA_DC_OPTS="--timing_check" \
+        -l {log_file}
+      log_file: "logs/gmc13_1a_rhea_dc_dft_gmc_w_phy.log"
+
+  reports:
+    cdc:
+      path_pattern: "out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt"
+    rdc:
+      path_pattern: "out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_cdc/rdc_*_output/rdc_report.rpt"
+    lint:
+      path_pattern: "out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/gmc_*/cad/rhea_lint/leda_waiver.log"
+    spg_dft:
+      path_pattern: "out/linux_*.VCS/*/config/gmc_dc_elab/pub/sim/publish/tiles/tile/gmc_w_phy/cad/spg_dft/gmc_w_phy/moresimple.rpt"
+
+# =============================================================================
+# RHEL Detection Helper
+# =============================================================================
+rhel_detection:
+  command: "uname -r"
+  patterns:
+    el8: "RHEL8_64"
+    el7: "RHEL7_64"
+  default: "RHEL8_64"

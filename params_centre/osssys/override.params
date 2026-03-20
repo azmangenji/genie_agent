@@ -1,0 +1,219 @@
+###################################################################################################
+# TB Setup ########################################################################################
+###################################################################################################
+NICKNAME = osssys_0112 
+FAMILY = supra
+PERSONALITY = placenroute
+
+TOP_MODULE = osssys
+
+PROJECT = loveland
+
+#TILEBUILDER_FREEZEFLOWRELEASE = TB_USE_GET_LABEL
+
+#TILEBUILDER_FREEZEFLOWRELEASE =  FE_LOVELAND_20250730_FLOW
+#TILEBUILDER_FREEZEDATARELEASE = FE_CUMBER_20250305_DATA
+#TILEBUILDER_SEPARATE_STACK_PARAMS_LABEL = FE_LOVELAND_20250724_STACKS
+
+TILEBUILDER_FREEZEFLOWRELEASE = TileBuildersupraRelease2025-07-16_0730
+TILEBUILDER_FREEZEDATARELEASE = 
+TILEBUILDER_SEPARATE_STACK_PARAMS_LABEL = soc_pd_data_cflow_jul17_2025_1400
+
+
+PROJECT_TMP_USE_A2_LIB = 1
+
+
+# Allow UpdateTunable to take ToT tunes
+TILEBUILDER_FREEZEDATARELEASE_UpdateTunable       =
+TILEBUILDER_FREEZETILEDATARELEASE_UpdateTunable   =
+TILEBUILDER_FREEZEPROJDATARELEASE_UpdateTunable   =
+TILEBUILDER_FREEZESTACKDATARELEASE_UpdateTunable  =
+
+CHOSEN_TOP_MERGE_TILES = io_hbm0_aid_t io_hbm1_aid_t io_ucieaa_aid_t io_ucieam_aid_t io_x_aid_t rtsen_aid_t rtsen_mid_t io_socio_mid_t io_ucieam_mid_t
+
+TILES_TO_RUN	= osssys
+#TILES_TO_RUN	=  cf_clkc1_mid_t  cf_clkc10_mid_t  cf_clkc2_mid_t  cf_clkc3_mid_t  cf_clkc4_mid_t  cf_clkc6_mid_t  cf_clkc9_mid_t  cf_ctsen_mid_t  cf_msmu_mid_t  cf_secclk_mid_t  cf_thm_pa_gpio_mid_t  cf_wafl_s_mid_t  cip_hpdma_mid_t  cip_hphost_mid_t  cip_nbif_mid_t  cip_oxrp_mid_t  cip_shub_mid_t  iohub_ioagr_ioapic_mid_t  iohub_ioagr_ioapic1_mid_t  iohub_iohc_lclkaggr_mid_t  iohub_iommu_l2a_mid_t  iohub_iommu_l2b_mid_t  iohub_l1ats_mid_t  iohub_l1ioagr_mid_t  iohub_l1ioagr1_mid_t  iohub_l1nht_sdp_sw_mid_t  iohub_l1nht_sdp_sw1_mid_t  oss_osssys_mid_t  pciess_8x16_lc_mid_t  pciess_8x16_rcb_mid_t  pciess_8x16_rxdl_mid_t  pciess_8x16_rxpi_pcs_mid_t  pciess_8x16_rxtl_mid_t  pciess_8x16_txdl_mid_t  pciess_8x16_txtl_mid_t  pciess_rpt0_mid_t  pciess_rpt1_mid_t  pciess_rpt2_mid_t  pciess_rpt3_mid_t  pciess_rpt4_mid_t  pciess_rpt5_mid_t  pciess_rpt6_mid_t  pciess_serdes_cphy44_ss2_mid_t  pciess_serdes_cphy4444_ss0_mid_t  pciess_serdes_cphy4444_ss1_mid_t  rtsen_mid_t  secip_ifoe_mid_t  secip_mp1_mid_t  secip_mpio_mid_t  secip_mpio_pad_mid_t  secip_mpras_mid_t  secip_nht_mid_t  ucis_rpt0_mid_t  ucis_rpt1_mid_t  ucis_x1_v_wafl_s_mid_t  ucis_x4_v_mid_t  vdci_art_mid_t  vdci_asp_mid_t  vdci_dfx_mid_t  vdci_mpifoe_mid_t  vdci_mpras_mid_t  vdci_ucis_left_mid_t  vdci_wafl_s_mid_t  
+# List of flavors hacked by FCFP: rtl_master_1:fcfp_flavor_1 rtl_master_2:fcfp_flavor_2
+SYN_FLAVOR_MAP_USER_LIST =
+
+ER_TILES_NAME_REGEX = ^secip_art|^secip_asp|^secip_caliptra|^pciess_.*xgmi|^pciess_.*rxide|^pciess_.*txide|^secip_mp5|^umc_umcch
+
+###################################################################################################
+# Project Settings ################################################################################
+###################################################################################################
+CHIP_RELEASE = NLA
+FCB_BLOCK_TYPE = tile_pd
+STACK = soc_pd
+STACK_IS_MERGE_FLOW = 1
+STACK_IS_FEINT_SYNTHESIS = 0
+STD_CELL_LIB_NAME = tsmc143n3p
+TAPEOUT = a0
+
+FX_POWERBI_QOR_DATA_RELEASE_ROOT = /proj/mi_public_server/timing_analysis/mi400
+
+STACK_RUN_MERGE_FLOW_SKIPPING_PNR_TARGETS = 1
+
+ENABLE_MMMC_SYNTHESIS = 0
+STACK_IS_USING_SSGNP_FFGNP	= 1
+
+PROJECT_TILE_LIST_SYN_TT0P9V =
+
+READ_SAIF_ACTIVITY      = 0
+READ_SAIF_ACTIVITY_FxSynthesize = 0
+STACK_IS_SAIFOPT = 0
+STACK_IS_SAIFOPT_SYNTHESIS = 0
+
+###################################################################################################
+# GetRTL Settings #################################################################################
+###################################################################################################
+#AMD_STEM =
+#RTL_TAG = DROP2CAD__MI300_AID__VCN_HCF__5676587__HCF_IP_SYNTH
+
+RTL_USER_REMOVE_FILES = dwc_hbmphy_top_ew.sv uciephy1p0_n3m19_zcal.sv pllcs_fbdiv_delay_syspll_n3p.v pllcs_clkgen_syspll_n3p.v systempll_ics_n3p.v pllcs_stretch_module_syspll_n3p.v pllcs_fbdiv_delay_syspll_n3p.v pllcs_tdc_core_syspll_n3p.v pllcs_tdc_syspll_n3p.v pllcs_high_freq_syspll_n3p.v pllcs_params_syspll_n3p.v pllcs_dco_ro_shared_syspll_n3p.v pllcs_dco_ro_core_shared_syspll_n3p.v pllcs_dco_thermdec_dither2col_syspll_n3p.v pllcs_stretch_vreffilter_ana_syspll_n3p.v pllcs_stretch_core_syspll_n3p.v pllcs_stretch_r_ladder_syspll_n3p.v pllcs_stretch_r_ladder_ana_syspll_n3p.v pllcs_stretch_r_ladder_sf_syspll_n3p.v pllcs_bin3b_therm7b_decoder_syspll_n3p.v pllcs_stretch_core_v2_syspll_n3p.v pllcs_stretch_in_logic_syspll_n3p.v pllcs_stretch_out_logic_syspll_n3p.v pllcs_stretch_comp_16_v2_syspll_n3p.v pllcs_stretch_shunt_16_v2_syspll_n3p.v pllcs_stretch_shunt_16_v2_bb_syspll_n3p.v pllcs_stretch_shunt_v2_syspll_n3p.v pllcs_stretch_mux16_syspll_n3p.v pllcs_stretch_atb_logic18_syspll_n3p.v pllcs_stretch_top_v1_syspll_n3p.v pllcs_stretch_comp_v1_syspll_n3p.v pllcs_stretch_dfx_logic_v1_syspll_n3p.v pllcs_stretch_iout_v1_syspll_n3p.v pllcs_stretch_logic_v1_syspll_n3p.v pllcs_stretch_ls_v1_syspll_n3p.v pllcs_stretch_obs_atb_switch_syspll_n3p.v pllcs_cust_dig_h_syspll_n3p.v pllcs_dco_roh_syspll_n3p.v pllcs_regulator_18_h_syspll_n3p.v pllcs_vreffilter_18_syspll_n3p.v pllcs_stretch_vreffilter_dig18_syspll_n3p.v pllcs_stretch_vreffilter_18_syspll_n3p.v pllcs_stretch_top_syspll_n3p.v pllcs_dac_core_h_syspll_n3p.v pllcs_analog_ro18h_syspll_n3p.v pllcscustomro18h_syspll_n3p.v pllcscore_ro18h_syspll_n3p.v
+
+AMD_STEM = /proj/mi400_cl_vol1/cumberland/egeorge/MID_NLD_FNL_SYN
+#RTL_TAG = <:=$AMD_STEM:>/out.er/linux_4.18.0_64/cumberland/config/mid_ip_synth/pub/sim/drop2cad.out
+
+#Tile List from common/pub/include/tile_info/tile_info.h
+
+#RTL_P4_PORT	= atlvp4p01.amd.com:1719
+#RTL_P4_DEPOT_PATH = //drop2cad.er/mi300_aid/branches/vcn_hcf/mid_ip_synth/...
+#SYN_VF_FILE  = /proj/gfxip_pd8/xuleiren/cumberland_2/out/linux_3.10.0_64/cumberland/config/drop2cad_soc/pub/sim/publish/tiles/tile/<:=$TOP_MODULE:>/publish_rtl/<:=$TOP_MODULE:>.vf.syn
+#SYN_VF_FILE  =  /proj/loveland_feint0_nobackup/jbai2/loveland_0718/out/linux_4.18.0_64/loveland/config/drop2cad_soc/pub/sim/sms/tiles/tile/<:=$TOP_MODULE:>/sms_rtl/<:=$TOP_MODULE:>.vf.syn
+#CHOSEN_GETRTL = 1
+#DROP_TO_CAD_FOR_GPU = 0
+#CHOSEN_GETRTL = 1
+RTL_P4_PORT = atlvp4p01.amd.com:1719
+RTL_P4_DEPOT_PATH = //drop2cad/loveland/branches/loveland_main/drop2cad_soc/...
+DROP2CAD_TYPE = nfs
+#RTL_TAG = DROP2CAD__LOVELAND__LOVELAND_MAIN__8180417_NER__DROP2CAD_SOC
+#RTL_TAG = DROP2CAD__LOVELAND__LOVELAND_MAIN__8180417_1_NER__DROP2CAD_SOC
+RTL_TAG =  /proj/loveland_feint0_nobackup/zhentong/loveland_0810/out_0902/out/linux_4.18.0_64/loveland/config/drop2cad_soc/pub/sim/drop2cad.out
+CHOSEN_GETRTL	= 1
+#DROP_TO_CAD_FOR_GPU	= 1
+#DROP_TO_CAD_FOR_GPU = 1
+#DROP2CAD_TYPE = <: $DROP2CAD_TYPE = ($RTL_TAG =~ /\/proj\//) ? "nfs" : "p4"; print $DROP2CAD_TYPE; :>
+
+PROJECT_IS_HCF = <: $PROJECT_IS_HCF = ((-e "$AMD_STEM/configuration_id") and (`cat $AMD_STEM/configuration_id` =~ /_hcf/)) ? "1" : "0" ; print $PROJECT_IS_HCF ; :>
+
+DROP_TO_CAD_FOR_GPU = 0
+SYN_VF_FILE = /proj/rtg_oss_er_feint1/abinbaba/oss7_2_arcadsasasa/out/linux_3.10.0_64.VCS/oss_design_arcadia/config/oss_dc_elab/pub/sim/publish/tiles/tile/osssys/publish_rtl/osssys.vf
+GETRTL_LINK_DESIGN = 1
+GETRTL_RHEA_PARSE = 1 
+
+
+
+###################################################################################################
+# Library Settings ################################################################################
+###################################################################################################
+
+#LIB_RELEASE = lib_SYN.D.3
+#
+#LIBRELDIR = /proj/cumberland/a0/library/<:=$LIB_RELEASE:>
+SYN_USE_DTHREE_LIB	= cf_clkc10_mid_t cf_clkc1_mid_t cf_clkc2_mid_t cf_clkc3_mid_t cf_clkc4_mid_t cf_clkc6_mid_t cf_clkc9_mid_t cf_secclk_mid_t io_socio_mid_t pciess_serdes_cphy4444_ss0_1_mid_t pciess_serdes_cphy4444_ss0_mid_t pciess_serdes_cphy4444_ss1_mid_t pciess_serdes_cphy44_ss2_mid_t ucis_x1_v_wafl_s_mid_t ucis_x4_v_mid_t
+LIB_RELEASE	= <:
+    $LIB_RELEASE = "lib_SYN.D.2";    
+    if ($SYN_USE_DTHREE_LIB =~ /\b$TOP_MODULE\b/) {        
+        $LIB_RELEASE = "lib_SYN.D.3";
+    }
+    print $LIB_RELEASE;
+:>
+ 
+LIBRELDIR = /proj/cumberland/a0/library/<:=$LIB_RELEASE:>
+
+GENIP_SRAM_ROOT = /proj/mi_genip/memories/sawatchrange/tsmc3n/1.1/0167/sram/tsmc
+#GENIP_SRAM_ROOT = /proj/arcadia_genip/memories/frontrange/tsmc3n/0.1/current/sram/tsmc
+
+
+# All SYNCORNERS must listed for merge flow. Check GENIP_SRAM_ROOT dir for available RAMCORNERS and match accordingly.
+SYNCORNERS = ffgnp1p05vm40c       ffgnp1p05vm40c_rcbest ffgnp1p05vm40c_rcworst ssgnp0p6vm40c      ssgnp0p6vm40c_rcbest ssgnp0p6vm40c_rcworst tt0p65v0c          tt0p6v0c           tt0p75v100c          tt0p9v100c            ffg1p05v0c ffg1p05v0c_rcbest ffg1p05v0c_rcworst ssg0p6v0c ssg0p6v0c_rcbest ssg0p6v0c_rcworst
+RAMCORNERS = tt0p900v100c_typical tt0p900v100c_typical  tt0p900v100c_typical   tt0p600v0c_typical tt0p600v0c_typical   tt0p600v0c_typical    tt0p650v0c_typical tt0p600v0c_typical tt0p750v100c_typical tt0p900v100c_typical   tt0p900v100c_typical tt0p900v100c_typical  tt0p900v100c_typical tt0p600v0c_typical tt0p600v0c_typical tt0p600v0c_typical
+
+# VT/DOUSE settings
+# Default is LVT, to change update ALTERNATE_VT_TILES_MAP with "tile1:ULVT tile2:ULVTLL ..."
+ALTERNATE_VT_TILES_MAP = vcn_m_0_t:ULVTLL vcn_f_0_t:ULVTLL iohub_l1nht_sdp_sw1_0_mid_t:LVT iohub_l1nht_sdp_sw1_mid_t:LVT iohub_l1nht_sdp_sw_0_mid_t:LVT iohub_l1nht_sdp_sw_mid_t:LVT ucis_x1_v_wafl_s_mid_t:ULVTLL ucis_x4_v_mid_t:ULVTLL iohub_iommu_l2a_mid_t:LVT
+
+###################################################################################################
+# Metadata Settings ###############################################################################
+###################################################################################################
+# Formatting for metadata settings:
+# METADATA_SRC_LIST = metadata_dir_0:fp_version_0 metadata_dir_1:fp_version_1 ...
+
+METADATA_SRC_LIST = <: $METADATA_SRC_LIST = "/proj/cmb_release_vol1/a0/rapid_fcfp_meta_data/CHIP_MID/NLD_FINAL_FCNL0004:rapid_fcfp_04"; print $METADATA_SRC_LIST; :>
+
+# Uncomment and update to pick up DEF not located in the METADATA_DIR
+#FLOORPLAN_DEF = /proj/saw_release_vol1/a0/floorplan/NLBp6/<:=$TOP_MODULE:>/fp_01/<:=$TOP_MODULE:>.def.gz
+#FLOORPLAN_SDC = /proj/saw_release_vol1/a0/floorplan/NLBp6/<:=$TOP_MODULE:>/fp_01/<:=$TOP_MODULE:>.<:=$OPTIMIZATION_MODE:>.sdc.gz
+
+# Uncomment and update to enable PLACERAMS tcl in FxFpPreSynPlaceMacros
+#CUSTOM_PLACERAMS_TILES =
+#ENABLE_CUSTOM_PLACERAMS_TCL = 1
+#CUSTOM_PLACERAMS_TCL_FILE =
+
+# Uncomment as necessary if using incomplete DEF files
+#coldstart#CHOSEN_COLDSTART_FxFpPreSynPlaceMacros = 1
+#coldstart#COLDSTART_PARTIAL_DEF_FxFpPreSynPlaceMacros = 1
+#coldstart#COLDSTART_PLACE_PINS_FxFpPreSynPlaceMacros = 1
+#coldstart#I2_AUTOPLACE_MACROS_FxFpPreSynPlaceMacros = 1
+
+# Enable/Disable partial DEF in FxSynthesize (Set to 1 if sourcing a DEF directly or if items are being dropped in FxFp flow as workaround)
+SYN_PARTIAL_DEF_ENABLE = 0
+
+###################################################################################################
+# Miscellaneous - To be shipped elsewhere #########################################################
+###################################################################################################
+# Enable FE custom resize script
+SYN_RESIZE_HIGH_DELAY_CELL_METHOD = drive
+
+# Disable ETO which is causing bad QoR
+DISABLE_ENHANCED_TIMING_OPTIMIZATION = 1
+
+# Exclude tmac overlay cells in netlist
+LVS_EXCLUDE_CELL_INST   = t3tmac*overlay
+
+# Waive ELAB-395
+#SYN_DO_ALLOW_HDL_LATCH = 1
+
+# Disable DFT params.
+#no_dft#CHOSEN_DFT_HYBRID_FLOW	= 0
+#no_dft#CHOSEN_DFT_FX_SCAN_FLOW = 0
+#no_dft#CHOSEN_NO_SCAN_TILES = <:=$TOP_MODULE:>
+
+TMP_USE_EXP_CSV = 1
+
+# For bad clock root data from FCFP, don't restore
+#SYN_GENTILEBBOX_SAVE_RESTORE_CLOCKROOT = 0
+
+FM_ENABLE_LOAD_BREAKPOINTS_FILE = 1
+
+DF_FEINT_IS_TILE_RTL = 1
+DISABLE_SEQ_CLOCK_GATING_OPTIMIZATION    = 1
+
+PROJECT_IS_IP_SYNTHESIS = 0
+
+FX_FEINT_AUTOPATHGROUPING_ENABLE = 0
+
+IO_CONSTRAINT_FILE_EXT	= _full.FeedthroughIO.tcl
+
+FM_REGMAP_ENABLE_MB8_MULTIPORTS	= 0
+FM_REGMAP_ENABLE_MB8_MULTICELLS	= 0
+
+# Fast Mode Re-Synthesis - Skips FCFP, PlFcGen*, FxGenTileNetlist, FxGenTileBBox
+SYN_ECO_FAST_MODE = 0
+ECO_FUNC_PREECO_PATH = /proj/saw_release_er_vol1/a0/AID_SOC/NLD_FINAL/tiles/<:=$TOP_MODULE:>/latest
+SDC_DIR	= data
+I2_IGNORE_MACRO_LIBRARY_CLOCK_TREE_FxGenTileNetlist = 0
+
+CHOSEN_INSERT_FCFP_FTREP	= 0
+
+CHOSEN_FLOORPLAN_PRESYN_TARGETS=""
+SYN_INPUT_DEF	=
+SYN_NO_DEF_TILES = <:=$TOP_MODULE:>
+CHOSEN_COLDSTART    = 1
+CHOSEN_FXAUTOFP     = 1
+FLOORPLAN_DIR       =
+FLOORPLAN_DEF       =
+
+GENTILENETLIST_INPUT_DEF	=
+
+CHOSEN_FXGENTILENETLIST	= 0

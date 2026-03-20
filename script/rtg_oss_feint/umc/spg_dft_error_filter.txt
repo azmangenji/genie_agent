@@ -1,0 +1,57 @@
+# SpgDFT Error Filter Patterns
+# Lines starting with # are comments
+# Each line is a regex pattern to match against error lines
+# If an error line matches any pattern, it will be filtered (counted as rsmu/dft)
+#
+# Format:
+#   [general]     - Patterns that apply to ALL projects (RSMU/DFT related)
+#   [<ip_name>]   - Patterns that only apply to specific IP (e.g., [umc9_3], [umc17_0])
+#
+# The script will apply:
+#   1. All patterns under [general]
+#   2. Patterns under the matching [ip_name] section
+
+#======================================================================
+# GENERAL FILTERS - Apply to ALL projects (RSMU/DFT related)
+#======================================================================
+[general]
+# RSMU/RDFT interface signals - always filter
+RSMU_RDFT
+RDFT_RSMU
+
+# Standard DFT cells - always filter
+ati_sdff.v
+
+# SGDC configuration errors - always filter
+umc_top.sgdc
+
+#======================================================================
+# UMC9_3 (Rosenhorn) specific filters
+#======================================================================
+[umc9_3]
+# DSN health packetizer errors
+dsn_hp_block_mcd.v.*umc_dsn_health_packetizer
+dsn_hp_block_mcd.v.*umc0_dsn_dft_health_marker
+
+# SMN clock domain errors
+Async.*umc_top\.umc0\.umcdat\.umcsmn\.CplPwrOkDficlk.*is not disabled for 4 flip-flop\(s\) in test-mode
+Clock domain.*umc_top\.umc0\.umcdat\.umcsmn\.UCLKGEN\.ClkDiv2_n0scan.*is not controlled by testclock.*umc_top\.DFICLKin0
+
+#======================================================================
+# UMC17_0 (Grimlock) specific filters
+#======================================================================
+[umc17_0]
+# Add grimlock-specific patterns here
+
+#======================================================================
+# UMC14_0 specific filters
+#======================================================================
+[umc14_0]
+# Add umc14_0-specific patterns here
+
+#======================================================================
+# UMC14_2 specific filters
+#======================================================================
+[umc14_2]
+# Add umc14_2-specific patterns here
+

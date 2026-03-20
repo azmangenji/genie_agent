@@ -1,0 +1,39 @@
+TILEBUILDER_DATATREE_TOSYNC = syn_gfx
+TILEBUILDER_LSFPROJECT = orion-pd
+#FC_FE_MODULE = fusioncompiler/2022.12-SP6-T-20250514
+#FC_MODULE = fusioncompiler/2022.12-SP6-T-20250514
+FC_FE_MODULE = fusioncompiler/2022.12-SP6-VAL-20250707
+FC_MODULE = fusioncompiler/2022.12-SP6-VAL-20250707
+FM_MODULE	= formality/2024.09-SP4-VAL-20250501
+
+TILEBUILDER_CPUS_FxSynthesize = 8
+TILEBUILDERCHECKLOGS_STOPFLOW_FxSynthesize = 0
+TILEBUILDERCHECKLOGS_STOPFLOW_FxGenTileNetlist	= 0
+TILEBUILDERCHECKLOGS_STOPFLOW_FxPreSynFloorPlan	= 0
+TILEBUILDERCHECKLOGS_STOPFLOW_FxGenTileBBox	= 0
+TILEBUILDERCHECKLOGS_STOPFLOW_GenericFxFpTarget	= 0
+
+TARGET_FINISH_USERCODE	= source /proj/orn_pd_gfxip_tile_regression01/user/allen/Supra/local/finish_user_code.csh
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_GetRTL = /ERROR: module ref not defined: .*BWP143M.*H3P48CPD/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_GetRTL += /ERROR: module ref not defined: .*mapsmro_fflegro_tsmc3/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_GetRTL += /ERROR: module ref not defined: .*dfll_GEN4P10A/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_GetRTL += /ERROR: module ref not defined: .*mafdd_diff_tsmc3/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_GetRTL += /INFO.*Error\w? message type/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN	+= /Error : Formality max mem usage .* MB exceed FM_MAX_MEM_THRESHOLD expectation of .* MB./
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN	+= /Error : Please file a jira on CAD in respective family if the difference between expected and actual value is very high/
+
+
+#Add IGNORE PATTERN,DMPTBSSD-20813
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Error:\s+The\s+core\s+area\s+of\s+this\s+design\s+is\s+invalid\.\s(CTS-118)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Error:\s+Failed\s+to\s+initialize\s+clocks\.\s(CTS-067)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /USKEW\s+Characterizer\s+ERROR:\s+Corner\s'[^']+'\s+was\s+not\s+characterized,\s+using\s+stub\s+scaling\s+ratio/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /CTS-118\s+1\s+Error\s+The\s+core\s+area\s+of\s+this\s+design\s+is\s+invalid/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /CTS-067\s+1\s+Error\s+Failed\s+to\s+initialize\s+clocks/
+
+
+<:
+if ($TOP_MODULE eq "gc_rlc_t") {
+    print "VERIFIC_MODULE  = /proj/verif_release_ro/veri_parse/11\n";
+    print "VERI_PARSE_MODULE       = veri_parse/11\n";
+}
+:>

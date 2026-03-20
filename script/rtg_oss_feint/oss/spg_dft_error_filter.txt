@@ -1,0 +1,44 @@
+# SpyGlass DFT Error Filter Patterns for OSS
+# Format: [section] followed by regex patterns
+# [general] - applies to ALL tiles
+# [tile_name] - applies only to specific tile (e.g., [osssys], [hdp])
+
+[general]
+# General patterns that apply to all tiles
+wtech.*xid
+techind_sync
+wtech.*xcd
+dft_clk_marker
+kc1r1w_latch
+trfpss
+thdsds
+
+[osssys]
+# osssys-specific patterns (add as needed)
+
+[hdp]
+# hdp-specific patterns (add as needed)
+
+[lsdma0]
+# lsdma0-specific patterns (add as needed)
+
+[sdma0_gc]
+# sdma0_gc-specific patterns (add as needed)
+
+[sdma1_gc]
+# sdma1_gc-specific patterns (add as needed)
+
+[ih_top]
+# ih_top-specific patterns (add as needed)
+
+[ih_sem_share]
+# ih_sem_share-specific patterns (add as needed)
+
+[dma_body_gc]
+# dma_body_gc-specific patterns (add as needed)
+
+[umccmd]
+# umccmd-specific patterns (add as needed)
+
+[umcdat]
+# umcdat-specific patterns (add as needed)

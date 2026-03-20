@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<block owner="hkanayam">
+<swan rev="41.36" />
+<hierarchy>
+	<top>umc</top>
+</hierarchy>
+<mode>
+	<flat />
+	<VC_Lint />
+</mode>
+<link path="../../../umc9_3_lint_waivers.xml" />
+<pulldown_menu>
+	<!-- <std_reason></std_reason> -->
+</pulldown_menu>
+<waive_regexp>
+<error>W415</error>
+<filename>umclatarr.v</filename>
+<code>reg.*\[DATA_WIDTH-1:0\].*LineWrDat.*\[NUMBER_OF_ENTRIES-1:0\];.*</code>
+<msg>Signal 'umc0.umcdat.*LineWrDat.*has multiple simultaneous drivers.*</msg>
+<line>107</line>
+<column>.*</column>
+<reason>These are safe to waive. This RTL code structure has been present in the umclatarr.v RTL for multiple generartions of silicon. I believe that synthesis flow replaces the behaviorial latch array instance with a library cell that represents physical latch array.</reason>
+<author>abinbaba</author>
+</waive_regexp>
+</block>

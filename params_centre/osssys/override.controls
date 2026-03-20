@@ -1,0 +1,423 @@
+TILEBUILDER_LSFPROJECT  = mi400-fe
+TILEBUILDERCHECKLOGS_ALERT_POPUP_CMD = 
+TILEBUILDERCHECKLOGS_ERROR_POPUP_CMD = 
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Error: Invalid option name 'time.pocvm_enhanced_moment_near_vth_voltage'/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Error: Invalid option name 'time.scaling_low_voltage_accuracy'/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Info \(set_opcond\): No process label matched pvt:ffgnp1p05vm40c, unable to find a backup/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Info \(set_opcond\): No process label matched pvt:tt0p65vm40c, unable to find a backup/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Info: log file not found, storing local time when script is run.*/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_GenericFmEqv += /Error: Formality run time .* seconds exceed FM_RUN_TIME_THRESHOLD .*/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_GenericFmEqv += /Error : Formality max mem usage .* MB exceed expectation of .*/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxFpPreSynPlaceMacros += /.*tCIC_.*/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxFpPreSynPlaceMacros += /has wrong keepout margins. Keepouts should be/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxFpPreSynPlaceMacros += /macros has.have keepout.halo errors. Please make sure to create keepoutes based on floorplan guiedlines/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxFpPreSynPlaceMacros += /potential floorplan errors in the design. Please check.*check_floorplan_rules.rpt.gz/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Warning: Timer unexpected state: error code '5', state information: 'Timer forward path tracer found residual path on non-source node/
+TILEBUILDERCHECKLOGS_STOPFLOW_GenericPlFcGenClkSdc = 0
+TILEBUILDERCHECKLOGS_STOPFLOW_FxPostDft = 1
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /ATTENTION: Runtime impact. Formality was unable to take full advantage of all/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Error.*Formality run time.*seconds exceed.*seconds./
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Error.*Formality max mem usage.*exceed.*expectation of.*MB./
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN += /Error.*Please file a jira on CAD in respective family if the difference between expected and actual value is very high/
+
+# FE Specific Cleanup Controls
+ACTION_pretiming_SKIP = 0
+ACTION_power_SKIP = <:
+    $ACTION_power_SKIP = 1;
+    if ((defined $STACK_SAIF_OPT_FxSynthesize) and ($STACK_SAIF_OPT_FxSynthesize =~ /\w/)) {
+        $ACTION_power_SKIP = 0;
+    }
+    print $ACTION_power_SKIP;
+:>
+ACTION_prc_SKIP = <:
+    $ACTION_prc_SKIP = 1;
+    if ($DFP_SRC_PRESYN_UPF_BYCOPY =~ /\w/) {
+        $ACTION_prc_SKIP = 0;
+    }
+    print $ACTION_prc_SKIP;
+:>
+ACTION_apply_eco_SKIP = 1
+ACTION_checks_SKIP = 1
+ACTION_classify_SKIP = 1
+ACTION_dfm_SKIP = 1
+ACTION_domain_crossing_SKIP = 1
+ACTION_guidelines_analysis_SKIP = 1
+ACTION_ilm_SKIP = 1
+ACTION_lh_SKIP = 1
+ACTION_route_timing_SKIP = 1
+ACTION_signalem_SKIP = 1
+ACTION_sort_timing_SKIP = 1
+ACTION_vtswap_SKIP = 1
+
+#Force enable actions for fin fet checks
+<:print "ACTION_design_checks_SKIP = 0";:>
+<:print "ACTION_fin_fet_count_SKIP = 0";:>
+
+# Cleanup extra PtGen targets when running only FE portion.
+<:
+    if ($GEN_SDC_READ_SYNTHESIZE_SDC == "1") {
+        foreach $mode (split /\s+/, $RELEASED_SDC_MODE_LIST) {
+            if ($OPTIMIZATION_MMMC_MODE_LIST_FxSynthesize !~ /\b$mode\b/) {
+                print "TARGET_REMOVE_PtGenSdc${mode}${OPTIMIZATION_SETUP_LIB}PostDftStp = 1\n";
+                print "TARGET_REMOVE_PtGenSdc${mode}${OPTIMIZATION_SETUP_LIB}SynthesizeStp = 1\n";            
+            }
+        }
+    }
+:>
+
+# Cleanup extra Vsi targets.
+<:
+    foreach $stage (split /\s+/, $LP_PHYS_CHK_LIST) {
+        if ($STACK_RUN_MERGE_FLOW_SKIPPING_PNR_TARGETS == "1") {
+            if ($stage =~ /Rtl/ && ($STACK_IS_POWER_GATING == "1" || $STACK_IS_MULTI_VOLTAGE == "1" || $STACK_IS_AON_VSI == "1")) {
+                next;
+            } elsif ($stage =~ /Synthesize/ && ($STACK_IS_POWER_GATING == "1" || $STACK_IS_MULTI_VOLTAGE == "1" || $STACK_IS_AON_VSI == "1")) {
+                next;
+            } elsif ($stage =~ /PrePlace/ && ($STACK_IS_POWER_GATING == "1" || $STACK_IS_MULTI_VOLTAGE == "1" || $STACK_IS_AON_VSI == "1")) {
+                next;
+            } else {
+                print "TARGET_REMOVE_Vsi${stage}PRC = 1\n";
+                print "TARGET_REMOVE_ApplyVsiWaiver${stage}PRC = 1\n";                
+            }
+        }
+    }
+:>
+
+TARGET_REMOVE_CbBaseFPDRC = 1
+TARGET_REMOVE_CbBaseFPLVS = 1
+TARGET_REMOVE_CbDfmMas = 1
+TARGET_REMOVE_CbFPFillFEOL = 1
+TARGET_REMOVE_CbFillFEOL = 1
+TARGET_REMOVE_CbGenHcell = 1
+TARGET_REMOVE_CbGenLVSBOXspice = 1
+TARGET_REMOVE_CbGenLVSspice = 1
+TARGET_REMOVE_CbInvalidLayerCheck = 1
+TARGET_REMOVE_CbPostMergeCheckEmpty = 1
+TARGET_REMOVE_CbPreMergeCheckEmpty = 1
+TARGET_REMOVE_CbSwireFPDRC = 1
+TARGET_REMOVE_CbTileANT = 1
+TARGET_REMOVE_CbTileCOD = 1
+TARGET_REMOVE_CbTileDRC = 1
+TARGET_REMOVE_CbTileEDRC = 1
+TARGET_REMOVE_CbTileLVS = 1
+TARGET_REMOVE_CbTileMiniEDRC3566 = 1
+TARGET_REMOVE_CbTileSwireDRC = 1
+TARGET_REMOVE_FxBoxStreamOut = 1
+TARGET_REMOVE_FxFpGenRoutedLef = 1
+TARGET_REMOVE_FxFpStreamOut = 1
+TARGET_REMOVE_FxFpSwireStreamOut = 1
+TARGET_REMOVE_FxGenEt = 1
+TARGET_REMOVE_FxGenFpStreamOutFill = 1
+TARGET_REMOVE_FxGenReRouteFill = 1
+TARGET_REMOVE_FxSwireStreamOut = 1
+TARGET_REMOVE_FxXtrcttyprc100cOptCts = 1
+TARGET_REMOVE_FxXtrcttyprc100cPlace = 1
+TARGET_REMOVE_FxXtrcttyprc100csetup = 1
+TARGET_REMOVE_IbFinalMerge = 1
+TARGET_REMOVE_IbForRelease = 1
+TARGET_REMOVE_IbFpBaseFinalMerge = 1
+TARGET_REMOVE_IbFpBaseForRelease = 1
+TARGET_REMOVE_IbFpBaseMerge = 1
+TARGET_REMOVE_IbFpSwireMerge = 1
+TARGET_REMOVE_IbPrimaryMerge = 1
+TARGET_REMOVE_IbSwireMerge = 1
+TARGET_REMOVE_PtAdjustSdcIOFuncStpFFG1p05v = 1
+TARGET_REMOVE_PtAdjustSdcIOFuncStpSSG0p6v = 1
+TARGET_REMOVE_PtPreTimFuncHldFFG1p05vPretimingNOWLFFGNP1P05VM40CHld = 1
+TARGET_REMOVE_PtPreTimFuncTT0p65vPretimingNOWLTT0P65VM40CStp = 1
+TARGET_REMOVE_PtPreTimFuncTT0p9vPretimingNOWLTT0P9V100CStp = 1
+TARGET_REMOVE_PtPreTimScanShiftFFG1p05vPretimingNOWLFFGNP1P05VM40CHld = 1
+TARGET_REMOVE_PtPreTimScanShiftSSG0p6vPretimingNOWLSSGNP0P6VM40CStp = 1
+TARGET_REMOVE_PtPreTimFuncTT0p65vPretimingNOWLTT0P65V0CStp = 1
+TARGET_REMOVE_PtPreTimFuncTT0p75vPretimingNOWLTT0P75V100CStp = 1
+TARGET_REMOVE_PtWithSpefPreTimFuncTT0p65vPretimingNOWLTT0P65V0CStp = 1
+TARGET_REMOVE_PtWithSpefPreTimFuncTT0p65vPretimingNOWLTT0P65VM40CStp = 1
+TARGET_REMOVE_StXtrctrcbestCCbest0cReRoute = 1
+TARGET_REMOVE_StXtrctrcbestCCbest0cRoute = 1
+TARGET_REMOVE_StXtrctrcworstCCworst100cReRoute = 1
+TARGET_REMOVE_StXtrctrcworstCCworst100cRoute = 1
+TARGET_REMOVE_StXtrcttyprc100cReRoute = 1
+TARGET_REMOVE_StXtrcttyprc100cRoute = 1
+TARGET_REMOVE_TkExtestCellAwBypATPG = 1
+TARGET_REMOVE_TkExtestCellAwBypTdfATPG = 1
+TARGET_REMOVE_TkExtestCellAwEdtATPG = 1
+TARGET_REMOVE_TkExtestCellAwEdtTdfATPG = 1
+TARGET_REMOVE_TkIntestCellAwBypATPG = 1
+TARGET_REMOVE_TkIntestCellAwBypTdfATPG = 1
+TARGET_REMOVE_TkIntestCellAwEdtATPG = 1
+TARGET_REMOVE_TkIntestCellAwEdtTdfATPG = 1
+TARGET_REMOVE_FxPixPreSynFloorplan = 1
+
+
+SERAS_SERVER_LSF = 1
+
+# Auto ER
+SET_ER_RUNDIR_CMD = <:
+    $SET_ER_RUNDIR_CMD = "";
+    %er_map = ( sawatchrange => 'SawatchRange.er',
+                cumberland => 'cumberland.er' );
+
+    if ($TOP_MODULE =~ /$ER_TILES_NAME_REGEX/) {
+        $SET_ER_RUNDIR_CMD = "/bin/whoami; /bin/chgrp $er_map{$PROJECT} ${BASE_DIR}; /bin/chmod 770 ${BASE_DIR};";
+    }
+
+    print $SET_ER_RUNDIR_CMD;
+:>
+
+TARGET_START_SCRIPT_GetRTL = <:=$SET_ER_RUNDIR_CMD:>
+TARGET_START_SCRIPT_GenerateAllCommands = <:=$SET_ER_RUNDIR_CMD:>
+TARGET_START_SCRIPT_ShGetData = <:=$SET_ER_RUNDIR_CMD:>
+
+# Update dot matrix after FxPrePlace
+DOTMATRIX_REFRESH_CMD = perl /tool/aticad/1.0/src/zoo/rtg_fe/perl/updateDotMatrixRelease.pl
+TARGET_FINISH_USERCODE_ApplyVsiWaiverPrePlacePRC = <:=$DOTMATRIX_REFRESH_CMD:>
+TARGET_FINISH_USERCODE_GenericAveApplPostProcess = <:=$DOTMATRIX_REFRESH_CMD:>
+TARGET_FINISH_USERCODE_FmEqvPrePlaceVsSynthesize = <:=$DOTMATRIX_REFRESH_CMD:>
+TARGET_FINISH_USERCODE_FmEqvPwrPrePlaceVsSynthesize = <:=$DOTMATRIX_REFRESH_CMD:>
+TARGET_FINISH_USERCODE_FmEqvPwrAllUpfSuppliesOnPrePlaceVsSynthesize = <:=$DOTMATRIX_REFRESH_CMD:>
+
+#TEMP
+TILEBUILDER_TMPSHORTRR_FxGenTileNetlist = 0
+TILEBUILDER_TMPSHORTRR_FxFpPreSynGenInternalPowerGrid = 0
+
+FEINT_SYN_TILES_USE_500MB = umc_phy_aid_t umc_phy_aid_t00 umc_phy_aid_t10 umc_phy_aid_t20 umc_phy_aid_t30 umc_phy_aid_t40 umc_phy_aid_t50
+<:
+    if ($FEINT_SYN_TILES_USE_500MB =~ /\b$TOP_MODULE\b/) {        
+    print "TILEBUILDER_RAM_FxSynthesize = 500000\n";
+    print "TILEBUILDER_RAM_FxPrePlace = 500000\n";
+    print "TILEBUILDER_RAM_FxFpPreSynPlaceMacros = 250000\n";
+    print "TILEBUILDER_RAM_FxPreSynFloorPlan = 330000\n";
+    }
+:>
+FEINT_SYN_TILES_USE_256MB =
+<:
+    if ($FEINT_SYN_TILES_USE_256MB =~ /\b$TOP_MODULE\b/ || $TOP_MODULE =~ /^aigc/) {        
+    print "TILEBUILDER_RAM_FxSynthesize = 256000\n";
+    print "TILEBUILDER_RAM_FxPrePlace = 256000\n";
+    }
+:>
+
+# Dedicated Machine Settings
+#FEINT_DED_MACHINE_TILES_LIST	= aigc_gl2cc_gl2c3a0_1_aid_t aigc_gl2cc_gl2c3a0_3_aid_t aigc_gl2cc_gl2c3a0_aid_t aigc_gl2cc_gl2c3a1_aid_t aigc_gl2cc_gl2c3a2_aid_t aigc_gl2cc_gl2c3a_aid_t ucis_x4_v_aid_t umc_phy_aid_t00 umc_phy_aid_t10 umc_phy_aid_t20 umc_phy_aid_t30 umc_phy_aid_t40 umc_phy_aid_t50 tsv_ssbdci_gl2_sm_aid_t tsv_ssbdci_gl2_ss_aid_t tsv_ssbdci_gl2_ss_avfs_aid_t df_tcdxs2d_1_mid_t df_tcdxs2i_mid_t df_tcdxs2k_mid_t df_tcdxs3c_mid_t df_tcdxs3d_mid_t df_tcdxs3i_mid_t mmhub_utcl2_ffbm_mid_t pciess_serdes_cphy4444_ss0_1_mid_t pciess_serdes_cphy4444_ss0_mid_t pciess_serdes_cphy4444_ss1_mid_t pciess_serdes_cphy44_ss2_mid_t 
+<:
+    # Switch for different DED types.
+    $FEINT_DED_TYPE = 2;
+
+    %ded = ();
+    $ded{'1'}{'proj'} = "df-ver";
+    $ded{'1'}{'sel'} = "soc_aidd||jesko";
+    $ded{'2'}{'proj'} = "mi400-pd";
+    $ded{'2'}{'sel'} = "jesko||soc_aidd";
+
+    if ($FEINT_DED_MACHINE_TILES_LIST =~ /\b$TOP_MODULE\b/ && `whoami | tr -d "\\n"` =~ /ericlam2|jonguyen|kamkanel|kdu|kilee/) {
+        foreach $target ("FxFpPreSynPlaceMacros", "FxFpPreSynInsertPhysicalCells", "FxFpPreSynGenInternalPowerGrid", "FxFpPreSynFinishPower", "FxPreSynFloorPlan", "FxSynthesize", "FxPrePlace") {
+        #foreach $target ("FxFpPreSynPlaceMacros", "FxFpPreSynInsertPhysicalCells", "FxFpPreSynGenInternalPowerGrid", "FxFpPreSynFinishPower", "FxPreSynFloorPlan", "FxPrePlace") {
+            print "TILEBUILDER_LSFPROJECT_$target = $ded{$FEINT_DED_TYPE}{'proj'}\n";
+            print "TILEBUILDER_LSFSELECT_$target = $ded{$FEINT_DED_TYPE}{'sel'}\n";
+            print "TILEBUILDER_LSFQUEUE_$target = ded\n";
+            print "TILEBUILDER_CPUS_$target = 32\n";
+            print "TILEBUILDER_EXECARCH_$target = rhel7or8\n";
+
+        }
+    }
+:>
+
+TILEBUILDER_LSFPROJECT_FxPixPrePlace = <:=$TILEBUILDER_LSFPROJECT:>
+TILEBUILDER_LSFSELECT_FxPixPrePlace = <:=$TILEBUILDER_LSFSELECT:>
+TILEBUILDER_LSFQUEUE_FxPixPrePlace = <:=$TILEBUILDER_LSFQUEUE:>
+TILEBUILDER_LSFPROJECT_FxPixSynthesize = <:=$TILEBUILDER_LSFPROJECT:>
+TILEBUILDER_LSFSELECT_FxPixSynthesize = <:=$TILEBUILDER_LSFSELECT:>
+TILEBUILDER_LSFQUEUE_FxPixSynthesize = <:=$TILEBUILDER_LSFQUEUE:>
+
+#TEMP FOR SCAN TEAM, project_dft is overwritten by placenroute, DFX team doesn't want to put it in each tile level override
+CHOSEN_ATPG_DRC_ONLY_TkTestView = 0
+CHOSEN_ATPG_DRC_ONLY_TkFullExtestEdtDRC = 0
+CHOSEN_ATPG_DRC_ONLY_TkFullExtestEdtTdfDRC = 0
+CHOSEN_ATPG_SIM_TARGET_VcIntestEdtCSim = 1
+CHOSEN_ATPG_SIM_TARGET_VcIntestEdtLSim = 1
+CHOSEN_ATPG_SIM_TARGET_VcIntestEdtOSim = 1
+CHOSEN_ATPG_SIM       = vcs
+CHOSEN_ATPG_SIM_TARGET_VcExtestEdtCSim = 1
+TARGET_REMOVE_VcExtestEdtCSim = 0
+
+LIB_PROJREV_PyGetDeviceMeasuresForCells   = tsmc3ne.testN-2.cad
+
+<:
+# Gather all inputs from release area for Fast Mode Synthesis.
+if ($SYN_ECO_FAST_MODE) {
+    print "TARGET_REMOVE_FmEqvSynRtlVsFCFPSynRtl = 1\n";
+    print "TARGET_REMOVE_FxFpPreSynFinishPower = 1\n";
+    print "TARGET_REMOVE_FxFpPreSynGenInternalPowerGrid = 1\n";
+    print "TARGET_REMOVE_FxFpPreSynInsertPhysicalCells = 1\n";
+    print "TARGET_REMOVE_FxFpPreSynPlaceMacros = 1\n";
+    print "TARGET_REMOVE_FxGenTileBBox = 1\n";
+    print "TARGET_REMOVE_FxGenTileNetlist = 1\n";
+    print "TARGET_REMOVE_FxPreSynFloorPlan = 1\n";
+    print "TARGET_REMOVE_GenericPlFcGenClkSdc = 1\n";
+    print "TARGET_REMOVE_GetSdc = 1\n";
+    print "TARGET_REMOVE_PlGenRepeaterRtl = 1\n";
+    print "TARGET_REMOVE_PyMapLcSynRtlVsGetRtl = 1\n";
+    print "TARGET_REMOVE_PyMapLcSynthesizeVsSynRtl = 1\n";
+    print "TARGET_REMOVE_PyOaInsertFcfpFeedsReps = 1\n";
+    print "TARGET_REMOVE_ShGetDef = 1\n";
+    print "TARGET_REMOVE_ShGetFcFpFeedthroughData = 1\n";
+    print "TARGET_REMOVE_ShGetFcfpParams = 1\n";
+
+    print "INPUT_SYN_RTL = data/GetRTL/GetRTL.vf\n";
+
+    # Add User Code to copy TOP_MODULE.rep.v and other files
+    #ECO_FUNC_PREECO_PATH = /proj/cmb_release_vol1/a0/VCN_HCF/NLDp3_last/tiles/$TOP_MODULE/latest
+
+    @files = (
+        "data/SynRtl/${TOP_MODULE}.rep.v",
+        "data/SynRtl/gate_level_stac_repeater_${TOP_MODULE}.v",
+        'data/GenTileBBox.macros.json.gz', #
+        'data/FpInsertPhysicalCells.routing_guides.tcl',
+        'data/PlFcGenFULLCHIPTIMING*ClkSdc.clock.falsepaths.sdc.gz',
+        'data/PlFcGenFULLCHIPTIMING*ClkSdc.clock.sdc.gz',
+        'data/PreSynFloorPlan.boundbufs.json.gz',
+        'data/PreSynFloorPlan.dfpParams', #
+        'data/PreSynFloorPlan.def.gz',
+        'data/PreSynFloorPlan.metalFillOnlyRBlkg.tcl',
+        'data/io_false_group.tcl', #
+    );
+
+    $vov_cmd = "";
+    $vov_out = "";
+
+    if (-e "${ECO_FUNC_PREECO_PATH}/bom.json") {
+        foreach $file (@files) {
+            $rel_files = `ls ${ECO_FUNC_PREECO_PATH}/$file`;
+            if ($rel_files =~ /\w/) {
+                foreach $rel_file (split (/\s/, $rel_files)) {
+                    # Strip Full Path
+                    $data_file = $rel_file;
+                    $data_file =~ s/${ECO_FUNC_PREECO_PATH}//;
+                    $data_file =~ s/^\///;
+                    $vov_cmd .= "rm -rf $data_file ; cp -rfvL $rel_file $data_file ; md5sum $rel_file $data_file ; ";
+                    $vov_out .= "$data_file ";
+                }
+            }
+        }
+    
+        if (-e "${ECO_FUNC_PREECO_PATH}/data/SynRtl/${TOP_MODULE}.rep.v") {
+            $vov_cmd .= "sed -ie \"s/data\\/SynRtl\\/${TOP_MODULE}\\.v/data\\/SynRtl\\/${TOP_MODULE}.rep.v/ig\" data/SynRtl/SynRtl.vf ; ";
+        }
+        if (-e "${ECO_FUNC_PREECO_PATH}/data/SynRtl/gate_level_stac_repeater_${TOP_MODULE}.v") {
+            $vov_cmd .= "echo data/SynRtl/gate_level_stac_repeater_${TOP_MODULE}.v >> data/SynRtl/SynRtl.vf ; ";
+        }
+    }
+
+    print "TARGET_FINISH_USERCODE_ShSynRtl = $vov_cmd\n";
+    print "TARGET_USERVOVOUTPUTS_ShSynRtl = $vov_out\n";
+}
+:>
+
+#kamkanel controls:
+#FC_MODULE  = fusioncompiler/2022.12-SP6-VAL-20250116
+#FC_FE_MODULE  = fusioncompiler/2022.12-SP6-VAL-20250116
+
+##### WAIVERS #####
+#waive nothing matched at FxSynthesize
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Nothing matched for through_list \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Nothing matched for object_list \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Nothing matched for port_pin_list \(SEL-005\)/
+
+#waive nothing matched at FxGenTileNetlist because of FeedthroughIO.tcl 
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Error: Nothing matched for clocks_list \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Error: problem in set_clock_groups command/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Use error_info for more info. \(CMD-013\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Error: Nothing matched for port_pin_list \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Error: Nothing matched for of_objects \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Error: Nothing matched for through_list \(SEL-005\)/
+
+# For FxSynthesize too:
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Nothing matched for clocks_list \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: problem in set_clock_groups command/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Use error_info for more info. \(CMD-013\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Nothing matched for port_pin_list \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Nothing matched for of_objects \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Nothing matched for through_list \(SEL-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: could not open script file.*templates.*fc_shell.*snps_scripts.*tbc_customer_final_wa_fc_mv_remain_retnetion_attribute_setting_for_create_mv_cells.tbc.* \(CMD-015\)/
+
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Error: unknown command 'Skipped' \(CMD-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Error: unknown command 'set_seqmap_honor_sync_set_reset' \(CMD-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: unknown command 'set_seqmap_honor_sync_set_reset' \(CMD-005\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: unknown command 'Skipped' \(CMD-005\)/
+#Error: unknown command 'Skipped' (CMD-005)
+
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Via rule .* already exists \(NDM-003\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxFpPreSynPlaceMacros += /Error: Via rule .* already exists \(NDM-003\)/
+
+#GRF-011 waivable
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxGenTileNetlist += /Error: Generated clock.*with source pin.*is not satisfiable; zero source latency will be used. \(GRF-011\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Error: Generated clock.*with source pin.*is not satisfiable; zero source latency will be used. \(GRF-011\)/
+
+#For DF FxSynthesize:
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxSynthesize += /Edge is NOT corrcet or suitable for ports bounds/
+
+#waivable presynplacemacros errors:
+#Error: Value for 'left' cannot be negative (CMD-002)
+#Error: Value for 'top' cannot be negative (CMD-002)
+#Error: bad value specified for option -outer (this error was caught by the (?^i:\berrors?\b) error pattern)
+#       	Use error_info for more info. (CMD-013)
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxFpPreSynPlaceMacros += /Error: Value for 'top' cannot be negative \(CMD-002\)/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxFpPreSynPlaceMacros += /Error: bad value specified for option -outer/
+TILEBUILDERCHECKLOGS_IGNORE_PATTERN_FxFpPreSynPlaceMacros += /Use error_info for more info. \(CMD-013\)/
+INPUT_UPF_OaGenSynthesizeDb        = data/upf/Synthesize.upf
+
+# Dedicated Machine Settings
+FEINT_DED_MACHINE_TILES_LIST	= athub_rpb_mid_t cdci_athub_cndi_mid_t cdci_atul1_x3_mid_t cdci_atul1_x8_1_mid_t cdci_atul1_x8_mid_t cdci_dacc_be_mem2io_1_mid_t cdci_dacc_be_mem2io_cndi_1_mid_t cdci_dacc_be_mem2io_cndi_mid_t cdci_dacc_be_mem2io_mid_t cdci_hpdma_mid_t cdci_ioms_mid_t cdci_msmu_mid_t cdci_ncm_i_mid_t cdci_oxrp_mid_t cdci_shub_cndi_mid_t cdci_sub_mid_t cf_clkc10_mid_t cf_clkc1_mid_t cf_clkc2_mid_t cf_clkc3_mid_t cf_clkc4_mid_t cf_clkc6_mid_t cf_clkc9_mid_t cf_ctsen_mid_t cf_msmu_mid_t cf_secclk_mid_t cf_thm_pa_gpio_mid_t cf_wafl_s_mid_t cip_hpdma_mid_t cip_hphost_mid_t cip_nbif_mid_t cip_oxrp_mid_t cip_shub_mid_t dacc_be_mem2io_1_mid_t dacc_be_mem2io_mid_t df_dxs_dxm_mid_t df_ioms_mid_t df_ncm_m2_mid_t df_ncs_a2_mid_t df_ncs_c_mid_t df_rpt0_bot_mid_t df_rpt0_center_mid_t df_rpt0_top_mid_t df_rpt1_bot_mid_t df_rpt1_center_mid_t df_rpt1_top_mid_t df_rpt2_bot_mid_t df_rpt2_center_mid_t df_rpt2_top_mid_t df_rpt3_bot_mid_t df_rpt3_center_mid_t df_rpt3_top_mid_t df_rpt4_bot_mid_t df_rpt4_top_mid_t df_rpt5_bot_mid_t df_rpt5_top_mid_t df_rpt6_bot_mid_t df_rpt7_bot_mid_t df_tcdx_brmm_ncm_d4_mid_t df_tcdx_ncm_d4_1_mid_t df_tcdx_ncm_d4_mid_t df_tcdxa_cndi_1_mid_t df_tcdxa_cndi_2_mid_t df_tcdxa_cndi_3_mid_t df_tcdxa_cndi_mid_t df_tcdxb_cndi_mid_t df_tcdxc_cndi_mid_t df_tcdxcndi_mid_t df_tcdxd_cndi_mid_t df_tcdxio_ncm_mid_t df_tcdxs1dx_1_mid_t df_tcdxs1dx_mid_t df_tcdxs1p5b_mid_t df_tcdxs2a_mid_t df_tcdxs2b_mid_t df_tcdxs2b_pi_mid_t df_tcdxs2c_mid_t df_tcdxs2d_mid_t df_tcdxs2e_mid_t df_tcdxs2f_mid_t df_tcdxs2g_mid_t df_tcdxs2h_mid_t df_tcdxs2i_mid_t df_tcdxs2j_mid_t df_tcdxs2k_mid_t df_tcdxs2l_1_mid_t df_tcdxs2l_mid_t df_tcdxs3a_mid_t df_tcdxs3b_mid_t df_tcdxs3c_mid_t df_tcdxs3d_mid_t df_tcdxs3e_mid_t df_tcdxs3f_mid_t df_tcdxs3g_mid_t df_tcdxs3h_mid_t df_tcdxs3i_mid_t df_tcdxs4_mid_t df_tcdxtr_mid_t df_ucake1_mid_t df_ucake_cndi_eclr_mid_t df_ucake_mid_t df_vdci_ucake_cndi_mid_t df_vdci_ucake_mid_t df_xcake_1_mid_t df_xcake_mid_t dfx_dft_mid_t ifoe_smn_mid_t io_avfs_socio_gta0p75_mid_t io_avfs_socio_gta1p1_mid_t io_avfs_socio_mid_t io_avfs_socio_ucie0p65_mid_t io_avfs_socio_ucie0p75_mid_t io_dfx_charz_mid_t io_dfx_dualdftio1_mid_t io_dfx_dualdftio2_mid_t io_dfx_gpio1p8_mid_t io_dfx_gpio1p8_pcc_i2c_mid_t io_dfx_misc_dualdftio0_mid_t io_refclk_left_mid_t io_refclk_right_mid_t io_socio_mid_t io_ucieam_mid_t iohub_ioagr_ioapic1_mid_t iohub_ioagr_ioapic_mid_t iohub_iohc_lclkaggr_mid_t iohub_iommu_l2a_mid_t iohub_iommu_l2b_mid_t iohub_l1ats_mid_t iohub_l1ioagr1_mid_t iohub_l1ioagr_mid_t iohub_l1nht_sdp_sw1_0_mid_t iohub_l1nht_sdp_sw1_mid_t iohub_l1nht_sdp_sw_0_mid_t iohub_l1nht_sdp_sw_mid_t mmhub_atcl2_be_1_mid_t mmhub_atcl2_be_mid_t mmhub_atcl2_fe_mid_t mmhub_atul1_x3_ctl_mid_t mmhub_atul1_x8_1_mid_t mmhub_atul1_x8_mid_t mmhub_cane_cdci_mid_t mmhub_sub_1_mid_t mmhub_sub_mid_t mmhub_utcl2_ffbm_mid_t mmhub_utcl2_mid_t mmhub_utcl2_nht_mid_t mmhub_vml2_be1_mid_t mmhub_vml2_be_mid_t mmhub_vml2_fe_walker_mid_t oss_osssys_mid_t pciess_8x16_lc_mid_t pciess_8x16_rcb_mid_t pciess_8x16_rxdl_mid_t pciess_8x16_rxide_mid_t pciess_8x16_rxpi_pcs_mid_t pciess_8x16_rxtl_mid_t pciess_8x16_txdl_mid_t pciess_8x16_txide_mid_t pciess_8x16_txtl_mid_t pciess_rpt0_mid_t pciess_rpt1_mid_t pciess_rpt2_mid_t pciess_rpt3_mid_t pciess_rpt4_mid_t pciess_rpt5_mid_t pciess_rpt6_mid_t pciess_serdes_cphy4444_ss0_1_mid_t pciess_serdes_cphy4444_ss0_mid_t pciess_serdes_cphy4444_ss1_mid_t pciess_serdes_cphy44_ss2_mid_t pciess_xgmi4_1x16_pcs1_mid_t pciess_xgmi4_1x8_pcs1_mid_t pciess_xgmi4_1x8_pcs_mid_t rtsen_mid_t secip_art_mid_t secip_asp_mid_t secip_caliptra_mid_t secip_ifoe_mid_t secip_mp1_mid_t secip_mpio_mid_t secip_mpio_pad_mid_t secip_mpras_mid_t secip_nht_mid_t ucis_rpt0_mid_t ucis_rpt1_mid_t ucis_x1_v_wafl_s_mid_t ucis_x4_v_mid_t vcn_rpt0_mid_t vcn_rpt1_mid_t vdci_art_mid_t vdci_asp_mid_t vdci_dfx_mid_t vdci_mpifoe_mid_t vdci_mpras_mid_t vdci_ucis_left_mid_t vdci_wafl_s_mid_t
+<:
+    # Switch for different DED types.
+    $FEINT_DED_TYPE = 2;
+
+    %ded = ();
+    $ded{'1'}{'proj'} = "df-ver";
+    $ded{'1'}{'sel'} = "soc_aidd||jesko";
+    $ded{'2'}{'proj'} = "mi400-pd";
+    $ded{'2'}{'sel'} = "jesko||soc_aidd";
+
+    if ($FEINT_DED_MACHINE_TILES_LIST =~ /\b$TOP_MODULE\b/ && `whoami | tr -d "\\n"` =~ /ericlam2|jonguyen|kamkanel|kdu|kilee/) {
+        foreach $target ("FxFpPreSynPlaceMacros", "FxFpPreSynInsertPhysicalCells", "FxFpPreSynGenInternalPowerGrid", "FxFpPreSynFinishPower", "FxPreSynFloorPlan", "FxSynthesize", "FxPrePlace") {
+        #foreach $target ("FxFpPreSynPlaceMacros", "FxFpPreSynInsertPhysicalCells", "FxFpPreSynGenInternalPowerGrid", "FxFpPreSynFinishPower", "FxPreSynFloorPlan", "FxPrePlace") {
+            print "TILEBUILDER_LSFPROJECT_$target = $ded{$FEINT_DED_TYPE}{'proj'}\n";
+            print "TILEBUILDER_LSFSELECT_$target = $ded{$FEINT_DED_TYPE}{'sel'}\n";
+            print "TILEBUILDER_LSFQUEUE_$target = ded\n";
+            print "TILEBUILDER_CPUS_$target = 32\n";
+            print "TILEBUILDER_EXECARCH_$target = rhel7or8\n";
+
+        }
+    }
+:>
+
+#FC_MODULE	= fusioncompiler/2022.12-SP6-T-20250501
+#FC_FE_MODULE  = fusioncompiler/2022.12-SP6-T-20250501
+FC_MODULE	= fusioncompiler/2022.12-SP6-T-20250625
+FC_FE_MODULE  = fusioncompiler/2022.12-SP6-T-20250625
+
+TARGET_REMOVE_TkPlaceICLNetworkVerifyPatGen = 1
+TARGET_REMOVE_TkReRouteICLNetworkVerifyPatGen = 1
+TARGET_REMOVE_VcPlaceExtestBypCSim = 1
+TARGET_REMOVE_VcPlaceExtestEdtCSim = 1
+TARGET_REMOVE_VcPlaceIntestBypCSim = 1
+TARGET_REMOVE_VcPlaceIntestEdtCSim = 1
+TARGET_REMOVE_VcPlaceIntestEdtLSim = 1
+TARGET_REMOVE_VcPlaceIntestEdtOSim = 1
+TARGET_REMOVE_VcReRouteExtestBypCSim = 1
+TARGET_REMOVE_VcReRouteExtestEdtCSim = 1
+TARGET_REMOVE_VcReRouteIntestBypCSim = 1
+TARGET_REMOVE_VcReRouteIntestEdtCSim = 1
+TARGET_REMOVE_VcReRouteIntestEdtLSim = 1
+TARGET_REMOVE_VcReRouteIntestEdtOSim = 1
+TARGET_REMOVE_VcBurnInTglPatSim = 1
+TARGET_REMOVE_FmEqvCtsVsPrePlace = 1
+TARGET_REMOVE_FmEqvFloorplanVsPrePlace = 1
+TARGET_REMOVE_FmEqvLayoutFinalNonPGVsPrePlace = 1
+TARGET_REMOVE_FmEqvOptCtsVsPrePlace = 1
+TARGET_REMOVE_FmEqvOptRouteVsPrePlace = 1
+TARGET_REMOVE_FmEqvPlaceVsPrePlace = 1
+TARGET_REMOVE_FmEqvReRouteVsPrePlace = 1
+TARGET_REMOVE_FmEqvRouteVsPrePlace = 1
+TARGET_REMOVE_FmEqvLayoutFinalPGVsLayoutFinalNonPG = 1
+TARGET_REMOVE_FxGenLayoutFinalPhysNetlist = 1

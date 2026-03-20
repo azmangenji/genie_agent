@@ -1,0 +1,328 @@
+# =============================================================================
+# Historical Fixes - Patterns Learned from Previous Successful Fixes
+# =============================================================================
+# This file is auto-updated when fixes are applied successfully.
+# Agent Teams uses this to recognize similar patterns in future runs.
+# =============================================================================
+
+version: "1.0"
+last_updated: "2026-03-17"
+
+# =============================================================================
+# Successful Fixes
+# =============================================================================
+# Format per entry:
+#   id:             Unique fix ID
+#   date:           Date fix was applied
+#   ip:             IP version (e.g. umc17_0)
+#   project:        Project codename (e.g. grimlock)
+#   tree:           Tree where fix was verified
+#   violation_type: no_sync / multi_bits / async_reset_no_sync / series_redundant
+#   violation_id:   Specific violation ID from report (if point fix)
+#   signal_pattern: Regex pattern to reuse for similar signals in future runs
+#   fix_type:       waiver / constraint
+#   fix_template:   The waiver/constraint TCL template
+#   result:         success / pending_rerun
+#   reusable:       true if pattern should be tried on other IPs/trees
+#   notes:          Context for future agents
+# =============================================================================
+
+successful_fixes:
+
+  # ---------------------------------------------------------------------------
+  # Grimlock umc17_0 — Power/Reset Signals (2026-03-17)
+  # Source: Agent Teams Test 5, full CDC analysis
+  # Analyst: analyzer@test5-full-debug
+  # Verified by: team-lead (pattern confirmed against actual report)
+  # ---------------------------------------------------------------------------
+
+  - id: "fix_001"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_10569"
+    signal_pattern: ".*Cpl_GAP_PWROK.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Asynchronous power/reset signal - safe crossing, no sync required" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "Cpl_GAP_PWROK is an asynchronous chip-level power-good signal. Always async, safe to waive across all UMC IPs."
+
+  - id: "fix_002"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_70355"
+    signal_pattern: ".*Cpl_GAP_PWROK.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Asynchronous power/reset signal - safe crossing, no sync required" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "Second Cpl_GAP_PWROK crossing to different destination domain."
+
+  - id: "fix_003"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_11377"
+    signal_pattern: ".*Cpl_PWROK.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Asynchronous power/reset signal - safe crossing, no sync required" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "Cpl_PWROK is the primary chip power-good signal. Asynchronous by design across all UMC IPs."
+
+  - id: "fix_004"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_43530"
+    signal_pattern: ".*Cpl_RESETn.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Asynchronous power/reset signal - safe crossing, no sync required" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "Cpl_RESETn is the chip-level reset. Asynchronous by design across all UMC IPs."
+
+  # ---------------------------------------------------------------------------
+  # Grimlock umc17_0 — Static Config Registers: REGCMD block (2026-03-17)
+  # ---------------------------------------------------------------------------
+
+  - id: "fix_005"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_21173"
+    signal_pattern: ".*REGCMD.*REG_CtrlUpdClks.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "REG_CtrlUpdClks is a static clock update control register — 25 bits total, all safe to waive. Pattern covers all bits."
+
+  - id: "fix_006"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_23756"
+    signal_pattern: ".*REGCMD.*REG_ZqcsInterval.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "REG_ZqcsInterval controls ZQ calibration interval. Written once during DRAM init. 10 bits total."
+
+  - id: "fix_007"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_10036"
+    signal_pattern: ".*REGCMD.*REG_OdtsReadInterval.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "REG_OdtsReadInterval controls ODT read interval timing. Written once during init. 10 bits total."
+
+  - id: "fix_008"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_64502"
+    signal_pattern: ".*REGCMD.*REG_ShortInit.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "REG_ShortInit controls DRAM short initialization sequence. Written once at boot."
+
+  - id: "fix_009"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_20180"
+    signal_pattern: ".*REGCMD.*oQ_PETCtrl_tECSint.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "PETCtrl_tECSint controls ECS timing parameters. Written once during configuration."
+
+  # ---------------------------------------------------------------------------
+  # Grimlock umc17_0 — Static Config Registers: ECC block (2026-03-17)
+  # ---------------------------------------------------------------------------
+
+  - id: "fix_010"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_64578"
+    signal_pattern: ".*SCRUBCNTR.*RegDramReady.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "RegDramReady is set once when DRAM is ready. No dynamic crossings expected."
+
+  - id: "fix_011"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_10473"
+    signal_pattern: ".*SCRUBCNTR.*RegEcc.*LeakEn.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "ECC error leak enable registers are configuration bits set once. Pattern covers RegEccCrcErrLeakEnFlopd and RegEccErrLeakEnFlopd."
+
+  # ---------------------------------------------------------------------------
+  # Grimlock umc17_0 — Static Config Registers: REG_DAT block (2026-03-17)
+  # ---------------------------------------------------------------------------
+
+  - id: "fix_012"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_97217"
+    signal_pattern: ".*REG_DAT.*oQ_DramScrubCtrl.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "DramScrubCtrl registers control scrubber enable/rate. Written during init. Covers DramScrubEn and DramScrubRate."
+
+  - id: "fix_013"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_35465"
+    signal_pattern: ".*REG_DAT.*oQ_EccErrCntCtrl.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "ECC error count control registers (EccErrLeakRate bits). Written once during config. 5 bits total."
+
+  # ---------------------------------------------------------------------------
+  # Grimlock umc17_0 — RSMU Register Wrapper Config (2026-03-17)
+  # Note: Classified as static_config_register because signals are oQ_ register
+  # outputs that are stable during operation. Different from dynamic rsmu_signal.
+  # ---------------------------------------------------------------------------
+
+  - id: "fix_014"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_22937"
+    signal_pattern: ".*rsmu_register_wrapper.*oQ_RSMU_CAC_ENABLE.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "RSMU_CAC_ENABLE is a register wrapper output (oQ_ prefix = stable register output). Not a dynamic RSMU control signal."
+
+  - id: "fix_015"
+    date: "2026-03-17"
+    ip: "umc17_0"
+    project: "grimlock"
+    tree: "/proj/rtg_oss_er_feint1/abinbaba/umc_grimlock_Mar16202602"
+    violation_type: "no_sync"
+    violation_id: "no_sync_39119"
+    signal_pattern: ".*rsmu_register_wrapper.*oQ_RSMU_PGFSM_MGCG_OVERRIDE.*"
+    fix_type: "waiver"
+    fix_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static configuration register, written once during initialization" \
+        -status waived
+    result: "success"
+    reusable: true
+    notes: "RSMU_PGFSM_MGCG_OVERRIDE is a register wrapper output. Clock gating override, set during configuration."
+
+# =============================================================================
+# Pattern Summary (derived from above entries — for quick reference)
+# =============================================================================
+#
+# Reusable cross-IP patterns confirmed on umc17_0 (grimlock):
+#   Cpl_GAP_PWROK  → always waive (power_reset_signal)
+#   Cpl_PWROK      → always waive (power_reset_signal)
+#   Cpl_RESETn     → always waive (power_reset_signal)
+#   REGCMD.REG_*   → waive if static config (check register spec first)
+#   *.oQ_*         → waive if register wrapper output (not dynamic FSM output)
+#   SCRUBCNTR.Reg* → waive (scrubber config written at init)
+#   REG_DAT.REG.*  → waive (data path config registers)
+#
+# NOT reusable without verification:
+#   rsmu_pgfsm_fsm.*  → MEDIUM confidence (RSMU team approval needed)
+#   SPAZ.*            → Unknown, needs per-design analysis
+# =============================================================================

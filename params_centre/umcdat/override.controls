@@ -1,0 +1,20 @@
+TILEBUILDER_LSFPROJECT = mth-pd
+TILEBUILDER_LSFQUEUE	= regr_high
+
+TILEBUILDER_CPUS_FxSynthesize = 32
+<:
+    for my $target ( qw/
+ FxFpPreSynInsertPhysicalCells
+            / ) {
+        print "TILEBUILDER_CPUS_$target = 32\n" ;
+        print "TILEBUILDER_RAM_$target = 98000\n" ;
+        print "TILEBUILDER_LSFQUEUE_$target = regr_high\n" ;
+        print "TILEBUILDERCHECKLOGS_STOPFLOW_$target = 0\n";
+        print "TILEBUILDER_LSFSELECT = \n"
+    }
+:>
+
+
+# latest recommended DSO module
+DSO_MODULE = dsoai/2024.09-SP3
+

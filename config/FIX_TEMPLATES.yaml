@@ -1,0 +1,340 @@
+# =============================================================================
+# Fix Templates - Patterns for Auto-Generating Waivers
+# =============================================================================
+
+version: "1.0"
+
+cdc_waiver_patterns:
+
+  # ---------------------------------------------------------------------------
+  # Static Configuration Registers
+  # ---------------------------------------------------------------------------
+  static_config_register:
+    description: "Static configuration register, written once"
+    match:
+      violation_type: "no_sync"
+      signal_patterns:
+        - ".*[Cc]fg.*"
+        - ".*[Rr]eg[A-Z].*"
+        - ".*[Cc]ontrol[A-Z].*"
+        - ".*[Ss]tatic.*"
+        - ".*[Mm]ode[Ss]el.*"
+        # Learned from Grimlock umc17_0 analysis (2026-03-16):
+        - ".*REGCMD.*"        # REGCMD.REG.* register block outputs
+        - ".*REG_[A-Z].*"     # REG_CtrlUpdClks, REG_ZqcsInterval, REG_OdtsReadInterval, etc.
+        - ".*\\.oQ_.*"         # Register wrapper outputs (oQ_ prefix = output of register)
+        - ".*REG_DAT.*"       # REG_DAT register block outputs
+    exclude_patterns:
+      - ".*[Dd]ata.*"
+      - ".*[Ff]ifo.*"
+    confidence: "HIGH"
+    auto_apply: true
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Static config register - written once during init, no timing requirement" \
+        -status waived
+
+  # ---------------------------------------------------------------------------
+  # Reset Synchronizers
+  # ---------------------------------------------------------------------------
+  reset_synchronizer:
+    description: "Reset signal through synchronizer cell"
+    match:
+      violation_type: "async_reset_no_sync"
+      path_contains:
+        - "sync"
+        - "SYNC"
+        - "hdsync"
+    confidence: "HIGH"
+    auto_apply: true
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Reset properly synchronized through sync cell" \
+        -status waived
+
+  # ---------------------------------------------------------------------------
+  # Gray-Coded Pointers
+  # ---------------------------------------------------------------------------
+  gray_coded_pointer:
+    description: "Gray-coded FIFO pointer"
+    match:
+      violation_type: "multi_bits"
+      signal_patterns:
+        - ".*[Gg]ray.*[Pp]tr.*"
+        - ".*[Pp]tr.*[Gg]ray.*"
+        - ".*_gc_.*"
+        - ".*_gptr.*"
+    confidence: "MEDIUM"
+    auto_apply: false  # Needs verification
+    constraint_template: |
+      netlist port {signal_name} -clock_domain {dest_clock} \
+        -comment "Gray coded pointer - 1 bit change per cycle"
+
+  # ---------------------------------------------------------------------------
+  # DFT/Scan Signals
+  # ---------------------------------------------------------------------------
+  dft_scan_signal:
+    description: "DFT/Scan signal - used during test mode only"
+    match:
+      violation_type: "no_sync"
+      signal_patterns:
+        - ".*[Ss]can.*"
+        - ".*[Dd]ft.*"
+        - ".*[Tt]est[Mm]ode.*"
+        - ".*[Bb]ist.*"
+    confidence: "HIGH"
+    auto_apply: true
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "DFT signal - active only in test mode, not functional path" \
+        -status waived
+
+  # ---------------------------------------------------------------------------
+  # RSMU Signals (UMC-specific)
+  # ---------------------------------------------------------------------------
+  rsmu_signal:
+    description: "RSMU control signal"
+    match:
+      violation_type: "no_sync"
+      signal_patterns:
+        - ".*rsmu.*"
+        - ".*RSMU.*"
+    confidence: "MEDIUM"
+    auto_apply: false
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "RSMU control signal - verify with RSMU team" \
+        -status waived
+
+  # ---------------------------------------------------------------------------
+  # Power/Reset Signals (UMC Grimlock specific)
+  # Cpl_RESETn, Cpl_PWROK, Cpl_GAP_PWROK — asynchronous power signals
+  # These cross clock domains intentionally and are safe to waive
+  # ---------------------------------------------------------------------------
+  power_reset_signal:
+    description: "Asynchronous power/reset signal (Cpl_ prefix)"
+    match:
+      violation_type: "no_sync"
+      signal_patterns:
+        - ".*Cpl_PWROK.*"
+        - ".*Cpl_RESETn.*"
+        - ".*Cpl_GAP_PWROK.*"
+        - ".*Cpl_.*PWROK.*"
+        - ".*Cpl_.*RESET.*"
+    confidence: "HIGH"
+    auto_apply: true
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Asynchronous power/reset signal - safe crossing, no sync required" \
+        -status waived
+
+  # ---------------------------------------------------------------------------
+  # SPAZ Static Config Signals (UMC-specific, Grimlock)
+  # Learned from Test 6 analysis: DramRdy, ZqcsDisable, ZqcsGrpVal are
+  # configuration bits written once during DRAM initialization (_d1 = flopped copy)
+  # ---------------------------------------------------------------------------
+  spaz_static_config:
+    description: "SPAZ block static configuration signals (written once at DRAM init)"
+    match:
+      violation_type: "no_sync"
+      signal_patterns:
+        - ".*SPAZ\\.ZQCTR\\.(DramRdy|ZqcsDisable|ZqcsGrpVal).*"
+    confidence: "MEDIUM"
+    auto_apply: false  # Verify per design — safe for current UMC but confirm for new IPs
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "SPAZ static config register, written once during DRAM initialization" \
+        -status waived
+
+  # ---------------------------------------------------------------------------
+  # Always-On Domain Reset Signals (SPAZ controllers)
+  # Learned from Test 6: IResetAon signals are always-on domain resets
+  # that intentionally cross to REFCLK domain — async by design
+  # ---------------------------------------------------------------------------
+  always_on_reset:
+    description: "Always-on domain reset signal crossing to REFCLK"
+    match:
+      violation_type: "no_sync"
+      signal_patterns:
+        - ".*SPAZ\\..*\\.IResetAon.*"
+    confidence: "MEDIUM"
+    auto_apply: false
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Always-on domain reset signal - intentional async crossing to REFCLK" \
+        -status waived
+
+  # ---------------------------------------------------------------------------
+  # Synchronizer Internal IQ Outputs (CDC tool false positive)
+  # Learned from Test 6: Output of sync cell being flagged as unsynchronized.
+  # The signal IS already synchronized — CDC tool misidentifies the crossing.
+  # Pattern: signals ending in .IQ_zint from a *.SYNC.* cell
+  # ---------------------------------------------------------------------------
+  sync_internal_iq:
+    description: "Synchronizer cell internal IQ output — CDC tool false positive"
+    match:
+      violation_type: "no_sync"
+      signal_patterns:
+        - ".*Sync\\.SYNC\\..*\\.IQ_zint$"
+        - ".*DatValSync.*IQ_zint.*"
+        - ".*PollDatValSync.*IQ_zint.*"
+    confidence: "HIGH"
+    auto_apply: true
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Synchronizer cell output - signal is already synchronized, CDC tool false positive" \
+        -status waived
+
+  # ---------------------------------------------------------------------------
+  # Power-OK Shift Chain (series_redundant)
+  # Learned from Test 6: CplPwrOkDficlkTx_Shft is a power-OK signal passed
+  # through a deliberate shift chain for reliability. series_redundant flag is
+  # expected and intentional.
+  # ---------------------------------------------------------------------------
+  power_ok_shift_chain:
+    description: "Power-OK signal through deliberate redundant synchronizer shift chain"
+    match:
+      violation_type: "series_redundant"
+      signal_patterns:
+        - ".*CplPwrOk.*Shft.*"
+        - ".*Cpl.*PwrOk.*Shft.*"
+    confidence: "HIGH"
+    auto_apply: true
+    waiver_template: |
+      cdc report crossing -id {violation_id} \
+        -comment "Intentional redundant synchronizer chain for power-OK reliability" \
+        -status waived
+
+# =============================================================================
+# Low-Risk Module Patterns
+# Violations involving these modules are LOW RISK across all checks
+# (CDC, Lint, SPG_DFT). They are only active in test/debug mode.
+# No waiver constraints needed — classify and note, do not auto-waive.
+# =============================================================================
+
+low_risk_module_patterns:
+
+  rsmu_debug:
+    description: "RSMU (Remote SMU) debug/power management module — test/debug mode only"
+    signal_patterns:
+      - ".*rsmu.*"
+      - ".*RSMU.*"
+      - ".*rdft.*"
+      - ".*_rsmu_rdft.*"
+    applies_to: ["cdc", "lint", "spg_dft"]
+    risk: "LOW"
+    note: "RSMU is a debug/power-management module. Violations only active in test mode. Flag for RSMU team awareness but no CDC waiver required."
+
+  dft_test_modules:
+    description: "DFT test infrastructure — scan/JTAG/TDR modules active only in test mode"
+    signal_patterns:
+      - ".*dft_clk_marker.*"
+      - ".*_tdr[_.].*"
+      - ".*\\.TDR[_.].*"
+      - ".*jtag.*"
+      - ".*JTAG.*"
+      - ".*Tdr_Tck.*"
+      - ".*[Ss]can[Ee]n.*"
+    applies_to: ["cdc", "lint", "spg_dft"]
+    risk: "LOW"
+    note: "DFT infrastructure only active during scan/JTAG test. Not a functional CDC concern."
+
+  known_memory_macros:
+    description: "Known technology memory macros — already blackboxed in constraint file"
+    signal_patterns:
+      - ".*rfsd2p.*"
+      - ".*rfps2p.*"
+      - ".*hdsd1p.*"
+      - ".*trfpss2p.*"
+    applies_to: ["cdc"]
+    risk: "IGNORE"
+    note: "These RAM macros are explicitly blackboxed in project.0in_ctrl.v.tcl with port domain assignments. Violations from them are already handled."
+
+lint_waiver_patterns:
+
+  # ---------------------------------------------------------------------------
+  # Unused DFT Signals
+  # ---------------------------------------------------------------------------
+  unused_dft:
+    description: "Unused DFT/scan signal"
+    match:
+      rule_codes: ["W287", "W240"]
+      signal_patterns:
+        - ".*[Ss]can.*"
+        - ".*[Dd]ft.*"
+    confidence: "HIGH"
+    auto_apply: true
+    waiver_template: |
+      error: {rule_code}
+      filename: {file}
+      line: .*
+      code: unused.*{signal}
+      msg: DFT signal - connected during scan insertion
+      reason: Signal used for DFT purposes
+      author: genie_agent_auto
+
+  # ---------------------------------------------------------------------------
+  # Intentional Width Truncation
+  # ---------------------------------------------------------------------------
+  width_truncation:
+    description: "Intentional bit truncation"
+    match:
+      rule_codes: ["W116", "W164"]
+      context_contains: "[\\d+:0]"  # Explicit bit select
+    confidence: "MEDIUM"
+    auto_apply: false
+    waiver_template: |
+      error: {rule_code}
+      filename: {file}
+      line: {line}
+      msg: Intentional truncation
+      reason: Upper bits explicitly not needed
+      author: genie_agent_auto
+
+spg_dft_waiver_patterns:
+
+  # ---------------------------------------------------------------------------
+  # RSMU Module Instance (Atspeed_34, Undriven on terminals)
+  # umc17_0 uses lowercase path umc0_rsmu_rdft_instance — not matched by
+  # general [RSMU_RDFT] filter which is uppercase.
+  # Suggest adding lowercase pattern to [umc17_0] section of filter file.
+  # ---------------------------------------------------------------------------
+  rsmu_module_instance:
+    description: "RSMU debug module instance — test/debug mode only"
+    match:
+      path_patterns:
+        - "umc0_rsmu_rdft_instance"
+        - "rsmu_rdft_instance"
+    confidence: "HIGH"
+    action: "add_to_filter"
+    filter_template: "umc0_rsmu_rdft_instance"
+
+  # ---------------------------------------------------------------------------
+  # CplPwrOk Async Scan Chain (Async_07)
+  # Power-OK signal shift chain not disabled in test-mode — intentional.
+  # Seen in umc9_3 (CplPwrOkDficlkTx) and umc17_0 (CplPwrOkDficlkTx_Shft[6]).
+  # ---------------------------------------------------------------------------
+  cpl_pwrok_async_scan:
+    description: "CplPwrOk async signal shift chain — not disabled in test-mode (intentional)"
+    match:
+      path_patterns:
+        - "CplPwrOkDficlk"
+        - "Async.*CplPwrOk.*is not disabled"
+    confidence: "HIGH"
+    action: "add_to_filter"
+    filter_template: "Async.*CplPwrOkDficlk.*is not disabled for 4 flip-flop"
+
+  # ---------------------------------------------------------------------------
+  # ClkDiv2 Testclock (Clock_11)
+  # UCLKGEN.ClkDiv2_n0scan not controlled by DFICLKin0 testclock — by design.
+  # Seen in umc9_3 and umc17_0 with same hierarchy path.
+  # ---------------------------------------------------------------------------
+  clkdiv2_testclock:
+    description: "UCLKGEN ClkDiv2_n0scan not controlled by DFICLKin0 testclock — by design"
+    match:
+      path_patterns:
+        - "UCLKGEN\\.ClkDiv2_n0scan"
+        - "Clock domain.*ClkDiv2_n0scan.*not controlled by testclock"
+    confidence: "HIGH"
+    action: "add_to_filter"
+    filter_template: "Clock domain.*UCLKGEN\\.ClkDiv2_n0scan.*is not controlled by testclock"
