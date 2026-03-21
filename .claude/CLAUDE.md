@@ -13,6 +13,27 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 
 ---
 
+## Source Control
+
+This directory is the **main repository** for genie_agent, hosted on GitHub:
+```
+https://github.com/azmangenji/genie_agent
+```
+
+Any changes made here should be committed and pushed to git:
+```bash
+git add <file>
+git commit -m "your message"
+git push
+```
+
+Others can clone the latest version with:
+```bash
+git clone https://github.com/azmangenji/genie_agent.git
+```
+
+---
+
 ## Quick Start - Slash Commands
 
 ### UVM Generation
