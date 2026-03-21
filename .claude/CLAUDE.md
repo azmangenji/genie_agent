@@ -17,7 +17,7 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 
 This directory is the **main repository** for genie_agent, hosted on GitHub:
 ```
-https://github.com/azmangenji/genie_agent
+https://github.com/CLI-stack/genie_agent
 ```
 
 Any changes made here should be committed and pushed to git:
@@ -35,7 +35,7 @@ git config --global user.email "abinbaba@amd.com"
 
 Others can clone the latest version with:
 ```bash
-git clone https://github.com/azmangenji/genie_agent.git
+git clone https://github.com/CLI-stack/genie_agent.git
 ```
 
 ---
