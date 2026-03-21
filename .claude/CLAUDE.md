@@ -13,20 +13,6 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 
 ---
 
-## Directory Sync Requirement
-
-**PRIMARY:** `/proj/rtg_oss_feint1/FEINT_AI_AGENT/abinbaba/rosenhorn_agent_flow/main_agent`
-**SECONDARY (genie):** `/proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent`
-
-When updating scripts/CSVs in primary, sync to secondary:
-```bash
-cp script/genie_cli.py /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/script/
-cp -r script/rtg_oss_feint/* /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/script/rtg_oss_feint/
-cp *.csv /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/
-```
-
----
-
 ## Quick Start - Slash Commands
 
 ### UVM Generation
