@@ -82,6 +82,33 @@ Search for synchronizer patterns near the signal:
 - FIFO crossings: `async_fifo`, `cdc_fifo`
 - Gray code: `gray_`, `bin2gray`, `gray2bin`
 
+### Step 4a: Deep Tech-Cell Tracing (CRITICAL for `no_sync` violations)
+
+If you find a wrapper synchronizer (`UMCSYNC`, `techind_sync`, or similar custom sync module), **do NOT stop there**. The CDC tool needs the actual lowest-level technology cell registered, not the wrapper.
+
+Trace the full chain:
+
+1. Find where the wrapper is instantiated in RTL → note its module file path
+2. Read the wrapper module source → find what it instantiates inside (e.g., `techind_sync`)
+3. Read that inner module → find the actual technology cell instantiated (e.g., `SDFSYNC*`, `hdsync*`, `SDFRNQ*`)
+4. That deepest cell name is what must be registered in the CDC constraint file
+
+**Why this matters:** The CDC tool traces through wrapper modules and only recognizes synchronization at the cell level. If the tech cell is not registered, the tool sees "Receiver outside sync module" even though synchronization exists.
+
+**Check the constraint file** (`project.0in_ctrl.v.tcl`) — look at existing `cdc custom sync` entries to see what other tech cells are registered. The new cell should follow the same pattern.
+
+**Correct fix syntax:**
+```tcl
+cdc custom sync <actual_tech_cell_name> -type two_dff
+netlist port domain <DataIn_port> -async -clock <CLK_port> -module <actual_tech_cell_name>
+netlist port domain <DataOut_port> -clock <CLK_port> -module <actual_tech_cell_name>
+```
+
+**Wrong fix** (do not do this):
+```tcl
+cdc custom sync UMCSYNC -type two_dff   ← wrapper, tool ignores it
+```
+
 ### Step 5: Check Existing Constraints
 Read: `src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl`
 - Is this signal already constrained or waived?
@@ -172,11 +199,18 @@ Waiver:
 cdc report crossing -id <id_from_report> -severity waived -message "<reason>"
 ```
 
-Constraint:
+Constraint — clock/reset hint:
 ```tcl
 netlist clock <path> -group <group>
 netlist constant <path> -value <0|1>
 netlist reset <path> -group <group>
+```
+
+Constraint — register unrecognized tech-cell synchronizer (use actual deepest cell name, not wrapper):
+```tcl
+cdc custom sync <actual_tech_cell_name> -type two_dff
+netlist port domain <DataIn_port> -async -clock <CLK_port> -module <actual_tech_cell_name>
+netlist port domain <DataOut_port> -clock <CLK_port> -module <actual_tech_cell_name>
 ```
 
 ## Instructions

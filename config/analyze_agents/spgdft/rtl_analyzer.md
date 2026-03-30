@@ -12,20 +12,28 @@ Analyze RTL code to understand **WHY** SpyGlass DFT violations exist.
 
 **The most important task is explaining WHY this DFT violation exists.**
 
-Before recommending any fix, you MUST answer these questions:
+Before recommending any fix, first read the violation message to determine the violation TYPE:
 
-1. **What is the signal/port's purpose?** (TDR, scan, BIST, functional, etc.)
+| Message contains | Violation Type | Fix Direction |
+|-----------------|---------------|---------------|
+| "not disabled" + "test-mode" + async/set/reset | Async signal not disabled in test mode | Add `SPGDFT_PIN_CONSTRAINT` in project.params |
+| "not controlled by testclock" / "clock domain" | Clock not controllable by test clock | Add SGDC constraint or connect TestMode port |
+| "undriven" / "not driven" + port | Undriven port | Tie off or filter (TDR/scan placeholder) |
+| "not found on/within module" | Missing required signal/port | Check SGDC or RTL |
+
+Then answer:
+
+1. **What is the signal/port's purpose?** (async control, clock enable, TDR, scan, functional, etc.)
 2. **WHY does this violation exist?**
+   - Async set/reset signal has no test-mode disable path?
+   - Clock domain is generated internally and not reachable by test clock?
    - Port is TDR placeholder, will be connected by DFT tools?
-   - Port is blackboxed module interface, not connected in RTL?
-   - Designer forgot to connect signal?
-   - Signal is intentionally tied off for this configuration?
-   - Module is a stub/placeholder?
+   - Designer forgot to add pin constraint or SGDC?
 
 3. **What is the RISK if this is not fixed?**
+   - Scan chain corruption during ATPG?
+   - Reduced scan coverage?
    - DFT insertion will fail?
-   - Scan coverage will be impacted?
-   - No functional impact (simulation-only issue)?
 
 **Your analysis MUST clearly explain the "WHY" - not just state the violation.**
 
@@ -67,12 +75,31 @@ grep -n "<signal_name>" <file>
 
 | Scenario | WHY it happens | Risk Level |
 |----------|----------------|------------|
+| Async signal no test-mode disable | Signal drives async set/reset of FFs but has no scan-mode override — SpyGlass cannot verify it stays inactive during test | HIGH - add SPGDFT_PIN_CONSTRAINT |
+| Clock not testclock-controlled | Clock domain generated internally (divided, muxed) with no test-clock override path | HIGH - add SGDC or connect TestMode |
 | TDR placeholder | Port exists for DFT tool to connect TDR chain | LOW - tie off for pre-DFT |
 | Scan port unconnected | Scan chain not yet inserted | LOW - tie off for pre-DFT |
 | Blackbox interface | Module is blackboxed, ports not connected | MEDIUM - need library |
 | Designer oversight | Forgot to connect functional signal | HIGH - RTL fix needed |
 | Stub module | Module is placeholder, logic TBD | MEDIUM - document |
 | Config disabled | Feature disabled by parameter | LOW - filter |
+
+### Step 3a: For Async Signal Violations — Check SPGDFT_PIN_CONSTRAINT
+
+Read `src/meta/tools/spgdft/variant/<ip>/project.params` and look at `SPGDFT_PIN_CONSTRAINT`.
+
+- Is the signal already listed there?
+- If not: determine the correct value during test mode (typically 1 = power-ok / inactive, 0 = reset inactive)
+- The fix is to add `<hier_path/signal_name>:<value>` to `SPGDFT_PIN_CONSTRAINT`
+
+This tells SpyGlass the signal is held at a known safe value during scan test, disabling the async set/reset.
+
+### Step 3b: For Clock Controllability Violations — Check SGDC and TestMode Port
+
+- Read the module where the clock is generated
+- Is there a `TestMode` or scan bypass port that routes test clock instead?
+- If TestMode port exists but is tied to 0: fix is to pass actual scan mode signal
+- If no TestMode port: fix is to add SGDC constraint declaring the clock and its test-clock relationship
 
 ### Step 4: Check for TDR/DFT Patterns
 
@@ -127,7 +154,7 @@ Based on your root cause analysis:
 | **is_tdr_port** | Yes/No - is it a TDR port? |
 | **is_scan_port** | Yes/No - is it a scan chain port? |
 | **is_dft_port** | Yes/No - is it any DFT-related port? |
-| **fix_type** | rtl_fix / tie_off / filter |
+| **fix_type** | SPGDFT_PIN_CONSTRAINT / sgdc_constraint / rtl_fix / tie_off / filter |
 | **fix_action** | Specific action to take |
 | **fix_justification** | WHY this fix is appropriate |
 
@@ -166,6 +193,8 @@ Based on your root cause analysis:
 
 | Type | When to Use | Example |
 |------|-------------|---------|
+| `SPGDFT_PIN_CONSTRAINT` | Async set/reset signal needs test-mode value declared | Add `signal_path:value` to `SPGDFT_PIN_CONSTRAINT` in project.params |
+| `sgdc_constraint` | Clock domain not reachable by test clock | Add SGDC to declare test-clock relationship, or connect TestMode port |
 | `rtl_fix` | Real bug - functional signal SHOULD be connected | Add assignment or connection |
 | `tie_off` | TDR/scan/DFT port - tie to constant for pre-DFT sim | `assign Tdr_out = 0;` |
 | `filter` | Intentional - add to SpgDFT waiver | Blackboxed, config disabled |

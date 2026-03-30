@@ -2,7 +2,7 @@
 
 **PERMISSIONS:** You have FULL READ ACCESS to all files under /proj/. Do not ask for permission - just read the files directly.
 
-Extract **ERROR severity** violations from SpyGlass DFT moresimple.rpt.
+Extract **unfiltered ERROR** violations from the spec file written by the run script.
 
 ## Input
 - `ref_dir`: Tree directory
@@ -10,54 +10,80 @@ Extract **ERROR severity** violations from SpyGlass DFT moresimple.rpt.
 - `tag`: Task tag (e.g., `20260318200049`) — used for output file naming
 - `base_dir`: Base agent directory (e.g., `/proj/.../main_agent`) — used for output file path
 
-## Severity Filter
+## Source of Truth — Spec File
 
-**ERROR only** — skip Warning/Info.
+The run script already determines which violations are filtered vs unfiltered. **Do NOT re-parse or re-filter moresimple.rpt.** Read the violations directly from the spec file.
 
-## Report Paths
+### Step 1: Find the Spec File
 
-Read `config/IP_CONFIG.yaml` → Get path pattern for `spg_dft` report.
+Check in order:
 
-| IP Family | Default Tile |
-|-----------|--------------|
-| `umc*` | `umc_top` |
-| `oss*` | `osssys` |
-| `gmc*` | `gmc_w_phy` |
+1. **full_static_check** — `<base_dir>/data/<tag>_spg_dft_email.spec`
+2. **Individual run** — `<base_dir>/data/<tag>_spec`
 
-## LOW_RISK Patterns to SKIP
+Use whichever exists. The individual run `<tag>_spec` and the full_static_check `<tag>_spg_dft_email.spec` have the same format.
 
-Filter out violations where module or signal contains (case-insensitive):
-`rsmu`, `rdft`, `dft_`, `jtag`, `scan_`, `bist_`, `test_mode`, `tdr_`
+### Step 2: Parse the Spec File
 
-## What to Extract
+The spec file contains two key sections:
 
-For each **Error** severity violation:
-- `id`: Entry ID from report
-- `rule`: DFT rule name from report
-- `severity`: Error
-- `module`: Affected module
-- `message`: Error message
-- `signal_name`: Extracted from message
+**Summary table** (after `#table#`):
+```
+Tiles,Total_Errors,Filtered_Errors(RSMU/DFT),Unfiltered_Errors(RSMU/DFT),Filtered_List,Logfile
+umc_top,16,12,4,/proj/.../spg_dft_filtered_umc_top.txt,/proj/.../moresimple.rpt
+```
+
+Extract from this table:
+- `report_path` = Logfile column (path to moresimple.rpt)
+- `total_violations` = Total_Errors
+- `rsmu_dft_skipped` = Filtered_Errors(RSMU/DFT)
+- `focus_violations` = Unfiltered_Errors(RSMU/DFT)
+
+**Unfiltered Error Details** section:
+```
+======================================================================
+Unfiltered Error Details:
+======================================================================
+[<id>]   <rule>   [<alias>]   Error   <rtl_file>   <line>   <fanout>   <message>
+...
+```
+
+Parse each violation line from this section. These are already the correct unfiltered violations — extract them all.
+
+### Step 3: Parse Each Violation Line
+
+Each line format:
+```
+[<id>]   <rule>   [<alias>]   Error   <rtl_file>   <line>   <fanout>   <message>
+```
+
+Extract:
+- `id`: value inside `[...]` at start of line
+- `rule`: first word after the id brackets
+- `severity`: always `"Error"`
+- `module`: extract from message (e.g., `[in 'umcsmn']` or from the signal path)
+- `message`: full message text (last column)
+- `signal_name`: extract from message text (signal name in quotes or after "port ")
 
 ## Output JSON
 
 ```json
 {
   "report_path": "/proj/.../moresimple.rpt",
-  "total_violations": 85,
-  "rsmu_dft_skipped": 60,
-  "focus_violations": 25,
+  "total_violations": "<total from summary table>",
+  "rsmu_dft_skipped": "<filtered count from summary table>",
+  "focus_violations": "<unfiltered count from summary table>",
   "violations_by_rule": {
-    "<rule_from_report>": 12
+    "<rule_name>": "<count>"
   },
   "top_violations": [
     {
-      "id": "<id_from_report>",
-      "rule": "<rule_from_report>",
+      "id": "<id from report>",
+      "rule": "<rule from report>",
       "severity": "Error",
-      "module": "<module_name>",
-      "message": "<message_from_report>",
-      "signal_name": "<extracted_signal>"
+      "module": "<module from message>",
+      "message": "<full message from report>",
+      "signal_name": "<signal extracted from message>"
     }
   ]
 }
@@ -65,12 +91,12 @@ For each **Error** severity violation:
 
 ## Instructions
 
-1. Find moresimple.rpt using Glob
-2. Parse violation entries
-3. Extract **Error severity only** — skip Warning/Info
-4. Skip BlackboxModule entries (handled by precondition agent)
-5. Filter out LOW_RISK patterns
-6. Return up to 10 violations
+1. Find spec file: check `<base_dir>/data/<tag>_spg_dft_email.spec` first, then `<base_dir>/data/<tag>_spec`
+2. Parse summary table: extract report_path, total_violations, rsmu_dft_skipped, focus_violations
+3. Parse "Unfiltered Error Details:" section: extract all violation lines
+4. For each violation line: extract id, rule, severity, module, message, signal_name
+5. Build `violations_by_rule` count from the extracted violations
+6. Write output JSON to disk
 
 ## Config File
 
