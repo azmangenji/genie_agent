@@ -659,7 +659,7 @@ The agent instruction files provide guidance on WHAT to look for:
 |-------|-----------|------------|
 | CDC/RDC Precondition | `cdc_rdc/precondition_agent.md` | **BOTH** CDC+RDC Section 2, inferred clks/rsts, unresolved |
 | CDC/RDC Violations | `cdc_rdc/violation_extractor.md` | **BOTH** CDC Section 3 + RDC Section 5, filter RSMU/DFT |
-| CDC/RDC RTL | `cdc_rdc/rtl_analyzer.md` | Find signal, check sync, recommend fix (for both CDC & RDC violations) |
+| CDC/RDC RTL | `cdc_rdc/rtl_analyzer.md` | Find signal, check sync, recommend fix — **use MODULE name not instance name** for `cdc custom sync` |
 | Lint Violations | `lint/violation_extractor.md` | Parse unwaived section |
 | Lint RTL | `lint/rtl_analyzer.md` | Check undriven ports |
 | SpgDFT Precondition | `spgdft/precondition_agent.md` | Blackbox modules |
@@ -667,6 +667,22 @@ The agent instruction files provide guidance on WHAT to look for:
 | SpgDFT RTL | `spgdft/rtl_analyzer.md` | TDR ports, tie-offs |
 | Library Search | `shared/library_finder.md` | Find lib.list, search for modules |
 | HTML Report | `shared/report_compiler.md` | Beautiful HTML template |
+
+### CRITICAL — Tech-Cell Constraint: Module Name vs Instance Name
+
+When the CDC RTL Analyzer traces through sync wrappers (e.g., `UMCSYNC` → `techind_sync` → deepest tech cell), it must identify the correct name for `cdc custom sync`.
+
+In Verilog, every instantiation line has the form:
+```verilog
+<MODULE_NAME>  <instance_name>  (.port(signal), ...);
+```
+
+- **`<MODULE_NAME>`** (first token) — this is what `cdc custom sync` requires
+- **`<instance_name>`** (second token) — this is just a label; **do NOT use in constraints**
+
+The instance name often looks similar to a cell name (e.g., it may contain process/VT suffixes), which makes it easy to confuse with the module name. Always read the actual implementation file and take the **first token** of the instantiation line.
+
+Also read the clock port from the instantiation's port connections (`.CP(...)`, `.CLK(...)`, etc.) — it varies by cell family and must match what is used in `netlist port domain` entries.
 
 ### Analysis Steps (Using Task Tool)
 
