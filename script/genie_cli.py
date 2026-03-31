@@ -1577,6 +1577,30 @@ class GenieCLI:
         tag = self.generate_tag()
         arguementInfo['tag'] = tag
 
+        # Special handler: analyze_only — no script to run, just create _analyze and signal
+        if script.startswith('analyze_only'):
+            ref_dir_raw = arguementInfo.get('refDir', '')
+            ref_dir = ref_dir_raw.replace('refDir:', '').strip(':') if ref_dir_raw != 'refDir' else ''
+            ip_raw = arguementInfo.get('ip', '')
+            ip = ip_raw.replace('ip:', '').strip(':') if ip_raw != 'ip' else ''
+            check_type_raw = arguementInfo.get('checkType', '')
+            check_type = check_type_raw.replace('checkType:', '').strip(':') if check_type_raw != 'checkType' else 'full_static_check'
+
+            analyze_flag_file = os.path.join(self.base_dir, 'data', f'{tag}_analyze')
+            os.makedirs(os.path.join(self.base_dir, 'data'), exist_ok=True)
+            with open(analyze_flag_file, 'w') as f:
+                f.write(f"check_type={check_type}\n")
+                f.write(f"ref_dir={ref_dir}\n")
+                f.write(f"ip={ip}\n")
+                f.write(f"log_file={self.base_dir}/runs/{tag}.log\n")
+                f.write(f"spec_file={self.base_dir}/data/{tag}_spec\n")
+
+            return {
+                'tag': tag,
+                'analyze_only': True,
+                'args': arguementInfo,
+            }
+
         # Build command
         command = self.build_command(script, arguementInfo)
         print(f"Command: source script/{command}")
@@ -3757,6 +3781,8 @@ Examples:
                         help='Run task in xterm popup window instead of background')
     parser.add_argument('--analyze', '-a', action='store_true',
                         help='Analyze mode: Claude Code monitors and analyzes results (only for cdc_rdc, lint, spg_dft, full_static_check)')
+    parser.add_argument('--analyze-only', type=str, metavar='TAG',
+                        help='Skip running static check — analyze existing results for TAG directly (no monitoring step)')
     parser.add_argument('--setup-user', action='store_true',
                         help='Setup user-specific directory for multi-user environment')
     parser.add_argument('--user-email', type=str, metavar='EMAIL',
@@ -3773,6 +3799,57 @@ Examples:
 
     # Initialize CLI
     cli = GenieCLI(base_dir=args.base_dir)
+
+    # Handle --analyze-only: emit ANALYZE_MODE_ENABLED for existing results, skip monitoring
+    if args.analyze_only:
+        tag = args.analyze_only
+        analyze_file = os.path.join(cli.base_dir, 'data', f'{tag}_analyze')
+        spec_file    = os.path.join(cli.base_dir, 'data', f'{tag}_spec')
+
+        # Read metadata from _analyze file
+        check_type = ref_dir = ip = log_file = ''
+        if os.path.exists(analyze_file):
+            with open(analyze_file) as f:
+                for line in f:
+                    k, _, v = line.strip().partition('=')
+                    if k == 'check_type': check_type = v
+                    elif k == 'ref_dir':  ref_dir   = v
+                    elif k == 'ip':       ip        = v
+                    elif k == 'log_file': log_file  = v
+
+        # Fallback: extract ref_dir from spec file if missing
+        if not ref_dir and os.path.exists(spec_file):
+            with open(spec_file) as f:
+                for line in f:
+                    if line.startswith('Tree Path:') or line.startswith('Tree:'):
+                        ref_dir = line.split(':', 1)[1].strip()
+                        break
+
+        if not tag or (not os.path.exists(analyze_file) and not os.path.exists(spec_file)):
+            print(f"ERROR: No analyze or spec file found for tag '{tag}'")
+            print(f"  Looked for: {analyze_file}")
+            print(f"          or: {spec_file}")
+            sys.exit(1)
+
+        if not log_file:
+            log_file = os.path.join(cli.base_dir, 'runs', f'{tag}.log')
+
+        print(f"Analyze-only mode for tag: {tag}")
+        print(f"  check_type : {check_type or '(unknown)'}")
+        print(f"  ref_dir    : {ref_dir or '(unknown)'}")
+        print(f"  ip         : {ip or '(unknown)'}")
+        print()
+        print("=" * 70)
+        print("ANALYZE_MODE_ENABLED")
+        print(f"TAG={tag}")
+        print(f"CHECK_TYPE={check_type}")
+        print(f"REF_DIR={ref_dir}")
+        print(f"IP={ip}")
+        print(f"LOG_FILE={log_file}")
+        print(f"SPEC_FILE={spec_file}")
+        print("SKIP_MONITORING=true")
+        print("=" * 70)
+        return
 
     # Handle completion email (called by run script when task finishes)
     if args.send_completion_email:
@@ -4278,6 +4355,24 @@ Examples:
     if result:
         print()
         print("=" * 70)
+
+        # analyze_only instruction: emit ANALYZE_MODE_ENABLED immediately, skip monitoring
+        if result.get('analyze_only'):
+            tag = result.get('tag', '')
+            check_type = result.get('args', {}).get('checkType', '').replace('checkType:', '').strip(':') or 'full_static_check'
+            ref_dir = result.get('args', {}).get('refDir', '').replace('refDir:', '').strip(':')
+            ip = result.get('args', {}).get('ip', '').replace('ip:', '').strip(':')
+            print("ANALYZE_MODE_ENABLED")
+            print(f"TAG={tag}")
+            print(f"CHECK_TYPE={check_type}")
+            print(f"REF_DIR={ref_dir}")
+            print(f"IP={ip}")
+            print(f"LOG_FILE={cli.base_dir}/runs/{tag}.log")
+            print(f"SPEC_FILE={cli.base_dir}/data/{tag}_spec")
+            print("SKIP_MONITORING=true")
+            print("=" * 70)
+            return
+
         if args.execute:
             print("Task submitted successfully")
             # Signal for Claude Code to pick up analysis

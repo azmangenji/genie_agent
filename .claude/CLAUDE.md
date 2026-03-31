@@ -13,29 +13,16 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 
 ---
 
-## Source Control
+## Directory Sync Requirement
 
-This directory is the **main repository** for genie_agent, hosted on GitHub:
-```
-https://github.com/CLI-stack/genie_agent
-```
+**PRIMARY:** `/proj/rtg_oss_feint1/FEINT_AI_AGENT/abinbaba/rosenhorn_agent_flow/main_agent`
+**SECONDARY (genie):** `/proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent`
 
-Any changes made here should be committed and pushed to git:
+When updating scripts/CSVs in primary, sync to secondary:
 ```bash
-git add <file>
-git commit -m "your message"
-git push
-```
-
-**Git Identity (one-time setup):**
-```bash
-git config --global user.name "Azman Bin Babah"
-git config --global user.email "abinbaba@amd.com"
-```
-
-Others can clone the latest version with:
-```bash
-git clone https://github.com/CLI-stack/genie_agent.git
+cp script/genie_cli.py /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/script/
+cp -r script/rtg_oss_feint/* /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/script/rtg_oss_feint/
+cp *.csv /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/
 ```
 
 ---
@@ -71,6 +58,7 @@ git clone https://github.com/CLI-stack/genie_agent.git
 | `--email` | `-m` | Send results to debuggers from assignment.csv |
 | `--to EMAIL` | | Override email recipients |
 | `--analyze` | `-a` | Claude monitors and analyzes results (static checks) |
+| `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
 | `--list` | `-l` | List all available instructions |
 | `--status TAG` | `-s` | Check task status by tag |
 | `--tasks` | `-t` | List tasks: `running`, `today`, `yesterday`, `YYYY-MM-DD` |
@@ -85,6 +73,7 @@ git clone https://github.com/CLI-stack/genie_agent.git
 | **Background** | `--execute` | Runs detached, logs to `runs/<tag>.log` |
 | **Xterm** | `--execute --xterm` | Opens popup window with live output |
 | **Analyze** | `--execute --analyze` | Claude monitors + analyzes results |
+| **Analyze-Only** | `--analyze-only <tag>` | Skip run — analyze existing results directly |
 
 ### Examples
 
@@ -96,6 +85,10 @@ python3 script/genie_cli.py -i "run full_static_check for umc9_3" --execute --xt
 
 # With analysis
 python3 script/genie_cli.py -i "run cdc_rdc at /proj/xxx for umc9_3" --execute --analyze --email
+
+# Analyze existing results (skip re-running the check)
+python3 script/genie_cli.py --analyze-only <tag>
+python3 script/genie_cli.py -i "analyze cdc_rdc results at /proj/xxx/tree_dir for umc17_0" --execute
 
 # TileBuilder
 python3 script/genie_cli.py -i "report timing and area for /proj/xxx/tile_dir" --execute --email
@@ -130,7 +123,7 @@ Script: static_check_unified.csh $refDir $ip $checkType
 | File | Purpose | Example |
 |------|---------|---------|
 | `keyword.csv` | 252 keywords + synonyms for one-hot encoding | `run,execute,start,kick off` |
-| `instruction.csv` | 60 patterns mapped to scripts | `could you run cdc_rdc` → `static_check_unified.csh` |
+| `instruction.csv` | 74 patterns mapped to scripts | `could you run cdc_rdc` → `static_check_unified.csh` |
 | `arguement.csv` | Argument types: `ip`, `tile`, `target`, `checkType`, `params` | `umc9_3,ip` |
 | `patterns.csv` | Regex patterns for waivers, constraints, dates | `^(cdc\|resetcheck)\s+report.*,waiver,I` |
 | `assignment.csv` | User config: `debugger`, `disk`, `project` | `debugger,user@amd.com` |
@@ -212,9 +205,6 @@ cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER
 python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --email
 ```
 
-> **WARNING:** Always run from `users/$USER/` — NOT from the main `genie_agent/` directory.
-> If you run from the main directory, your runs/data will mix with other users in the shared `data/` and `runs/` folders.
-
 ---
 
 ## Available Commands
@@ -222,6 +212,7 @@ python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --em
 | Category | Commands |
 |----------|----------|
 | **Static Checks** | `run cdc_rdc`, `run lint`, `run spg_dft`, `run full_static_check`, `summarize static check` |
+| **Analyze** | `analyze cdc_rdc at <dir>`, `analyze lint at <dir>`, `analyze spg_dft at <dir>`, `analyze full_static_check at <dir>` |
 | **TileBuilder** | `branch from`, `run supra regression`, `monitor supra run`, `report timing and area`, `report formality` |
 | **Params/Tune** | `update params`, `add command to <tune>` |
 | **Waivers** | `add cdc_rdc waiver`, `add lint waiver`, `update cdc_rdc constraint` |
@@ -258,21 +249,23 @@ python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --em
 When `ANALYZE_MODE_ENABLED` is detected in output, you MUST:
 
 1. **Read the orchestrator**: `config/analyze_agents/ORCHESTRATOR.md`
-2. **Spawn background monitor** to watch for task completion
-3. **On completion**: Spawn analysis agents per check_type
-4. **Compile HTML report**: Write to `data/<tag>_analysis.html`
-5. **Send email** with full analysis
-6. **Say only**: "Analysis complete. Email sent."
+2. **If `SKIP_MONITORING=true`**: Skip monitoring — go straight to analysis agents
+3. **Otherwise**: Spawn background monitor to watch for task completion
+4. **On completion**: Spawn analysis agents per check_type
+5. **Compile HTML report**: Write to `data/<tag>_analysis.html`
+6. **Send email** with full analysis
+7. **Say only**: "Analysis complete. Email sent."
 
 **Signal format:**
 ```
 ANALYZE_MODE_ENABLED
-TAG: <tag>
-CHECK_TYPE: <check_type>
-REF_DIR: <ref_dir>
-IP: <ip>
-LOG_FILE: <log_file>
-SPEC_FILE: <spec_file>
+TAG=<tag>
+CHECK_TYPE=<check_type>
+REF_DIR=<ref_dir>
+IP=<ip>
+LOG_FILE=<log_file>
+SPEC_FILE=<spec_file>
+SKIP_MONITORING=true   ← only present when using --analyze-only or analyze instructions
 ```
 
 **Agent Teams** (in `config/analyze_agents/`):
@@ -283,6 +276,6 @@ SPEC_FILE: <spec_file>
 
 ---
 
-**Version:** 2.2 | **Last Updated:** 2026-03-18
+**Version:** 2.3 | **Last Updated:** 2026-03-30
 
 **Note:** Detailed documentation loads on-demand from `.claude/rules/` when working with relevant files.

@@ -63,3 +63,12 @@ could you report formality,rtg_oss_feint/supra/report_formality.csh $tile $refDi
 could you analyze the clock and reset structure,rtg_oss_feint/clock_reset_analyzer.csh $file $ip $tile $refDir $tag,135,start run,,,abinbaba@amd.com
 could you analyze clock reset,rtg_oss_feint/clock_reset_analyzer.csh $file $ip $tile $refDir $tag,135,start run,,,abinbaba@amd.com
 could you analyze clock reset at following directory,rtg_oss_feint/clock_reset_analyzer.csh $file $ip $tile $refDir $tag,135,start run,,,abinbaba@amd.com
+could you analyze cdc_rdc results at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you analyze cdc_rdc at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you analyze lint results at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you analyze lint at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you analyze spg_dft results at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you analyze spg_dft at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you analyze full_static_check results at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you analyze full_static_check at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you analyze static check results at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com

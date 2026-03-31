@@ -24,6 +24,7 @@ paths:
 | `--tasks` | `-t` | List tasks: `running`, `today`, `yesterday`, or `YYYY-MM-DD` |
 | `--kill` | `-k` | Kill a running task by tag |
 | `--analyze` | `-a` | Claude monitors and analyzes results (static checks) |
+| `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
 | `--setup-user` | | Setup user directory for multi-user environment |
 
 ## Execution Modes
@@ -68,7 +69,7 @@ run,execute,start,kick off
 monitor,check status,watch
 ```
 
-### instruction.csv (60 entries)
+### instruction.csv (74 entries)
 Maps patterns to scripts:
 ```csv
 could you run cdc_rdc,rtg_oss_feint/static_check_unified.csh $refDir $ip $tile $integer $tag $p4File $checkType,134,start run
@@ -132,6 +133,7 @@ SYN_VF_FILE = /proj/xxx/umc_top.vf :>" --execute --xterm --email
 - `data/<tag>_pid` - Process ID
 - `data/<tag>_email` - Email flag
 - `data/<tag>_spec` - Task output
+- `data/<tag>_analyze` - Analyze mode metadata (check_type, ref_dir, ip)
 
 ### Email Subject Format
 ```

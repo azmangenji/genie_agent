@@ -101,6 +101,7 @@ The agent runs from the current `main_agent` directory (your working directory).
 | `--user-email EMAIL` | | Email address for `--setup-user` (required, or will prompt) |
 | `--user-disk PATH` | | Disk path for `--setup-user` (required, or will prompt) |
 | `--analyze` | `-a` | Claude Code monitors task and analyzes results (static checks only) |
+| `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
 
 ## Execution Modes
 
@@ -112,6 +113,7 @@ The agent supports three execution modes:
 | **Background** | `--execute` | Runs in background, frees terminal |
 | **Xterm Popup** | `--execute --xterm` | Opens xterm window for live monitoring |
 | **Analyze Mode** | `--execute --analyze` | Claude Code monitors and analyzes results |
+| **Analyze-Only** | `--analyze-only <tag>` | Skip run — analyze existing results directly |
 
 **When to use xterm mode:**
 - Visual monitoring of long-running tasks
@@ -252,6 +254,18 @@ SYN_VF_FILE = /proj/xxx/umc_top.vf :>" --execute --xterm --email
 - `check changelist number for <directory>` - Check P4 changelist
 - `submit files at <directory>` - Submit P4 files
 
+### Analyze Existing Results (No Re-run)
+- `analyze cdc_rdc at <directory> for <ip>` - Analyze existing CDC/RDC results
+- `analyze cdc_rdc results at <directory> for <ip>` - Same as above
+- `analyze lint at <directory> for <ip>` - Analyze existing lint results
+- `analyze spg_dft at <directory> for <ip>` - Analyze existing SpgDFT results
+- `analyze full_static_check at <directory> for <ip>` - Analyze all existing results
+
+Or use `--analyze-only <tag>` directly when you know the tag:
+```bash
+python3 script/genie_cli.py --analyze-only 20260330201659
+```
+
 ### RTL Analysis
 - `analyze clock reset structure at <directory>` - Analyze clock/reset hierarchy from RTL
 
@@ -378,9 +392,6 @@ After setup, always run from your user directory:
 cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER
 python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --email
 ```
-
-> **WARNING:** Always run from `users/$USER/` — NOT from the main `genie_agent/` directory.
-> If you run from the main directory, your runs/data will mix with other users in the shared `data/` and `runs/` folders.
 
 ### Configuring assignment.csv
 
@@ -577,6 +588,7 @@ python3 script/rtg_oss_feint/clock_reset_analyzer.py <vf_file> --top <top_module
 **Last Updated:** 2026-03-17
 
 **Changelog:**
+- v2.2: Added `--analyze-only <tag>` flag and analyze instruction variants — skip re-running static check, go straight to analysis on existing results; emits `SKIP_MONITORING=true` so orchestrator skips monitoring step
 - v2.1: Enhanced `--analyze` mode with Agent Teams architecture - specialized agents per check type, IP_CONFIG.yaml for fast path resolution, dynamic library discovery from lib.list files, improved HTML report colors, analyzes BOTH CDC and RDC reports for `cdc_rdc` check type
 - v2.0: Added `--analyze` mode - Claude Code monitors and analyzes static check results with priority-based approach
 - v1.9: Removed `--agent-team` and `--self-debug` (disabled — MultiAgentOrchestrator not robust enough for script-based flow)

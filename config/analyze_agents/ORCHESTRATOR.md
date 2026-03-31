@@ -110,6 +110,9 @@ When `--analyze` mode is enabled:
 ```
 1. Detect ANALYZE_MODE_ENABLED
          │
+         ├── If SKIP_MONITORING=true (--analyze-only mode, task already complete):
+         │     → Skip steps 2-3, go directly to step 4
+         │
 2. Spawn BACKGROUND agent to monitor task completion
          │ (main conversation free, no context used)
          │
@@ -986,6 +989,8 @@ That's it. All details are in the email.
 
 ```
 1. Detect ANALYZE_MODE_ENABLED
+         │
+         ├── If SKIP_MONITORING=true → skip steps 2-3, go to step 4
          │
 2. Spawn ONE background agent to monitor task completion
    │   - Watches data/<tag>_pid → checks process alive

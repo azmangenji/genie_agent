@@ -19,12 +19,18 @@ The `--analyze` flag enables Claude Code to monitor and analyze static check res
 
 ## How It Works
 
+**With `--analyze` (normal flow):**
 1. **Task Execution**: genie_cli.py launches static check in background
 2. **Signal Detection**: Prints `ANALYZE_MODE_ENABLED` with metadata
 3. **Background Monitoring**: Claude spawns ONE background agent to monitor completion
 4. **Live Analysis**: Upon completion, runs analysis using Agent Teams
 5. **HTML Report**: Compiles results into `data/<tag>_analysis.html`
 6. **Email Results**: Full HTML analysis sent to debuggers
+
+**With `--analyze-only <tag>` or analyze instructions (skip-monitor flow):**
+1. **Signal Detection**: Prints `ANALYZE_MODE_ENABLED` + `SKIP_MONITORING=true`
+2. **Skip Monitoring**: Claude goes directly to analysis (task already complete)
+3–6. Same as above
 
 ## Agent Teams Structure
 
@@ -100,6 +106,13 @@ When running `full_static_check`, each check type MUST have SAME level of detail
 - Same root cause analysis
 - Same recommendations
 - Same code snippets
+
+## SKIP_MONITORING Signal
+
+When `SKIP_MONITORING=true` is present in the output:
+- The static check has already completed — do **NOT** spawn a background monitor
+- Go directly to spawning analysis agents
+- Use the `SPEC_FILE` and `REF_DIR` from the signal to locate results
 
 ## LEARNING.md Integration
 
