@@ -460,18 +460,17 @@ Examples:
 
 ## Additional Reference Documentation
 
-**For constraint syntax, violations, and CDC/RDC concepts, refer to these PDF guides:**
+**For constraint syntax, violations, and CDC/RDC concepts, read this reference guide:**
 
-| Document | Path | Use For |
+| Document | Path | Contents |
 |----------|------|---------|
-| **Command Reference** | `/home/abinbaba/Desktop/command_ref.pdf` | Constraint syntax, command options |
-| **RDC User Guide** | `/home/abinbaba/Desktop/rdc_user.pdf` | RDC violations, reset domain concepts |
-| **CDC/RDC Tutorial** | `/home/abinbaba/Desktop/Questa_Cdc_Rdc_Tutorial.pdf` | Examples, best practices |
+| **CDC/RDC Complete Reference** | `docs/Questa_CDC_RDC_Complete_Reference.md` | Constraint commands, violation types, RDC schemes, reset tree checks, best practices, waiver format |
 
-**When to use these references:**
-- Unknown constraint syntax → Read `command_ref.pdf`
-- Don't understand RDC violation type → Read `rdc_user.pdf`
-- Need examples of CDC/RDC flows → Read `Questa_Cdc_Rdc_Tutorial.pdf`
+**When to use:**
+- Unknown constraint syntax → Read the reference `.md`
+- Don't understand RDC/reset tree violation type → Read the reference `.md`
+- Need constraint examples or best practices → Read the reference `.md`
+- Waiver format/justification → Read the reference `.md`
 
 ---
 

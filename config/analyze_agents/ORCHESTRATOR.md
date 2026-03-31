@@ -424,7 +424,7 @@ The report compiler reads from these files — NOT from context.**
 | Fix Consolidator (SpgDFT) | `data/<tag>_consolidated_spgdft.json` |
 | Library Finder | `data/<tag>_library_finder.json` |
 
-Where `<base_dir>` is the genie_cli working directory (e.g., `/proj/rtg_oss_feint1/FEINT_AI_AGENT/abinbaba/rosenhorn_agent_flow/main_agent`).
+Where `<base_dir>` is the genie_cli working directory (the directory where genie_cli.py was run from).
 
 ### Why File-Based
 

@@ -98,3 +98,16 @@ Content: <your JSON output>
 ```
 
 The report compiler reads this file from disk. If you do not write it, the final report will be incomplete.
+
+---
+
+## Reference Documentation
+
+For CDC/RDC violation types, schemes, and severity definitions:
+
+**`docs/Questa_CDC_RDC_Complete_Reference.md`**
+
+- CDC violation types (no_sync, multi_bits, combo_logic, DMUX, reconvergence)
+- RDC domain crossing schemes (rdc_areset, rdc_dff, rdc_isolation_*, rdc_ordered, etc.)
+- Reset tree check types (reset_as_data, reset_unresettable_register, nrr_on_reset_path, etc.)
+- Result categories (Violations, Cautions, Evaluations, Proven, Waived)

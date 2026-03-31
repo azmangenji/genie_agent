@@ -263,3 +263,17 @@ Content: <your JSON output>
 ```
 
 The report compiler globs `data/<tag>_rtl_*.json` to collect all RTL analyzer results. If you do not write the file, your analysis will be lost.
+
+---
+
+## Reference Documentation
+
+For CDC/RDC constraint syntax, violation types, fix patterns, and waiver format:
+
+**`docs/Questa_CDC_RDC_Complete_Reference.md`**
+
+- Constraint commands (netlist clock, netlist reset, netlist port domain, cdc custom sync, etc.)
+- CDC violation types and fix approaches (no_sync, multi_bits, combo_logic)
+- RDC domain crossing schemes (rdc_areset, rdc_isolation_*, rdc_ordered, etc.)
+- Reset tree check types (reset_as_data, reset_unresettable_register, nrr_on_reset_path, etc.)
+- Waiver format and justification examples
