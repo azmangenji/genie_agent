@@ -8,24 +8,11 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 
 | Topic | Reference File |
 |-------|----------------|
-| **CDC/RDC Issues** | `/home/abinbaba/Questa_CDC_RDC_Complete_Reference.md` |
+| **CDC/RDC Issues** | `docs/Questa_CDC_RDC_Complete_Reference.md` |
 | **DSO.ai Guide** | `/proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/.claude/CLAUDE.md` |
 
 ---
 
-## Directory Sync Requirement
-
-**PRIMARY:** `/proj/rtg_oss_feint1/FEINT_AI_AGENT/abinbaba/rosenhorn_agent_flow/main_agent`
-**SECONDARY (genie):** `/proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent`
-
-When updating scripts/CSVs in primary, sync to secondary:
-```bash
-cp script/genie_cli.py /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/script/
-cp -r script/rtg_oss_feint/* /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/script/rtg_oss_feint/
-cp *.csv /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/
-```
-
----
 
 ## Quick Start - Slash Commands
 
@@ -176,10 +163,10 @@ PARAM2 = value2 :>
 For new users to use genie_agent (multi-user environment):
 
 ```bash
-cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent
+cd <path_to_genie_agent>
 
 # Option 1: Provide email and disk on command line
-python3 script/genie_cli.py --setup-user --user-email Your.Name@amd.com --user-disk /proj/rtg_oss_er_feint1/username
+python3 script/genie_cli.py --setup-user --user-email Your.Name@amd.com --user-disk /proj/<your_disk>/username
 
 # Option 2: Interactive prompts
 python3 script/genie_cli.py --setup-user
@@ -201,7 +188,7 @@ users/$USER/
 
 **Then run from user directory:**
 ```bash
-cd /proj/rtg_oss_feint1/FEINT_AI_AGENT/genie_agent/users/$USER
+cd users/$USER
 python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --email
 ```
 
