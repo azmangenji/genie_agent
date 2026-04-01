@@ -8,6 +8,9 @@
 
 **DO NOT analyze reports directly.** You MUST use the Task tool to spawn specialized sub-agents.
 
+**❌ NEVER run `ps`, `sleep`, `cat <pid_file>`, or any polling bash commands yourself.**
+**✅ For task monitoring: spawn a monitor Task agent (haiku). It does the polling. You just wait for it to return.**
+
 ### Why Invoke Agents (Not Do It Yourself)?
 
 | Approach | Problem |
@@ -108,16 +111,21 @@ When `--analyze` mode is enabled:
 
 ### Flow
 
+**❌ DO NOT run `ps`, `cat`, `sleep`, or any bash commands yourself to monitor the task.**
+**✅ MUST spawn a Task agent to do the monitoring. The Task call blocks the orchestrator until the monitor returns.**
+
 ```
 1. Detect ANALYZE_MODE_ENABLED
          │
          ├── If SKIP_MONITORING=true (--analyze-only mode, task already complete):
          │     → Skip steps 2-3, go directly to step 4
          │
-2. Spawn BACKGROUND agent to monitor task completion
-         │ (main conversation free, no context used)
+2. Spawn monitor Task agent (foreground, haiku) — see "Monitoring Agent" section below
+         │ Orchestrator blocks on this Task call.
+         │ Monitor does all ps/cat/sleep internally.
+         │ Orchestrator NEVER runs sleep or ps commands itself.
          │
-3. Background agent returns with status:
+3. Monitor Task returns with status:
          │
          ├── If skip_analysis=true (spec file has error):
          │     → Say: "Task failed. Skipping analysis."
