@@ -4,60 +4,85 @@
 
 **LEARNING:** Before analyzing, check `config/analyze_agents/lint/LEARNING.md` for similar past violations and their fixes. If a matching pattern exists, apply the same solution. DO NOT update or add to LEARNING.md — it is managed manually by the user only.
 
-Analyze RTL code to understand **WHY** lint violations exist.
+Analyze **ALL lint violations in one RTL file** and recommend a fix for each.
 
-## TOP PRIORITY: Understand WHY the Violation Exists
+## Input
+- `rtl_file`: RTL file path (e.g., `src/rtl/umcdat/umcdat_core.sv`)
+- `violations`: List of all violations in this file (from extractor `violations_by_file`)
+- `ref_dir`: Tree directory
+- `ip`: IP name
+- `tag`: Task tag — used for output file naming
+- `base_dir`: Base agent directory — used for output file path
+- `file_index`: Sequential index N (1, 2, 3…) assigned by orchestrator for this file
+- `fix_history`: Object containing fixes attempted in previous rounds for signals in this file (empty `{}` if Round 1)
 
-**The most important task is explaining WHY this signal is undriven/unused/problematic.**
+## TOP PRIORITY: Understand WHY Each Violation Exists
 
-Before recommending any fix, you MUST answer these questions:
+**Read the RTL file ONCE, then analyze ALL violations in it.**
+
+Before recommending any fix, answer for each signal:
 
 1. **What is the signal's purpose?** (data port, control, debug, DFT, status, etc.)
 2. **WHY is it undriven/unused/problematic?**
    - Designer oversight/bug?
-   - Port exists for future use (planned but not implemented)?
+   - Port exists for future use?
    - Port is driven/used only in certain configurations (generate blocks)?
    - Signal is DFT/debug, not used in functional mode?
    - Signal is tied off at parent level?
    - Legacy port kept for compatibility?
-
-3. **What is the RISK if this is not fixed?**
+3. **What is the RISK?**
    - Functional bug (signal should be driven but isn't)
    - Synthesis warning only (no functional impact)
    - X-propagation risk in simulation
 
-**Your analysis MUST clearly explain the "WHY" - not just state the violation.**
+---
 
-## Input
-- `violation`: Object with code, filename, line, message, signal_name
-- `rtl_dir`: Path to RTL source
-- `tag`: Task tag (e.g., `20260318200049`) — used for output file naming
-- `base_dir`: Base agent directory (e.g., `/proj/.../main_agent`) — used for output file path
-- `violation_index`: Sequential index N (1, 2, 3…) assigned by orchestrator for this violation instance
+## Analysis Steps
 
-## Analysis Per Violation
-
-### Step 1: Read RTL Context
-Read the file at specified line (offset -20, limit 50) to understand:
+### Step 1: Read the RTL File
+Read the full RTL file (or relevant sections). Understand:
 - Module name and purpose
-- Signal declaration (input/output/wire/reg)
-- Surrounding logic
+- Port list and signal declarations
+- Generate blocks and conditional compilation
+- Existing `assign` statements and drivers
 
-### Step 2: Understand the Signal (CRITICAL)
+### Step 2: Check Fix History (CRITICAL for Round > 1)
 
-**Go beyond just finding the signal - UNDERSTAND it:**
+If `fix_history` is non-empty, before analyzing any violation:
 
-| Question | How to Find |
-|----------|-------------|
-| What is signal purpose? | Read comments, module context |
-| Is it in a generate block? | Check for `generate`/`if`/`for` |
-| Is it DFT/debug related? | Check name pattern: `Tdr_*`, `scan_*`, `dft_*`, `debug_*` |
-| Where should it be driven? | Search for assignments in module |
-| Is it driven at parent level? | Search for instantiation in parent |
+1. For each signal in `fix_history`, check what was previously attempted:
+   - `fix_type`: what type of fix was tried (`rtl_fix`, `tie_off`)
+   - `fix_action`: the exact RTL line that was applied
+   - `status`: `applied` (fix was written to file) or `failed` (could not apply)
+   - `round`: which round it was tried
 
-### Step 3: Analyze WHY the Violation Exists
+2. Use this history to **avoid repeating failed fixes** and **escalate if needed**:
+   - If a `rtl_fix` was applied in Round N but the violation still appears in Round N+1 → the fix was incorrect. Use `investigate` instead — do NOT propose the same fix again.
+   - If a `tie_off` was applied but the violation persists → the assign statement may have been placed in the wrong location or has a syntax issue. Use `investigate`.
+   - If a signal has 2+ failed fix attempts → always use `investigate`, explain the history.
 
-**This is the key analysis step. Explain WHY:**
+3. For signals NOT in fix_history (new violations or first round) → analyze normally.
+
+**Example fix_history format:**
+```json
+{
+  "cfg_out[3:0]": [
+    {"round": 1, "fix_type": "rtl_fix", "fix_action": "assign cfg_out = cfg_reg[3:0];", "status": "applied"}
+  ],
+  "Tdr_data_out[7:0]": [
+    {"round": 1, "fix_type": "tie_off", "fix_action": "assign Tdr_data_out = 8'b0;", "status": "applied"}
+  ]
+}
+```
+
+### Step 2a: Check Existing Waiver File
+Read: `<ref_dir>/src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
+- Note which signals are already waived — these are candidates where RTL fix is the goal
+- Use as context only. Do NOT add new entries.
+
+### Step 3: Analyze Each Violation
+
+For each violation in the `violations` list:
 
 | Scenario | WHY it happens | Risk Level | Fix |
 |----------|----------------|------------|-----|
@@ -69,78 +94,68 @@ Read the file at specified line (offset -20, limit 50) to understand:
 | Parent drives it | Signal connected at parent hierarchy | LOW | `investigate` — verify parent connection first |
 | Legacy port | Kept for backward compatibility | LOW | `tie_off` — tie to 0, or `rtl_fix` to remove port |
 
-**IMPORTANT: NO WAIVERS. Target is zero waivers. All violations must be resolved by RTL fix or tie-off.**
+**IMPORTANT: NO WAIVERS. All violations resolved by `rtl_fix`, `tie_off`, or `investigate`.**
 
-### Step 4: Check Existing Waiver File
-Read: `<ref_dir>/src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
-- Is this signal already waived? If yes, note it — the waiver should be removed once the RTL fix is in place.
-- Are similar signals waived? Use those as a pattern for what the correct fix should be.
+### Step 4: Formulate Fix for Each Signal
 
-### Step 5: Formulate Root Cause Statement
+- **`rtl_fix`**: `fix_action` MUST be a concrete, insertable RTL line (e.g., `assign sig = src_signal;`). If the correct driver cannot be determined from RTL alone, use `investigate` instead.
+- **`tie_off`**: `fix_action` MUST be the exact RTL line to insert (e.g., `assign Tdr_data_out = 8'b0;`). Insert after the signal's declaration line.
+- **`investigate`**: Provide a description of what to investigate (e.g., "Check parent module for connection of port X").
 
-**Write a clear WHY statement:**
+**DO NOT recommend waivers under any circumstance.**
 
-```
-GOOD: "Port 'debug_data[31:0]' is an output port intended for debug visibility.
-       It is undriven because this module does not generate debug data internally -
-       the port exists for optional connection to debug logic at integration level.
-       Risk is LOW. Fix: tie to 0 — safe for pre-DFT simulation."
+---
 
-BAD:  "Signal debug_data is undriven."
-```
+## Output Format
 
-### Step 6: Recommend Fix Based on WHY
-Based on your root cause analysis:
-- **`rtl_fix`**: Real bug — add the correct driver or connection. `fix_action` MUST be a concrete, insertable line of RTL (e.g., `assign sig = src_signal;`). If the correct driver cannot be determined from RTL alone, use `investigate` instead.
-- **`tie_off`**: DFT/debug/generate-disabled/legacy port — tie to a safe constant. `fix_action` MUST be the exact RTL line to insert (e.g., `assign Tdr_data_out = 8'b0;`). Always backup original file.
-- **`investigate`**: Insufficient information to recommend a safe fix — need parent hierarchy or design context.
-
-**DO NOT recommend waivers under any circumstance. No `filter` fix type.**
-
-## Output Per Violation
-
-### Required Fields (MUST include):
-
-| Field | Description |
-|-------|-------------|
-| **violation_code** | Lint rule code (e.g., W_UNDRIVEN) |
-| **signal_name** | Full signal name with width |
-| **rtl_file:line** | Where signal is declared |
-| **signal_purpose** | What does this signal do? |
-| **why_violation** | **CRITICAL: Clear explanation of WHY this violation exists** |
-| **risk_level** | HIGH/MEDIUM/LOW with justification |
-| **in_generate** | Yes/No - is it inside disabled generate? |
-| **is_dft_port** | Yes/No - is it DFT/scan related? |
-| **fix_type** | rtl_fix / tie_off / investigate |
-| **fix_action** | Specific action to take |
-| **fix_justification** | WHY this fix is appropriate |
-
-### Example Good Output:
+Return a JSON object with analysis for ALL violations in this file:
 
 ```json
 {
-  "violation_code": "W_UNDRIVEN",
-  "signal_name": "Tdr_data_out[7:0]",
-  "rtl_file": "src/rtl/umcdat/umcdat_core.sv:226",
-  "signal_purpose": "TDR (Test Data Register) output port for JTAG scan chain",
-  "why_violation": "This is a TDR port used only during JTAG test mode. It is undriven in functional RTL because TDR logic is inserted by DFT tools during synthesis. The port exists as a placeholder for DFT integration.",
-  "risk_level": "LOW - DFT port, not used in functional simulation",
-  "in_generate": false,
-  "is_dft_port": true,
-  "fix_type": "tie_off",
-  "fix_action": "assign Tdr_data_out = 8'b0;",
-  "fix_justification": "Safe to tie to 0 for pre-DFT simulation. DFT tools will override during synthesis."
-}
-```
-
-### Example BAD Output (DO NOT do this):
-
-```json
-{
-  "violation_code": "W_UNDRIVEN",
-  "signal_name": "Tdr_data_out",
-  "why_violation": "Signal is not driven",  // TOO VAGUE - doesn't explain WHY
-  "fix_type": "rtl_fix"  // Wrong - this is a DFT port
+  "rtl_file": "src/rtl/umcdat/umcdat_core.sv",
+  "file_index": 1,
+  "violations_analyzed": 45,
+  "analyzed": [
+    {
+      "violation_code": "W_UNDRIVEN",
+      "signal_name": "Tdr_data_out[7:0]",
+      "line": 226,
+      "signal_purpose": "TDR output port for JTAG scan chain",
+      "why_violation": "DFT port — undriven in functional RTL, DFT tools insert logic at synthesis",
+      "risk_level": "LOW - DFT port, not used in functional simulation",
+      "in_generate": false,
+      "is_dft_port": true,
+      "fix_type": "tie_off",
+      "fix_action": "assign Tdr_data_out = 8'b0;",
+      "fix_justification": "Safe to tie to 0 pre-DFT. DFT tools will override during synthesis."
+    },
+    {
+      "violation_code": "W_UNDRIVEN",
+      "signal_name": "cfg_out[3:0]",
+      "line": 88,
+      "signal_purpose": "Configuration output — should carry cfg register value",
+      "why_violation": "Designer oversight — cfg register implemented but output port not connected",
+      "risk_level": "HIGH - functional bug, cfg_out used by downstream logic",
+      "in_generate": false,
+      "is_dft_port": false,
+      "fix_type": "rtl_fix",
+      "fix_action": "assign cfg_out = cfg_reg[3:0];",
+      "fix_justification": "cfg_reg exists and holds the correct value. Output port needs to be driven."
+    },
+    {
+      "violation_code": "W_UNDRIVEN",
+      "signal_name": "debug_obs[15:0]",
+      "line": 310,
+      "signal_purpose": "Debug observation bus — unclear where driver should come from",
+      "why_violation": "Parent module may connect this — cannot confirm from this RTL file alone",
+      "risk_level": "LOW - debug signal",
+      "in_generate": false,
+      "is_dft_port": false,
+      "fix_type": "investigate",
+      "fix_action": "Check parent module instantiation of this block for debug_obs connection",
+      "fix_justification": "Cannot safely assign without knowing the intended source."
+    }
+  ]
 }
 ```
 
@@ -152,13 +167,7 @@ Based on your root cause analysis:
 | `tie_off` | DFT/debug/generate-disabled/legacy port — safe to tie to constant | Exact RTL line (e.g., `assign Tdr_data_out = 8'b0;`) |
 | `investigate` | Parent drives it, or correct driver cannot be determined from RTL alone | Description of what to investigate |
 
-**NOTE: `filter` and `waiver` are NOT valid fix types. Target is zero waivers. Do not recommend waivers under any circumstance.**
-
-## Waiver File (reference only — do NOT add entries)
-
-Path: `<ref_dir>/src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
-
-Read this file to understand what was previously waived — use it as context for your analysis only. The goal is to FIX violations in RTL, not add new waivers.
+**NOTE: `filter` and `waiver` are NOT valid fix types. Target is zero waivers.**
 
 ---
 
@@ -168,7 +177,7 @@ Read this file to understand what was previously waived — use it as context fo
 
 Write output file: `<base_dir>/data/<tag>_rtl_lint_<N>.json`
 
-Where `<N>` = `violation_index` provided in your input.
+Where `<N>` = `file_index` provided in your input.
 
 Use the Write tool:
 ```
@@ -176,4 +185,4 @@ Write file: <base_dir>/data/<tag>_rtl_lint_<N>.json
 Content: <your JSON output>
 ```
 
-The report compiler globs `data/<tag>_rtl_*.json` to collect all RTL analyzer results. If you do not write the file, your analysis will be lost.
+The fix consolidator globs `data/<tag>_rtl_lint_*.json` to collect all RTL analyzer results. If you do not write the file, the fixes for this RTL file will be lost.

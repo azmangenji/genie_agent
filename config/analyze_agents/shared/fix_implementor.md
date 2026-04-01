@@ -35,7 +35,8 @@ If the file does not exist, report "No consolidated fixes found for <check_type>
 ### CDC/RDC
 | File | Path | Apply when |
 |------|------|-----------|
-| Constraint file | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl` | Always (for constraint fixes) |
+| Constraint file | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl` | For `constraint` fixes |
+| RTL source files | `<ref_dir>/src/rtl/**/*.sv`, `*.v` — exact path from RTL analyzer output | For `rtl_fix` fixes |
 | Library list | `<ref_dir>/src/meta/tools/cdc0in/variant/<ip>/umc_top_lib.list` | Only if Library Finder found missing modules |
 
 ### SPG_DFT
@@ -46,7 +47,7 @@ If the file does not exist, report "No consolidated fixes found for <check_type>
 ### Lint
 | File | Path | Apply when |
 |------|------|-----------|
-| RTL source files | `<ref_dir>/src/rtl/**/*.sv`, `*.v` — exact path from RTL analyzer output | For each rtl_fix violation |
+| RTL source files | `<ref_dir>/src/rtl/**/*.sv`, `*.v` — exact path from RTL analyzer output | For each rtl_fix or tie_off violation |
 
 ---
 
@@ -70,14 +71,14 @@ If `p4 edit` fails (file not in depot or already open), log the warning but cont
 
 ## Step 4: Apply Fixes
 
-### For CDC/RDC and SPG_DFT — Constraint Fixes Only
+### For CDC/RDC — Constraint Fixes AND RTL Fixes
 
-From the consolidated JSON, process only `fix_type: constraint` entries. Skip `rtl_fix` and `investigate`.
+#### 4a: Constraint fixes (`fix_type: constraint`)
 
-For each constraint fix:
-1. Read the current target file
-2. Check if the constraint is already present (string match) — skip if duplicate
-3. Append to the end of the file under a dated comment block:
+From the consolidated JSON, process all `fix_type: constraint` entries:
+1. Read the constraint file
+2. Check if already present (string match) — skip if duplicate
+3. Append to end of file under a dated comment block:
 
 ```tcl
 # === Auto-applied by analyze-fixer Round <round> [<tag>] ===
@@ -88,8 +89,40 @@ For each constraint fix:
 
 Use the Edit tool to append (old_string = last line of file, new_string = last line + new block).
 
-For `rtl_fix` entries: do NOT apply — log them in output JSON as `manual_rtl_fixes_pending`.
-For `investigate` entries: do NOT apply — log them as `requires_investigation`.
+#### 4b: RTL fixes (`fix_type: rtl_fix`)
+
+From the consolidated JSON, process all `fix_type: rtl_fix` entries:
+1. Read the RTL file at path specified in `rtl_file`
+2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>`
+3. Run `p4 edit <rtl_file>`
+4. Check if `fix_action` lines already exist in the file — skip if duplicate
+5. Insert `fix_action` code block after line `insert_after_line` using the Edit tool
+6. If `fix_action` is vague/ambiguous (no exact RTL code) → log as `requires_investigation` — do NOT guess
+7. Log the change in output JSON
+
+**Comment wrapper for RTL insertions:**
+```verilog
+// === Auto-applied by analyze-fixer Round <round> [<tag>] ===
+<fix_action lines>
+// ============================================================
+```
+
+#### 4c: Investigate entries (`fix_type: investigate`)
+
+Do NOT apply — log them in `requires_investigation` list in output JSON.
+The orchestrator will spawn a Deep-Dive Agent for each investigate item.
+
+### For SPG_DFT — Constraint Fixes Only
+
+From the consolidated JSON, process only `fix_type: constraint` entries. Skip `rtl_fix` and `investigate`.
+
+For each constraint fix:
+1. Read the current params file
+2. Check if already present (string match) — skip if duplicate
+3. Append under a dated comment block (same format as CDC/RDC above)
+
+For `rtl_fix` entries: log as `manual_rtl_fixes_pending`.
+For `investigate` entries: log as `requires_investigation`.
 
 ### For Lint — RTL Fixes and Tie-offs
 
@@ -147,12 +180,32 @@ Where `<check_type_short>`:
   "rtl_fixes_applied": <count>,
   "tie_offs_applied": <count>,
   "library_entries_added": <count>,
+  "deep_dive_pending": <count>,
   "applied": [
     {
       "fix_type": "constraint",
       "target_file": "<path>",
       "fix_action": "<tcl command>",
       "resolves_violations": ["no_sync_xxx", "no_sync_yyy"]
+    },
+    {
+      "fix_type": "rtl_fix",
+      "target_file": "<rtl_file_path>",
+      "fix_action": "<exact RTL lines inserted>",
+      "insert_after_line": 88,
+      "resolves_violations": ["no_sync_yyy"]
+    }
+  ],
+  "requires_investigation": [
+    {
+      "index": 1,
+      "signal": "<signal_name>",
+      "check_type": "<check_type>",
+      "investigation_context": "<specific what-to-investigate description from rtl_fix_action>",
+      "ref_dir": "<ref_dir>",
+      "ip": "<ip>",
+      "tag": "<tag>",
+      "base_dir": "<base_dir>"
     }
   ],
   "manual_rtl_fixes_pending": [
@@ -163,14 +216,9 @@ Where `<check_type_short>`:
       "suggested_fix": "<description of what to add>"
     }
   ],
-  "requires_investigation": [
-    {
-      "signal": "<signal_name>",
-      "reason": "<why it needs investigation>"
-    }
-  ],
   "files_modified": [
     "<path_to_constraint_file>",
+    "<path_to_rtl_file>",
     "<path_to_liblist_file>"
   ],
   "backups_created": [
@@ -186,10 +234,11 @@ Where `<check_type_short>`:
 ## Notes
 
 - **ZERO WAIVERS across all check types** — no CDC waivers, no lint waivers, no SPG_DFT waivers
-- For CDC/RDC: only apply `constraint` type fixes (`netlist constant`, `netlist clock`, `cdc custom sync`, `netlist port domain`)
+- For CDC/RDC: apply both `constraint` AND `rtl_fix` — `investigate` items are logged for Deep-Dive Agent
 - For Lint: apply both `rtl_fix` AND `tie_off` directly to RTL source — do NOT touch `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
-- For SPG_DFT: only apply `constraint` type fixes to `project.params`
+- For SPG_DFT: only apply `constraint` type fixes to `project.params` — log `rtl_fix` and `investigate`
 - Always check for duplicates before applying any fix
 - Always backup before editing: `cp <file> <file>.bak_<tag>` (once per file per round)
 - Always `p4 edit <file>` before modifying
-- If `fix_action` is vague or ambiguous for lint, log as `requires_manual_review` — do NOT guess
+- If `fix_action` is vague or ambiguous, log as `requires_investigation` — do NOT guess
+- `requires_investigation` list in output JSON is read by orchestrator to spawn Deep-Dive Agents — include full context (signal, investigation_context, ref_dir, ip, tag, base_dir)

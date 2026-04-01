@@ -36,8 +36,35 @@ Before recommending any fix, you MUST answer these questions:
 - `tag`: Task tag (e.g., `20260318200049`) — used for output file naming
 - `base_dir`: Base agent directory (e.g., `/proj/.../main_agent`) — used for output file path
 - `violation_index`: Sequential index N (1, 2, 3…) assigned by orchestrator for this violation instance
+- `fix_history`: Object containing fixes attempted in previous rounds for signals in this batch (empty `{}` if Round 1)
 
 ## Analysis Per Violation
+
+### Step 0: Check Fix History (CRITICAL for Round > 1)
+
+If `fix_history` is non-empty, before analyzing any violation:
+
+1. For each signal in `fix_history`, check what was previously attempted:
+   - `fix_type`: what type of fix was tried (`constraint`, `rtl_fix`)
+   - `fix_action`: the exact constraint or RTL line that was applied
+   - `status`: `applied` (fix was written to file) or `failed` (could not apply)
+   - `round`: which round it was tried
+
+2. Use this history to **avoid repeating failed fixes** and **escalate if needed**:
+   - If a `constraint` was applied in Round N but the violation still appears in Round N+1 → the constraint is incorrect or the tool needs a different constraint type. Recommend a different approach.
+   - If a `rtl_fix` was applied but the violation persists → investigate more deeply.
+   - If a signal has 2+ failed fix attempts → always use `investigate`, explain the history.
+
+3. For signals NOT in fix_history (new violations or first round) → analyze normally.
+
+**Example fix_history format:**
+```json
+{
+  "umc_top.umcdat.cfg_enable": [
+    {"round": 1, "fix_type": "constraint", "fix_action": "netlist constant umc_top.umcdat.cfg_enable -value 0", "status": "applied"}
+  ]
+}
+```
 
 For each violation from violation_extractor:
 
@@ -135,9 +162,18 @@ BAD:  "Signal crosses from clk_a to clk_b without synchronizer."
 
 ### Step 7: Recommend Fix Based on WHY
 Based on your root cause analysis:
-- **RTL fix**: If it's a real bug (frequent toggling, no valid reason for missing sync) — add synchronizer in RTL
-- **Constraint**: If tool needs hints (quasi-static signal → `netlist constant`, related clocks → `netlist clock`, unrecognized sync cell → `cdc custom sync`)
-- **Investigate**: If more information is needed before recommending a fix
+
+- **RTL fix** (`rtl_fix`): If it's a real bug (frequent toggling, no valid reason for missing sync) — add synchronizer in RTL.
+  - `fix_action` MUST be **exact RTL lines** to insert (e.g., the complete synchronizer instantiation block)
+  - Also provide: `rtl_file` (exact path), `insert_after_line` (line number), `insert_description` (brief rationale)
+  - Look at existing synchronizer instantiations in the file to determine the correct tech cell to use
+  - If you cannot produce exact RTL (e.g., sync cell unknown, hierarchy unclear) → use `investigate` instead
+
+- **Constraint** (`constraint`): If tool needs hints — quasi-static signal → `netlist constant`, related clocks → `netlist clock`, unrecognized sync cell → `cdc custom sync`
+
+- **Investigate** (`investigate`): If parent module context is needed, or the correct fix cannot be safely determined from this RTL file alone.
+  - `fix_action` MUST describe **specifically what to investigate** (e.g., "Check parent module umcdat_top instantiation of umcdat_core — need to verify whether cfg_enable is gated before being passed to this module")
+  - Do NOT use vague descriptions like "investigate further" — be specific about WHAT to look at and WHY
 
 **IMPORTANT: Do NOT recommend waivers. Target is zero waivers. Every violation must be resolved with an RTL fix or a proper constraint.**
 
@@ -150,34 +186,62 @@ Return analysis with:
 | Field | Description |
 |-------|-------------|
 | **signal_name** | Full hierarchical signal path |
-| **rtl_file:line** | Where signal is declared/used |
+| **rtl_file** | RTL file path (without line number) |
+| **rtl_file_line** | Line number where signal is declared/used |
 | **src_clock** | Source clock domain (from RTL) |
 | **dst_clock** | Destination clock domain (from RTL) |
 | **signal_purpose** | What does this signal do? (control/data/config/status) |
 | **signal_behavior** | Toggles frequently? Quasi-static? Pulse? |
 | **why_no_sync** | **CRITICAL: Clear explanation of WHY no synchronizer exists** |
 | **risk_level** | HIGH/MEDIUM/LOW with justification |
-| **sync_exists** | Yes/No - if yes, where? |
-| **fix_type** | rtl_fix / constraint / investigate |
-| **fix_action** | Specific command or code |
+| **sync_exists** | true/false - if true, where? |
+| **fix_type** | `rtl_fix` / `constraint` / `investigate` |
+| **fix_action** | Exact RTL lines (rtl_fix), exact TCL command (constraint), or specific investigation task (investigate) |
 | **fix_justification** | WHY this fix is appropriate |
+| **insert_after_line** | (rtl_fix only) Line number to insert after |
+| **insert_description** | (rtl_fix only) Brief placement rationale |
 
-### Example Good Output:
+### Example — constraint fix:
 
 ```json
 {
   "signal_name": "umc_top.umcdat.cfg_enable",
-  "rtl_file": "src/rtl/umcdat/umcdat_ctrl.sv:145",
+  "rtl_file": "src/rtl/umcdat/umcdat_ctrl.sv",
+  "rtl_file_line": 145,
   "src_clock": "cfg_clk (from always @(posedge cfg_clk) at line 142)",
   "dst_clock": "core_clk (from always @(posedge core_clk) at line 210)",
-  "signal_purpose": "Enable signal for data path, controls whether umcdat processes transactions",
+  "signal_purpose": "Enable signal for data path",
   "signal_behavior": "Set once by firmware at init, remains stable during operation",
-  "why_no_sync": "Designer treated this as quasi-static configuration. Signal is written during block reset sequence and never changes during normal operation. No synchronizer was added because metastability window is covered by reset timing.",
-  "risk_level": "LOW - signal is stable when sampled, no functional risk",
+  "why_no_sync": "Designer treated this as quasi-static configuration. Signal only changes during block reset sequence.",
+  "risk_level": "LOW - signal is stable when sampled",
   "sync_exists": false,
   "fix_type": "constraint",
-  "fix_action": "netlist constant <signal_path> -value 0",
-  "fix_justification": "Signal is quasi-static — use netlist constant constraint to inform the CDC tool it is stable during operation. No waiver — target is zero waivers."
+  "fix_action": "netlist constant umc_top.umcdat.cfg_enable -value 0",
+  "fix_justification": "Signal is quasi-static — netlist constant tells CDC tool it is stable during operation.",
+  "insert_after_line": null,
+  "insert_description": null
+}
+```
+
+### Example — rtl_fix (synchronizer insertion):
+
+```json
+{
+  "signal_name": "umc_top.umcdat.req_pulse",
+  "rtl_file": "src/rtl/umcdat/umcdat_core.sv",
+  "rtl_file_line": 88,
+  "src_clock": "clk_a",
+  "dst_clock": "clk_b",
+  "signal_purpose": "Request pulse crossing clock domains — toggles frequently during operation",
+  "signal_behavior": "Pulses on every transaction — NOT quasi-static",
+  "why_no_sync": "Designer oversight — req_pulse drives logic in clk_b domain directly with no synchronizer.",
+  "risk_level": "HIGH - metastability risk on every transaction",
+  "sync_exists": false,
+  "fix_type": "rtl_fix",
+  "fix_action": "SDFSYNC4 u_sync_req_pulse (\n  .D   (req_pulse),\n  .CP  (clk_b),\n  .SDI (1'b0),\n  .SE  (1'b0),\n  .Q   (req_pulse_sync)\n);",
+  "fix_justification": "req_pulse toggles frequently. Two-flop synchronizer SDFSYNC4 matches existing sync cells in this file (see line 55 for pattern). req_pulse_sync replaces req_pulse in clk_b domain logic.",
+  "insert_after_line": 88,
+  "insert_description": "Insert after req_pulse declaration. Change consumers of req_pulse in clk_b domain to use req_pulse_sync."
 }
 ```
 
@@ -186,18 +250,19 @@ Return analysis with:
 ```json
 {
   "signal_name": "cfg_enable",
-  "why_no_sync": "Missing synchronizer",  // TOO VAGUE - doesn't explain WHY
-  "fix_type": "rtl_fix"  // No justification
+  "why_no_sync": "Missing synchronizer",
+  "fix_type": "rtl_fix",
+  "fix_action": "Add synchronizer"
 }
 ```
 
 ## Fix Types
 
-| Type | When |
-|------|------|
-| `rtl_fix` | Real bug — add synchronizer or fix RTL |
-| `constraint` | Tool needs hint — quasi-static (`netlist constant`), related clocks (`netlist clock`), unrecognized sync cell (`cdc custom sync`) |
-| `investigate` | Need more info before recommending fix |
+| Type | When | fix_action must be |
+|------|------|--------------------|
+| `rtl_fix` | Real bug — add synchronizer or fix RTL. Driver known and exact RTL determinable. | Exact RTL lines to insert (complete instantiation block) |
+| `constraint` | Tool needs hint — quasi-static, related clocks, unrecognized sync cell | Exact TCL command(s) |
+| `investigate` | Parent context needed, hierarchy unclear, or exact fix cannot be safely determined | Specific description of WHAT to investigate and WHY |
 
 **NOTE: `waiver` is NOT a valid fix type. Target is zero waivers. Do not recommend waivers under any circumstance.**
 

@@ -255,6 +255,8 @@ Also creates: `data/<tag>_analyze` with the same info.
 
 ### Lint Flow
 
+**One RTL analyzer agent per unique RTL file — handles ALL violations in that file in one pass.**
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    ORCHESTRATOR                                  │
@@ -265,19 +267,22 @@ Also creates: `data/<tag>_analyze` with the same info.
               │ 1. Lint Violation       │ (sonnet, medium)
               │    Extractor            │
               │    lint/violation_      │
-              │    - Parse unwaived     │
+              │    - Parse ALL unwaived │
               │    - Filter RSMU/DFT    │
+              │    - Group by RTL file  │
               └────────────┬────────────┘
-                           │
+                           │ violations_by_file: {file1: [...], file2: [...], ...}
          ┌─────────────────┼─────────────────┐
          ▼                 ▼                 ▼
   ┌────────────┐    ┌────────────┐    ┌────────────┐
   │ Lint RTL   │    │ Lint RTL   │    │ Lint RTL   │
   │ Analyzer   │    │ Analyzer   │    │ Analyzer   │
-  │ (viol 1)   │    │ (viol 2)   │    │ (viol N)   │
-  │ lint/rtl_  │    │ lint/rtl_  │    │ lint/rtl_  │
+  │ (file 1)   │    │ (file 2)   │    │ (file N)   │
+  │ ALL viols  │    │ ALL viols  │    │ ALL viols  │
+  │ in file 1  │    │ in file 2  │    │ in file N  │
   │ (sonnet)   │    │ (sonnet)   │    │ (sonnet)   │
   └────────────┘    └────────────┘    └────────────┘
+         152 violations across 15 files = 15 agents (not 152)
 ```
 
 ### SpgDFT Flow
@@ -416,7 +421,7 @@ The report compiler reads from these files — NOT from context.**
 | SpgDFT Extractor | `data/<tag>_extractor_spgdft.json` |
 | CDC RTL Analyzer (violation N) | `data/<tag>_rtl_cdc_<N>.json` |
 | RDC RTL Analyzer (violation N) | `data/<tag>_rtl_rdc_<N>.json` |
-| Lint RTL Analyzer (violation N) | `data/<tag>_rtl_lint_<N>.json` |
+| Lint RTL Analyzer (file N) | `data/<tag>_rtl_lint_<N>.json` (N = file index, contains ALL violations for that file) |
 | SpgDFT RTL Analyzer (violation N) | `data/<tag>_rtl_spgdft_<N>.json` |
 | Fix Consolidator (CDC) | `data/<tag>_consolidated_cdc.json` |
 | Fix Consolidator (RDC) | `data/<tag>_consolidated_rdc.json` |
@@ -630,9 +635,38 @@ Task(
   [contents from cdc_rdc/rtl_analyzer.md]
   """
 )
-# Repeat with model="haiku" for RDC:   output → data/<tag>_rtl_rdc_<N>.json
-# Repeat with model="sonnet" for Lint:  output → data/<tag>_rtl_lint_<N>.json
-# Repeat with model="sonnet" for SpgDFT: output → data/<tag>_rtl_spgdft_<N>.json
+# Repeat with model="haiku" for RDC:   output → data/<tag>_rtl_rdc_<N>.json   (N = violation index)
+# Repeat with model="sonnet" for SpgDFT: output → data/<tag>_rtl_spgdft_<N>.json (N = violation index)
+
+# For Lint: one agent per UNIQUE RTL FILE (not per violation):
+Task(
+  description="Lint RTL Analyzer - file N (<rtl_filename>)",
+  subagent_type="general-purpose",
+  model="sonnet",
+  prompt="""**PERMISSIONS - READ THIS FIRST:**
+  You have FULL READ ACCESS to all files under /proj/.
+  Do NOT ask for permission - just read files directly using the Read tool.
+
+  **OUTPUT STORAGE:**
+  Write your JSON findings to: <base_dir>/data/<tag>_rtl_lint_<N>.json
+  Use the Write tool to save. Do NOT just return results in text.
+
+  You are the Lint RTL Analyzer Agent.
+
+  Input:
+  - tag: <tag>
+  - base_dir: <base_dir>
+  - ref_dir: <ref_dir>
+  - ip: <ip>
+  - rtl_file: <rtl_file_path>                    ← one specific RTL file
+  - violations: <list of all violations in this file from violations_by_file[rtl_file]>
+  - file_index: <N>
+
+  [contents from lint/rtl_analyzer.md]
+  """
+)
+# Spawn one such agent per entry in violations_by_file — all in PARALLEL
+# e.g., 152 violations across 15 files → spawn 15 agents simultaneously
 ```
 
 **For Library Finder:**
@@ -754,6 +788,7 @@ Also read the clock port from the instantiation's port connections (`.CP(...)`, 
    │ CDC RTL Analyzers       │ CDC focus_violations == 0                 │
    │ RDC RTL Analyzers       │ RDC focus_violations == 0                 │
    │ Lint RTL Analyzers      │ Lint focus_violations == 0                │
+   │ (one per RTL file)      │ (skip entire lint RTL analysis if clean)  │
    │ SpgDFT RTL Analyzers    │ SpgDFT focus_violations == 0             │
    │ CDC/RDC Precondition    │ NEVER skip                                │
    │ SpgDFT Precondition     │ NEVER skip                                │
@@ -765,7 +800,7 @@ Also read the clock port from the instantiation's port connections (`.CP(...)`, 
 3. Spawn whichever RTL analyzer agents are NOT skipped (in PARALLEL)
    - CDC: up to 5 violations in parallel
    - RDC: up to 5 violations in parallel
-   - Lint: up to N violations in parallel
+   - Lint: one agent per unique RTL file (all violations in that file handled by one agent)
    - SpgDFT: up to N violations in parallel
    - Library Finder: 1 agent (if unresolved/blackbox > 0)
 
@@ -1182,11 +1217,38 @@ FIXER_ROUND=<N>
 
 ```
 Round N:
-  ├── STEP 1: Run analyze pipeline (same as ANALYZE_MODE_ENABLED)
+  ├── STEP 0: Build fix history (if Round N > 1)
+  │     Read: data/<tag>_fixer_state → get parent_tag
+  │     Trace back ALL previous rounds using parent_tag chain:
+  │       Round 1 tag → Round 2 tag → ... → Round N-1 tag
+  │     For each previous round, read: data/<prev_tag>_fix_applied_<check_type>.json
+  │     Build fix_history object:
+  │       {
+  │         "<signal_or_file>": [
+  │           {
+  │             "round": 1,
+  │             "tag": "<prev_tag>",
+  │             "fix_type": "tie_off",
+  │             "fix_action": "assign Tdr_data_out = 8'b0;",
+  │             "status": "applied"       ← or "skipped_duplicate" / "requires_manual_review"
+  │           }
+  │         ]
+  │       }
+  │     Pass fix_history into EVERY RTL analyzer agent prompt (see Step 1 below)
+  │     If Round 1: fix_history = {} (empty)
+  │
+  ├── STEP 1: Run analyze pipeline
   │     ├── If SKIP_MONITORING not set: spawn background monitor, wait for task completion
   │     ├── Precondition agent (CDC/RDC, SPG_DFT only)
   │     ├── Violation extractor agent
-  │     ├── RTL analyzer agents (parallel, by module)
+  │     ├── RTL analyzer agents (parallel, by file/module) ← include fix_history in prompt
+  │     │     For each agent, add to prompt:
+  │     │       fix_history: <fix_history entries relevant to this file/signal>
+  │     │       If a violation's signal appears in fix_history:
+  │     │         → Note "previously attempted: <fix_action> in Round <N>"
+  │     │         → If violation still persists: reason WHY fix did not resolve it
+  │     │         → Recommend a DIFFERENT approach (do not repeat the same fix)
+  │     │         → If two rounds have failed: recommend investigate
   │     ├── Library finder agent (if unresolved modules > 0)
   │     └── Fix consolidator agent
   │
@@ -1194,10 +1256,24 @@ Round N:
   │     Read: config/analyze_agents/shared/fix_implementor.md
   │     Inputs: tag, check_type, ref_dir, ip, base_dir, round=N
   │     Applies: constraints to project.0in_ctrl.v.tcl (CDC/RDC)
+  │              rtl_fix to src/rtl/**/*.sv (CDC/RDC and Lint)
+  │              tie_off to src/rtl/**/*.sv (Lint)
   │              constraints to project.params (SPG_DFT)
-  │              RTL fixes to src/rtl/**/*.sv (Lint)
   │              library entries to umc_top_lib.list (if needed)
+  │     Logs:   investigate items → requires_investigation list
   │     Output: data/<tag>_fix_applied_<check_type>.json
+  │
+  ├── STEP 2b: Spawn Deep-Dive agents for investigate items
+  │     Read: data/<tag>_fix_applied_<check_type>.json → get requires_investigation list
+  │     If requires_investigation is non-empty:
+  │       For each item (index N), spawn ONE Deep-Dive Agent in parallel:
+  │         Read: config/analyze_agents/shared/deep_dive_agent.md
+  │         Inputs: index=N, signal, investigation_context, check_type, ref_dir, ip, tag, base_dir, round
+  │         Agent researches hierarchy, determines concrete fix, applies it directly
+  │         Output: data/<tag>_deepdive_<N>.json
+  │       Wait for all deep-dive agents to complete
+  │       Sum deep_dive_applied = count of deepdive JSONs where fix_applied=true
+  │     Else: deep_dive_applied = 0
   │
   ├── STEP 3: Compile round report
   │     Read: all agent JSON outputs + fix_applied JSON
@@ -1225,9 +1301,9 @@ Round N:
         1. CLEAN: focus_violations == 0
            → Go to FINAL SUMMARY with result=CLEAN
 
-        2. STALLED: constraints_applied == 0 AND rtl_fixes_applied == 0 AND tie_offs_applied == 0
-           → No new fixes were applied this round — remaining violations are not
-             auto-fixable (all investigate or ambiguous rtl_fix type)
+        2. STALLED: constraints_applied == 0 AND rtl_fixes_applied == 0 AND tie_offs_applied == 0 AND deep_dive_applied == 0
+           → No new fixes were applied this round (including deep-dive) — remaining
+             violations are not auto-fixable (all unresolved investigate items)
            → Do NOT rerun — it would produce the same result
            → Go to FINAL SUMMARY with result=STALLED
 
