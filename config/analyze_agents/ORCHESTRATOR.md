@@ -360,7 +360,22 @@ Each recipient gets 3 emails in their inbox, one per check type.
 
 ## Monitoring Agent
 
-Spawn ONE foreground agent to monitor task completion. The orchestrator blocks on this Task call — all polling/sleeping happens inside the monitor agent, not in the orchestrator itself.
+### ⛔ FORBIDDEN — DO NOT DO ANY OF THESE:
+```
+❌ Bash(ps -p <PID> ...)
+❌ Bash(python3 -c "import time, os, sys ...")
+❌ Bash(sleep 30 ...)
+❌ Bash(python3 script/genie_cli.py --status ...)
+❌ Bash(cat data/<tag>_pid ...)
+❌ Bash(while true; do ... done)
+❌ Any bash polling loop of any kind
+```
+
+**If you find yourself writing ANY of the above — STOP. You are doing it wrong.**
+
+### ✅ CORRECT — ONLY DO THIS:
+
+Spawn ONE Task agent (haiku, foreground). The orchestrator blocks on this single Task call. The monitor agent does all ps/sleep/cat internally.
 
 ```python
 Task tool:
