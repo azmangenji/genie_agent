@@ -1577,6 +1577,32 @@ class GenieCLI:
         tag = self.generate_tag()
         arguementInfo['tag'] = tag
 
+        # Special handler: analyze_fixer_only — no script to run, just create _analyze and signal (fixer mode)
+        if script.startswith('analyze_fixer_only'):
+            ref_dir_raw = arguementInfo.get('refDir', '')
+            ref_dir = ref_dir_raw.replace('refDir:', '').strip(':') if ref_dir_raw != 'refDir' else ''
+            ip_raw = arguementInfo.get('ip', '')
+            ip = ip_raw.replace('ip:', '').strip(':') if ip_raw != 'ip' else ''
+            check_type_raw = arguementInfo.get('checkType', '')
+            check_type = check_type_raw.replace('checkType:', '').strip(':') if check_type_raw != 'checkType' else 'cdc_rdc'
+
+            analyze_flag_file = os.path.join(self.base_dir, 'data', f'{tag}_analyze')
+            os.makedirs(os.path.join(self.base_dir, 'data'), exist_ok=True)
+            with open(analyze_flag_file, 'w') as f:
+                f.write(f"check_type={check_type}\n")
+                f.write(f"ref_dir={ref_dir}\n")
+                f.write(f"ip={ip}\n")
+                f.write(f"log_file={self.base_dir}/runs/{tag}.log\n")
+                f.write(f"spec_file={self.base_dir}/data/{tag}_spec\n")
+                f.write(f"fixer_mode=true\n")
+
+            return {
+                'tag': tag,
+                'analyze_only': True,
+                'analyze_fixer_only': True,
+                'args': arguementInfo,
+            }
+
         # Special handler: analyze_only — no script to run, just create _analyze and signal
         if script.startswith('analyze_only'):
             ref_dir_raw = arguementInfo.get('refDir', '')
@@ -3799,6 +3825,8 @@ Examples:
                         help='Skip running static check — analyze existing results for TAG directly (no monitoring step)')
     parser.add_argument('--analyze-fixer', action='store_true',
                         help='Analyze-fixer mode: analyze violations, auto-apply constraint fixes, rerun check — loops until clean (max 5 rounds)')
+    parser.add_argument('--analyze-fixer-only', type=str, metavar='TAG',
+                        help='Skip running check — run analyze-fixer on existing results for TAG directly (no monitoring step)')
     parser.add_argument('--setup-user', action='store_true',
                         help='Setup user-specific directory for multi-user environment')
     parser.add_argument('--user-email', type=str, metavar='EMAIL',
@@ -3863,6 +3891,69 @@ Examples:
         print(f"IP={ip}")
         print(f"LOG_FILE={log_file}")
         print(f"SPEC_FILE={spec_file}")
+        print("SKIP_MONITORING=true")
+        print("=" * 70)
+        return
+
+    # Handle --analyze-fixer-only: emit ANALYZE_FIXER_MODE_ENABLED for existing results, skip monitoring
+    if args.analyze_fixer_only:
+        tag = args.analyze_fixer_only
+        analyze_file     = os.path.join(cli.base_dir, 'data', f'{tag}_analyze')
+        spec_file        = os.path.join(cli.base_dir, 'data', f'{tag}_spec')
+        fixer_state_file = os.path.join(cli.base_dir, 'data', f'{tag}_fixer_state')
+
+        check_type = ref_dir = ip = log_file = ''
+        if os.path.exists(analyze_file):
+            with open(analyze_file) as f:
+                for line in f:
+                    k, _, v = line.strip().partition('=')
+                    if k == 'check_type': check_type = v
+                    elif k == 'ref_dir':  ref_dir   = v
+                    elif k == 'ip':       ip        = v
+                    elif k == 'log_file': log_file  = v
+
+        if not ref_dir and os.path.exists(spec_file):
+            with open(spec_file) as f:
+                for line in f:
+                    if line.startswith('Tree Path:') or line.startswith('Tree:'):
+                        ref_dir = line.split(':', 1)[1].strip()
+                        break
+
+        if not tag or (not os.path.exists(analyze_file) and not os.path.exists(spec_file)):
+            print(f"ERROR: No analyze or spec file found for tag '{tag}'")
+            print(f"  Looked for: {analyze_file}")
+            print(f"          or: {spec_file}")
+            sys.exit(1)
+
+        if not log_file:
+            log_file = os.path.join(cli.base_dir, 'runs', f'{tag}.log')
+
+        # Write fixer_state for round 1
+        os.makedirs(os.path.join(cli.base_dir, 'data'), exist_ok=True)
+        with open(fixer_state_file, 'w') as f:
+            f.write(f"original_ref_dir={ref_dir}\n")
+            f.write(f"original_ip={ip}\n")
+            f.write(f"original_check_type={check_type}\n")
+            f.write(f"original_instruction=analyze-fixer-only {tag}\n")
+            f.write(f"round=1\n")
+            f.write(f"max_rounds=5\n")
+            f.write(f"parent_tag=\n")
+
+        print(f"Analyze-fixer-only mode for tag: {tag}")
+        print(f"  check_type : {check_type or '(unknown)'}")
+        print(f"  ref_dir    : {ref_dir or '(unknown)'}")
+        print(f"  ip         : {ip or '(unknown)'}")
+        print()
+        print("=" * 70)
+        print("ANALYZE_FIXER_MODE_ENABLED")
+        print(f"TAG={tag}")
+        print(f"CHECK_TYPE={check_type}")
+        print(f"REF_DIR={ref_dir}")
+        print(f"IP={ip}")
+        print(f"LOG_FILE={log_file}")
+        print(f"SPEC_FILE={spec_file}")
+        print("MAX_ROUNDS=5")
+        print("FIXER_ROUND=1")
         print("SKIP_MONITORING=true")
         print("=" * 70)
         return
@@ -4377,20 +4468,42 @@ Examples:
         print()
         print("=" * 70)
 
-        # analyze_only instruction: emit ANALYZE_MODE_ENABLED immediately, skip monitoring
+        # analyze_only / analyze_fixer_only instruction: emit signal immediately, skip monitoring
         if result.get('analyze_only'):
             tag = result.get('tag', '')
-            check_type = result.get('args', {}).get('checkType', '').replace('checkType:', '').strip(':') or 'full_static_check'
+            check_type = result.get('args', {}).get('checkType', '').replace('checkType:', '').strip(':') or 'cdc_rdc'
             ref_dir = result.get('args', {}).get('refDir', '').replace('refDir:', '').strip(':')
             ip = result.get('args', {}).get('ip', '').replace('ip:', '').strip(':')
-            print("ANALYZE_MODE_ENABLED")
-            print(f"TAG={tag}")
-            print(f"CHECK_TYPE={check_type}")
-            print(f"REF_DIR={ref_dir}")
-            print(f"IP={ip}")
-            print(f"LOG_FILE={cli.base_dir}/runs/{tag}.log")
-            print(f"SPEC_FILE={cli.base_dir}/data/{tag}_spec")
-            print("SKIP_MONITORING=true")
+            if result.get('analyze_fixer_only'):
+                # Write fixer_state for round 1
+                fixer_state_file = os.path.join(cli.base_dir, 'data', f'{tag}_fixer_state')
+                with open(fixer_state_file, 'w') as f:
+                    f.write(f"original_ref_dir={ref_dir}\n")
+                    f.write(f"original_ip={ip}\n")
+                    f.write(f"original_check_type={check_type}\n")
+                    f.write(f"original_instruction=fix {check_type} at {ref_dir} for {ip}\n")
+                    f.write(f"round=1\n")
+                    f.write(f"max_rounds=5\n")
+                    f.write(f"parent_tag=\n")
+                print("ANALYZE_FIXER_MODE_ENABLED")
+                print(f"TAG={tag}")
+                print(f"CHECK_TYPE={check_type}")
+                print(f"REF_DIR={ref_dir}")
+                print(f"IP={ip}")
+                print(f"LOG_FILE={cli.base_dir}/runs/{tag}.log")
+                print(f"SPEC_FILE={cli.base_dir}/data/{tag}_spec")
+                print("MAX_ROUNDS=5")
+                print("FIXER_ROUND=1")
+                print("SKIP_MONITORING=true")
+            else:
+                print("ANALYZE_MODE_ENABLED")
+                print(f"TAG={tag}")
+                print(f"CHECK_TYPE={check_type}")
+                print(f"REF_DIR={ref_dir}")
+                print(f"IP={ip}")
+                print(f"LOG_FILE={cli.base_dir}/runs/{tag}.log")
+                print(f"SPEC_FILE={cli.base_dir}/data/{tag}_spec")
+                print("SKIP_MONITORING=true")
             print("=" * 70)
             return
 

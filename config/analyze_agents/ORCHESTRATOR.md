@@ -1225,9 +1225,9 @@ Round N:
         1. CLEAN: focus_violations == 0
            → Go to FINAL SUMMARY with result=CLEAN
 
-        2. STALLED: constraints_applied == 0 AND rtl_fixes_applied == 0
+        2. STALLED: constraints_applied == 0 AND rtl_fixes_applied == 0 AND tie_offs_applied == 0
            → No new fixes were applied this round — remaining violations are not
-             auto-fixable (all rtl_fix or investigate type)
+             auto-fixable (all investigate or ambiguous rtl_fix type)
            → Do NOT rerun — it would produce the same result
            → Go to FINAL SUMMARY with result=STALLED
 

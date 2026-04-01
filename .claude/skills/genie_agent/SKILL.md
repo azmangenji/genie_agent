@@ -103,6 +103,7 @@ The agent runs from the current `main_agent` directory (your working directory).
 | `--analyze` | `-a` | Claude Code monitors task and analyzes results (static checks only) |
 | `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
 | `--analyze-fixer` | | Analyze + auto-apply constraint fixes + rerun loop until clean (max 5 rounds) |
+| `--analyze-fixer-only TAG` | | Skip running check — run analyze-fixer on existing results for TAG directly |
 
 ## Execution Modes
 
@@ -116,6 +117,7 @@ The agent supports three execution modes:
 | **Analyze Mode** | `--execute --analyze` | Claude Code monitors and analyzes results |
 | **Analyze-Only** | `--analyze-only <tag>` | Skip run — analyze existing results directly |
 | **Analyze-Fixer** | `--execute --analyze-fixer` | Analyze → auto-fix → rerun loop until violations = 0 |
+| **Analyze-Fixer-Only** | `--analyze-fixer-only <tag>` | Skip run — analyze-fixer on existing results directly |
 
 **When to use xterm mode:**
 - Visual monitoring of long-running tasks
@@ -272,6 +274,18 @@ SYN_VF_FILE = /proj/xxx/umc_top.vf :>" --execute --xterm --email
 Or use `--analyze-only <tag>` directly when you know the tag:
 ```bash
 python3 script/genie_cli.py --analyze-only 20260330201659
+```
+
+### Analyze-Fixer on Existing Results (No Re-run)
+- `fix cdc_rdc at <directory> for <ip>` - Analyze-fixer on existing CDC/RDC results
+- `fix lint at <directory> for <ip>` - Analyze-fixer on existing lint results
+- `fix spg_dft at <directory> for <ip>` - Analyze-fixer on existing SpgDFT results
+- `analyze and fix cdc_rdc at <directory> for <ip>` - Same as above
+- `fix violations at <directory> for <ip>` - Generic fix on existing results
+
+Or use `--analyze-fixer-only <tag>` directly:
+```bash
+python3 script/genie_cli.py --analyze-fixer-only 20260330201659
 ```
 
 ### RTL Analysis
@@ -559,14 +573,16 @@ The `--analyze-fixer` flag extends analyze mode by **automatically applying fixe
 ### Usage
 
 ```bash
-# Run CDC/RDC with analyze-fixer mode
+# Run + analyze-fixer (runs static check first, then loops)
 python3 script/genie_cli.py -i "run cdc_rdc at /proj/xxx for umc9_3" --execute --analyze-fixer --email
-
-# Run lint with analyze-fixer mode
 python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --analyze-fixer --email
-
-# Run SPG_DFT with analyze-fixer mode
 python3 script/genie_cli.py -i "run spg_dft at /proj/xxx for umc9_3" --execute --analyze-fixer --email
+
+# Analyze-fixer-only (skip re-running check — start fixer loop from existing results)
+python3 script/genie_cli.py --analyze-fixer-only <tag>
+python3 script/genie_cli.py -i "fix cdc_rdc at /proj/xxx for umc9_3" --execute
+python3 script/genie_cli.py -i "analyze and fix lint at /proj/xxx for umc9_3" --execute
+python3 script/genie_cli.py -i "fix violations at /proj/xxx for umc9_3" --execute
 ```
 
 ### How It Works

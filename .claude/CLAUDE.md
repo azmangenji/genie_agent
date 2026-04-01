@@ -47,6 +47,7 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 | `--analyze` | `-a` | Claude monitors and analyzes results (static checks) |
 | `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
 | `--analyze-fixer` | | Analyze + auto-apply constraint fixes + rerun loop until clean (max 5 rounds) |
+| `--analyze-fixer-only TAG` | | Skip running check — run analyze-fixer on existing results for TAG directly |
 | `--list` | `-l` | List all available instructions |
 | `--status TAG` | `-s` | Check task status by tag |
 | `--tasks` | `-t` | List tasks: `running`, `today`, `yesterday`, `YYYY-MM-DD` |
@@ -63,6 +64,7 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 | **Analyze** | `--execute --analyze` | Claude monitors + analyzes results |
 | **Analyze-Only** | `--analyze-only <tag>` | Skip run — analyze existing results directly |
 | **Analyze-Fixer** | `--execute --analyze-fixer` | Analyze → auto-fix → rerun loop until violations = 0 |
+| **Analyze-Fixer-Only** | `--analyze-fixer-only <tag>` | Skip run — analyze-fixer on existing results directly |
 
 ### Examples
 
@@ -78,6 +80,11 @@ python3 script/genie_cli.py -i "run cdc_rdc at /proj/xxx for umc9_3" --execute -
 # With analyze-fixer (analyze + auto-apply fixes + rerun loop)
 python3 script/genie_cli.py -i "run cdc_rdc at /proj/xxx for umc9_3" --execute --analyze-fixer --email
 python3 script/genie_cli.py -i "run lint at /proj/xxx for umc9_3" --execute --analyze-fixer --email
+
+# Analyze-fixer on existing results (skip re-running the check)
+python3 script/genie_cli.py --analyze-fixer-only <tag>
+python3 script/genie_cli.py -i "fix cdc_rdc at /proj/xxx for umc9_3" --execute
+python3 script/genie_cli.py -i "analyze and fix lint at /proj/xxx for umc9_3" --execute
 
 # Analyze existing results (skip re-running the check)
 python3 script/genie_cli.py --analyze-only <tag>

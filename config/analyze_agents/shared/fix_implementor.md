@@ -91,21 +91,27 @@ Use the Edit tool to append (old_string = last line of file, new_string = last l
 For `rtl_fix` entries: do NOT apply — log them in output JSON as `manual_rtl_fixes_pending`.
 For `investigate` entries: do NOT apply — log them as `requires_investigation`.
 
-### For Lint — RTL Fixes
+### For Lint — RTL Fixes and Tie-offs
 
-From the consolidated JSON, process `fix_type: rtl_fix` entries.
+**ZERO WAIVERS for Lint.** Do NOT add entries to `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`. All violations must be fixed in RTL.
 
-For each RTL fix:
+From the consolidated JSON, process **both** `fix_type: rtl_fix` AND `fix_type: tie_off` entries. Skip `investigate`.
+
+For each `rtl_fix` or `tie_off` entry:
 1. Read the RTL file at the path specified in the fix
-2. Backup the file: `cp <rtl_file> <rtl_file>.bak_<tag>`
+2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>`
 3. Run `p4 edit <rtl_file>`
-4. Apply the RTL change using the Edit tool — make the minimal targeted change specified in `fix_action`
-5. Log the change in output JSON
+4. Apply the RTL change using the Edit tool:
+   - **`rtl_fix`**: Insert or correct the driver/connection as specified in `fix_action`
+   - **`tie_off`**: Insert the `assign` statement from `fix_action` (e.g., `assign Tdr_data_out = 8'b0;`) immediately after the signal declaration line
+5. Check for duplicates — if the `fix_action` line already exists in the file, skip it
+6. Log the change in output JSON
 
-**IMPORTANT for Lint RTL fixes:**
-- Make MINIMAL changes only — fix exactly what the lint violation points to
+**IMPORTANT:**
+- Make MINIMAL changes only — fix exactly what the violation points to
 - Do NOT refactor or restructure surrounding code
-- If the fix is ambiguous or risky, log as `requires_manual_review` instead of applying
+- If `fix_action` is ambiguous (e.g., "add connection" without specifying what to connect), log as `requires_manual_review` — do NOT guess
+- Each RTL file is backed up only ONCE per round even if multiple fixes apply to it
 
 ---
 
@@ -139,6 +145,7 @@ Where `<check_type_short>`:
   "round": <round>,
   "constraints_applied": <count>,
   "rtl_fixes_applied": <count>,
+  "tie_offs_applied": <count>,
   "library_entries_added": <count>,
   "applied": [
     {
@@ -178,10 +185,11 @@ Where `<check_type_short>`:
 
 ## Notes
 
-- NEVER add waivers (`cdc report crossing -severity waived`) — target is zero waivers
-- For CDC/RDC: only apply `constraint` type fixes (netlist constant, netlist clock, cdc custom sync, netlist port domain)
-- For Lint: apply `rtl_fix` directly to RTL source with backup
-- For SPG_DFT: only apply `constraint` type fixes to project.params
-- Always check for duplicates before appending
-- Always backup before editing
-- Always p4 edit before modifying
+- **ZERO WAIVERS across all check types** — no CDC waivers, no lint waivers, no SPG_DFT waivers
+- For CDC/RDC: only apply `constraint` type fixes (`netlist constant`, `netlist clock`, `cdc custom sync`, `netlist port domain`)
+- For Lint: apply both `rtl_fix` AND `tie_off` directly to RTL source — do NOT touch `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
+- For SPG_DFT: only apply `constraint` type fixes to `project.params`
+- Always check for duplicates before applying any fix
+- Always backup before editing: `cp <file> <file>.bak_<tag>` (once per file per round)
+- Always `p4 edit <file>` before modifying
+- If `fix_action` is vague or ambiguous for lint, log as `requires_manual_review` — do NOT guess

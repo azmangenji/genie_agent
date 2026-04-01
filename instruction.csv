@@ -72,3 +72,10 @@ could you analyze spg_dft at following directory,analyze_only $refDir $ip $check
 could you analyze full_static_check results at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
 could you analyze full_static_check at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
 could you analyze static check results at following directory,analyze_only $refDir $ip $checkType $tag,134,analyze,,,abinbaba@amd.com
+could you fix cdc_rdc at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
+could you fix lint at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
+could you fix spg_dft at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
+could you analyze and fix cdc_rdc at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
+could you analyze and fix lint at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
+could you analyze and fix spg_dft at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
+could you fix violations at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com

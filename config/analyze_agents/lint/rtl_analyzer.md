@@ -59,20 +59,22 @@ Read the file at specified line (offset -20, limit 50) to understand:
 
 **This is the key analysis step. Explain WHY:**
 
-| Scenario | WHY it happens | Risk Level |
-|----------|----------------|------------|
-| Designer oversight | New port added, forgot to connect | HIGH - RTL fix needed |
-| Generate disabled | Signal in `generate if (PARAM)` block, param is 0 | LOW - filter/waive |
-| DFT port | Port for scan/JTAG, not used in functional mode | LOW - tie off |
-| Debug port | Port for debug visibility, not driven internally | LOW - tie off |
-| Future use | Port reserved for future feature | MEDIUM - document or remove |
-| Parent drives it | Signal connected at parent hierarchy | LOW - verify and filter |
-| Legacy port | Kept for backward compatibility | LOW - filter or remove |
+| Scenario | WHY it happens | Risk Level | Fix |
+|----------|----------------|------------|-----|
+| Designer oversight | New port added, forgot to connect | HIGH | `rtl_fix` — add correct driver/connection |
+| Generate disabled | Signal in `generate if (PARAM)` block, param is 0 | LOW | `tie_off` — tie to safe constant |
+| DFT port | Port for scan/JTAG, not used in functional mode | LOW | `tie_off` — tie to 0 (DFT tools override at synthesis) |
+| Debug port | Port for debug visibility, not driven internally | LOW | `tie_off` — tie to 0 |
+| Future use | Port reserved for future feature | MEDIUM | `tie_off` — tie to 0 until implemented |
+| Parent drives it | Signal connected at parent hierarchy | LOW | `investigate` — verify parent connection first |
+| Legacy port | Kept for backward compatibility | LOW | `tie_off` — tie to 0, or `rtl_fix` to remove port |
 
-### Step 4: Check Existing Waivers
-Read: `src/meta/tools/lint/waivers/<tile>_waivers.tcl` (path varies)
-- Is this signal already waived?
-- Are similar signals waived with justification?
+**IMPORTANT: NO WAIVERS. Target is zero waivers. All violations must be resolved by RTL fix or tie-off.**
+
+### Step 4: Check Existing Waiver File
+Read: `<ref_dir>/src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
+- Is this signal already waived? If yes, note it — the waiver should be removed once the RTL fix is in place.
+- Are similar signals waived? Use those as a pattern for what the correct fix should be.
 
 ### Step 5: Formulate Root Cause Statement
 
@@ -82,16 +84,18 @@ Read: `src/meta/tools/lint/waivers/<tile>_waivers.tcl` (path varies)
 GOOD: "Port 'debug_data[31:0]' is an output port intended for debug visibility.
        It is undriven because this module does not generate debug data internally -
        the port exists for optional connection to debug logic at integration level.
-       Risk is LOW because it's not used in functional mode."
+       Risk is LOW. Fix: tie to 0 — safe for pre-DFT simulation."
 
 BAD:  "Signal debug_data is undriven."
 ```
 
 ### Step 6: Recommend Fix Based on WHY
 Based on your root cause analysis:
-- **RTL fix**: If it's a real bug (port should be driven but isn't)
-- **Tie off**: If DFT/debug port, tie to constant (0 for outputs, specify for inputs)
-- **Filter**: If intentional and safe (generate block, legacy, future use)
+- **`rtl_fix`**: Real bug — add the correct driver or connection. `fix_action` MUST be a concrete, insertable line of RTL (e.g., `assign sig = src_signal;`). If the correct driver cannot be determined from RTL alone, use `investigate` instead.
+- **`tie_off`**: DFT/debug/generate-disabled/legacy port — tie to a safe constant. `fix_action` MUST be the exact RTL line to insert (e.g., `assign Tdr_data_out = 8'b0;`). Always backup original file.
+- **`investigate`**: Insufficient information to recommend a safe fix — need parent hierarchy or design context.
+
+**DO NOT recommend waivers under any circumstance. No `filter` fix type.**
 
 ## Output Per Violation
 
@@ -107,7 +111,7 @@ Based on your root cause analysis:
 | **risk_level** | HIGH/MEDIUM/LOW with justification |
 | **in_generate** | Yes/No - is it inside disabled generate? |
 | **is_dft_port** | Yes/No - is it DFT/scan related? |
-| **fix_type** | rtl_fix / tie_off / filter |
+| **fix_type** | rtl_fix / tie_off / investigate |
 | **fix_action** | Specific action to take |
 | **fix_justification** | WHY this fix is appropriate |
 
@@ -142,15 +146,19 @@ Based on your root cause analysis:
 
 ## Fix Types
 
-| Type | When to Use | Example |
-|------|-------------|---------|
-| `rtl_fix` | Real bug - signal SHOULD be driven | Add assignment or connection |
-| `tie_off` | DFT/debug port - tie to constant | `assign signal = 0;` |
-| `filter` | Intentional - add to lint waiver | Generate block, legacy, future use |
+| Type | When to Use | fix_action must be |
+|------|-------------|-------------------|
+| `rtl_fix` | Real bug — signal SHOULD be driven, connection is missing | Exact RTL line to insert (e.g., `assign out = in_sig;`) |
+| `tie_off` | DFT/debug/generate-disabled/legacy port — safe to tie to constant | Exact RTL line (e.g., `assign Tdr_data_out = 8'b0;`) |
+| `investigate` | Parent drives it, or correct driver cannot be determined from RTL alone | Description of what to investigate |
 
-## Config File
+**NOTE: `filter` and `waiver` are NOT valid fix types. Target is zero waivers. Do not recommend waivers under any circumstance.**
 
-Lint waivers: `src/meta/tools/lint/waivers/<tile>_waivers.tcl` (varies by project)
+## Waiver File (reference only — do NOT add entries)
+
+Path: `<ref_dir>/src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
+
+Read this file to understand what was previously waived — use it as context for your analysis only. The goal is to FIX violations in RTL, not add new waivers.
 
 ---
 
