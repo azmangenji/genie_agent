@@ -1313,11 +1313,32 @@ Round N:
   │     Recipients: from data/<tag>_analysis_email
   │
   └── STEP 5: Check if done
+
+        ## VIOLATION COUNT RULES — READ THIS CAREFULLY
+
+        **Single source of truth: the extractor JSON for THIS round.**
+
+        - `total_unwaived`  = what the lint tool reported in "Unwaived" section
+        - `filtered_count`  = violations skipped due to LOW_RISK patterns (rsmu/dft/jtag/etc.)
+        - `focus_violations` = total_unwaived - filtered_count  (what agents analyzed)
+
+        **❌ NEVER compute remaining = previous_focus - fixes_applied**
+        **✅ ALWAYS read focus_violations from THIS round's extractor JSON**
+
+        If round 2 extractor says focus=55 and round 1 said focus=65 → 10 were resolved.
+        Do NOT do: 65 - 8 fixes = 57. Trust the tool rerun output, not arithmetic.
+
+        Numbers that differ between rounds are EXPECTED — the tool reruns fresh each time.
+        Numbers that differ within the same round (extractor vs report compiler) are a BUG —
+        the report compiler must use extractor JSON numbers verbatim, never recount.
+
         Read: data/<tag>_fix_applied_<check_type>.json
           → constraints_applied   (how many constraints were written this round)
           → rtl_fixes_applied     (how many RTL edits were made this round)
+          → tie_offs_applied      (how many tie-offs were made this round)
+          → deep_dive_applied     (how many deep-dive fixes were made this round)
         Read: data/<tag>_extractor_<check_type>.json
-          → focus_violations count (violations selected for analysis, excludes LOW_RISK)
+          → focus_violations      (violations THIS round — use this as remaining count)
 
         TERMINATION CONDITIONS (check in order):
 
@@ -1340,22 +1361,42 @@ Round N:
 
 ### Triggering a Rerun
 
-After applying fixes, trigger the next round by running the static check again:
+After applying fixes, trigger the next round by running the static check again.
 
+1. Read `data/<tag>_fixer_state` — get ALL original flags:
+```
+original_instruction=<instruction>
+original_ref_dir=<ref_dir>
+original_ip=<ip>
+original_check_type=<check_type>
+use_xterm=true/false
+email_to=<email or empty>
+```
+
+2. Build the rerun command — **MUST restore original flags exactly**:
 ```bash
 cd <base_dir>
-python3 script/genie_cli.py -i "<original_instruction>" --execute --analyze-fixer
+
+# Build flags from fixer_state:
+XTERM_FLAG=""      # if use_xterm=true → "--xterm"
+EMAIL_FLAG=""      # always "--email"
+TO_FLAG=""         # if email_to is set → "--to <email_to>"
+
+python3 script/genie_cli.py \
+  -i "<original_instruction>" \
+  --execute \
+  $XTERM_FLAG \
+  $EMAIL_FLAG \
+  $TO_FLAG
 ```
 
-But since `--analyze-fixer` would create a new independent run, instead use the stored state:
-
-1. Read `data/<tag>_fixer_state` to get `original_instruction`, `original_ref_dir`, `original_ip`, `original_check_type`
-2. Run the static check script directly for the next round:
+**Example** — if original run had `--xterm --email --to user@amd.com`:
 ```bash
-python3 script/genie_cli.py -i "<original_instruction>" --execute
+python3 script/genie_cli.py -i "run lint at /proj/... for umc9_3" --execute --xterm --email --to user@amd.com
 ```
+
 3. Note the new tag from the output
-4. Write updated fixer state to `data/<new_tag>_fixer_state`:
+4. Write updated fixer state to `data/<new_tag>_fixer_state` — **carry forward ALL flags**:
 ```
 original_ref_dir=<ref_dir>
 original_ip=<ip>
@@ -1364,6 +1405,8 @@ original_instruction=<instruction>
 round=<N+1>
 max_rounds=5
 parent_tag=<previous_tag>
+use_xterm=<same as before>
+email_to=<same as before>
 ```
 5. Once the new check completes, emit internally:
 ```
@@ -1385,6 +1428,7 @@ SKIP_MONITORING=true
 When any termination condition is met (CLEAN, STALLED, or MAX_ROUNDS_REACHED):
 
 1. Collect data from all rounds (read each round's `_fix_applied_*.json` and `_extractor_*.json`)
+   **Pull violation counts from extractor JSON only — never compute from arithmetic**
 2. Generate final summary HTML `data/<first_tag>_fixer_summary.html`:
    ```
    Header: Analyze-Fixer Summary — <check_type> — <ip>

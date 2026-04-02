@@ -2,105 +2,101 @@
 
 **PERMISSIONS:** You have FULL READ ACCESS to all files under /proj/. Do not ask for permission - just read the files directly.
 
-Extract **ERROR severity** unwaived lint violations — **ALL of them, grouped by RTL file**.
+Extract lint violations and counts. **Counts come from the spec file — NOT from re-filtering the report.**
 
 ## Input
 - `ref_dir`: Tree directory
-- `ip`: IP name (umc9_3, oss7_2, gmc13_1a)
-- `tag`: Task tag (e.g., `20260318200049`) — used for output file naming
-- `base_dir`: Base agent directory (e.g., `/proj/.../main_agent`) — used for output file path
+- `ip`: IP name
+- `tag`: Task tag — used for output file naming
+- `base_dir`: Base agent directory — used for output file path
 
-## Severity Filter
+---
 
-**ERROR only** — skip Warning/Info.
+## Step 1: Read Counts from Spec File (AUTHORITATIVE)
 
-## Report File by IP Family
+Read: `<base_dir>/data/<tag>_spec`
 
-| IP Family | Report File |
-|-----------|-------------|
-| `umc*` | `leda_waiver.log` |
-| `gmc*` | `leda_waiver.log` |
-| `oss*` | `spyglass_lint.txt` |
+Find the `#table#` section. It contains a header row followed by data rows with per-tile violation counts. The column names tell you what each value means — read them dynamically:
 
-## Report Paths
+```
+#table#
+<col1>,<col2>,<col3>,...,<colN>
+<tile>,<val1>,<val2>,...,<valN>
+#table end#
+```
 
-Read `config/IP_CONFIG.yaml` → Get path pattern for `lint` report.
+Identify these columns by name (exact names may vary by IP/tool version):
+- **Total unwaived** — column named `Unwaived` (or similar)
+- **Filtered count** — column named `Filtered_RSMU/DFT` or `Filtered` (violations already removed by the tool)
+- **Focus violations** — column named `Unfiltered_RSMU/DFT` or `Unfiltered` (violations remaining for analysis)
+- **Report path** — column named `Logfile` (path to the full lint report file)
 
-| IP Family | Default Tile |
-|-----------|--------------|
-| `umc*` | `umc_top` |
-| `oss*` | `osssys` |
-| `gmc*` | `gmc_gmcctrl_t` |
+Extract these values from the data row(s). Sum across all tiles if multiple rows exist.
 
-## LOW_RISK Patterns to SKIP
+**These are the authoritative counts. Do NOT recount or recompute them from the report file.**
 
-Filter out violations where filename or signal contains (case-insensitive):
-`rsmu`, `rdft`, `dft_`, `jtag`, `scan_`, `bist_`, `test_mode`, `tdr_`
+---
 
-## What to Extract
+## Step 2: Read Violation Details from Spec File
 
-From "Unwaived" section, for each **Error** severity violation:
-- `code`: Lint rule code from report
-- `severity`: Error
-- `filename`: RTL file path (full path)
-- `line`: Line number
-- `message`: Error message
-- `signal_name`: Extracted from message
+The spec file contains a pre-filtered violation detail section — look for a header like:
 
-**Extract ALL violations — no cap. Then group them by RTL filename.**
+```
+<Tool> Unwaived Violation Details for <tile>:
+```
 
-## Output JSON
+This section lists ONLY the violations that passed the tool's own filter. Read the column header row to understand the fields, then extract each violation row:
+
+- `code`: the lint rule code (column typically named `Code` or `Type`)
+- `severity`: `Error`
+- `filename`: RTL filename (column typically named `Filename`)
+- `line`: line number (column typically named `Line`)
+- `message`: violation message (column typically named `Message`)
+- `signal_name`: extract from the message — typically the signal or variable name being flagged
+
+**Do NOT apply any additional filtering — the tool already filtered the violations correctly.**
+
+---
+
+## Step 3: Group by RTL File
+
+Group all extracted violations by their RTL filename into `violations_by_file`.
+
+If the filename is a basename only, resolve the full path by globbing under `<ref_dir>/src/rtl/`.
+
+---
+
+## Step 4: Build Output JSON
 
 ```json
 {
-  "report_path": "/proj/.../leda_waiver.log",
-  "total_unwaived": 152,
-  "rsmu_dft_skipped": 30,
-  "focus_violations": 122,
-  "unique_files": 15,
+  "report_path": "<path from Logfile column>",
+  "spec_file": "<base_dir>/data/<tag>_spec",
+  "total_unwaived": "<Unwaived column value>",
+  "filtered_count": "<Filtered column value>",
+  "focus_violations": "<Unfiltered column value>",
+  "unique_files": "<count of unique RTL files>",
   "violations_by_code": {
-    "W_UNDRIVEN": 80,
-    "W_UNUSED": 42
+    "<rule_code_1>": "<count>",
+    "<rule_code_2>": "<count>"
   },
   "violations_by_file": {
-    "src/rtl/umcdat/umcdat_core.sv": [
+    "<rtl_file_path>": [
       {
-        "code": "W_UNDRIVEN",
+        "code": "<rule code>",
         "severity": "Error",
-        "line": 45,
-        "message": "<message from report>",
-        "signal_name": "<extracted signal>"
-      },
-      {
-        "code": "W_UNDRIVEN",
-        "severity": "Error",
-        "line": 226,
-        "message": "<message from report>",
-        "signal_name": "<extracted signal>"
-      }
-    ],
-    "src/rtl/umccmd/umccmd_ctrl.sv": [
-      {
-        "code": "W_UNUSED",
-        "severity": "Error",
-        "line": 88,
-        "message": "<message from report>",
-        "signal_name": "<extracted signal>"
+        "line": "<line number>",
+        "message": "<violation message>",
+        "signal_name": "<signal or variable name>"
       }
     ]
   }
 }
 ```
 
-## Instructions
+**`focus_violations` MUST match the Unfiltered column value from the spec file — never adjust it.**
 
-1. Find report using Glob (`leda_waiver.log` for UMC/GMC, `spyglass_lint.txt` for OSS)
-2. Find "Unwaived" section
-3. Extract **Error severity only** — skip Warning/Info
-4. Filter out LOW_RISK patterns
-5. Extract **ALL remaining violations** — no limit
-6. Group violations by RTL filename into `violations_by_file`
-7. Count unique files
+---
 
 ## Waiver File (reference only)
 
@@ -120,4 +116,4 @@ Write file: <base_dir>/data/<tag>_extractor_lint.json
 Content: <your JSON output>
 ```
 
-The orchestrator reads `violations_by_file` to spawn one RTL analyzer agent per unique RTL file. If you do not write the file, no analysis will run.
+The orchestrator reads `violations_by_file` to spawn one RTL analyzer agent per unique RTL file, and reads `focus_violations` / `total_unwaived` / `filtered_count` for the round report. If you do not write the file, no analysis will run.

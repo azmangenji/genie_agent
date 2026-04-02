@@ -1542,7 +1542,7 @@ class GenieCLI:
         """Generate a unique tag for this task"""
         return datetime.datetime.now().strftime('%Y%m%d%H%M%S')
 
-    def execute(self, instruction_text, dry_run=False, send_email=False, use_xterm=False, analyze_mode=False, fixer_mode=False):
+    def execute(self, instruction_text, dry_run=False, send_email=False, use_xterm=False, analyze_mode=False, fixer_mode=False, email_to=None):
         """Parse instruction and execute the corresponding script"""
         print(f"=" * 70)
         print(f"Genie CLI - Processing Instruction")
@@ -1927,6 +1927,8 @@ class GenieCLI:
                     f.write(f"round=1\n")
                     f.write(f"max_rounds=5\n")
                     f.write(f"parent_tag=\n")
+                    f.write(f"use_xterm={'true' if use_xterm else 'false'}\n")
+                    f.write(f"email_to={email_to or ''}\n")
             print(f"Analyze mode enabled: Claude Code will monitor and analyze results")
 
         print(f"Created run script: {run_script}")
@@ -4462,7 +4464,7 @@ Examples:
         analyze_mode = True
 
     # Execute instruction (with optional email on completion)
-    result = cli.execute(args.instruction, dry_run=not args.execute, send_email=args.email, use_xterm=args.xterm, analyze_mode=analyze_mode, fixer_mode=fixer_mode)
+    result = cli.execute(args.instruction, dry_run=not args.execute, send_email=args.email, use_xterm=args.xterm, analyze_mode=analyze_mode, fixer_mode=fixer_mode, email_to=getattr(args, 'to', None))
 
     if result:
         print()
