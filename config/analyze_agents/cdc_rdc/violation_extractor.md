@@ -33,11 +33,25 @@ This ensures coverage of ALL violation types in the analysis.
 
 ## Report Paths
 
-Use Glob to find reports:
+Read `<base_dir>/config/IP_CONFIG.yaml` to resolve report paths without slow recursive globbing.
+
+Detect IP family from `ip` name:
+- Starts with `umc` → family = `umc`, default tile = `umc_top`
+- Starts with `oss` → family = `oss`, default tile = `osssys`
+- Starts with `gmc` → family = `gmc`, default tile = `gmc_gmcctrl_t`
+
+For CDC report: get `<family>.reports.cdc.path_pattern`, substitute `{tile}` with default tile, then:
+```bash
+ls -t <ref_dir>/<resolved_cdc_pattern> 2>/dev/null | head -1
 ```
-<ref_dir>/out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_cdc/cdc_*_output/cdc_report.rpt
-<ref_dir>/out/linux_*.VCS/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_cdc/rdc_*_output/rdc_report.rpt
+
+For RDC report: get `<family>.reports.rdc.path_pattern`, substitute `{tile}` with default tile, then:
+```bash
+ls -t <ref_dir>/<resolved_rdc_pattern> 2>/dev/null | head -1
 ```
+
+If no `{tile}` placeholder exists in the pattern, use it as-is.
+Use the resulting paths as the CDC and RDC report files.
 
 ## LOW_RISK Patterns to SKIP
 
@@ -60,7 +74,7 @@ Read the actual report and extract whatever fields exist. Common fields:
 
 ## Instructions
 
-1. Find reports using Glob
+1. Find reports using IP_CONFIG.yaml (see Report Paths above)
 2. Read CDC Section 3 (CDC Results) and RDC Section 5 (RDC Results)
 3. Parse the violation table - extract whatever columns exist
 4. Filter LOW_RISK patterns

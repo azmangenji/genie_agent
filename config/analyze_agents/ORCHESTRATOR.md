@@ -403,22 +403,35 @@ Task tool:
 
     2. **SPEC FILE CHECK (after PID ends):**
        - Read the spec file: cat data/<tag>_spec
-       - Check if spec file exists and has content
-       - Look for ERROR indicators in spec file:
+       - Check for ERROR indicators in spec file:
          - "Error" or "ERROR"
          - "Failed" or "FAILED"
          - "error:" or "failed:"
-         - Empty file or file not found
 
-       **If spec file shows ERROR or is missing:**
+       **If spec file has ERROR/FAILED content:**
        - Return: status="failed", skip_analysis=true
        - Message: "Task failed - spec file shows error, skipping analysis"
 
-       **If spec file looks OK (has valid output):**
+       **If spec file is empty or missing:**
+       - Do NOT declare failure — go to step 3 (log file check)
+
+       **If spec file has valid non-empty content with no errors:**
        - Return: status="complete", skip_analysis=false
        - Message: "Task completed successfully, proceed with analysis"
 
-    **RETURN IMMEDIATELY after step 2.**
+    3. **LOG FILE CHECK (only if spec is empty or missing):**
+       - Read the log file provided in LOG_FILE input
+       - Look for: "Static check completed successfully"
+         - If found → Return: status="complete", skip_analysis=false
+         - Message: "Task completed successfully (spec empty — lint results in report file)"
+       - Look for: "ERROR" or "FAILED" or "Static check failed"
+         - If found → Return: status="failed", skip_analysis=true
+         - Message: "Task failed - log file shows error"
+       - If neither found: wait 15 seconds, re-check log (repeat up to 3 times)
+       - If still inconclusive → Return: status="failed", skip_analysis=true
+         - Message: "Task outcome unclear after log check — treating as failed"
+
+    **RETURN IMMEDIATELY after step 2 or 3.**
 
     Return format:
     {

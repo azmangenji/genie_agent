@@ -75,13 +75,22 @@ Used when no spec file exists (e.g., analyze-fixer launched without a prior lint
 
 ### Step B1: Find leda_waiver.log
 
-Glob for the most recent report under ref_dir:
+Read `<base_dir>/config/IP_CONFIG.yaml` to resolve the report path without slow recursive globbing.
 
-```
-<ref_dir>/out/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_lint/leda_waiver.log
+Detect IP family from `ip` name:
+- Starts with `umc` → family = `umc`, default tile = `umc_top`
+- Starts with `oss` → family = `oss`, default tile = `osssys`
+- Starts with `gmc` → family = `gmc`, default tile = `gmc_gmcctrl_t`
+
+Get `path_pattern` from `<family>.reports.lint.path_pattern` in IP_CONFIG.yaml.
+Substitute `{tile}` in the pattern with the default tile name (if no `{tile}` placeholder, use pattern as-is).
+
+Run to find the most recently modified matching file:
+```bash
+ls -t <ref_dir>/<resolved_pattern> 2>/dev/null | head -1
 ```
 
-Use the most recently modified file if multiple matches exist.
+Use the resulting path as `leda_waiver.log`. If no file found, report error and stop.
 
 ### Step B2: Parse the Unwaived Section
 
