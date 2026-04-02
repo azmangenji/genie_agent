@@ -96,9 +96,11 @@ From the consolidated JSON, process all `fix_type: rtl_fix` entries:
 2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>`
 3. Run `p4 edit <rtl_file>`
 4. Check if `fix_action` lines already exist in the file — skip if duplicate
-5. Insert `fix_action` code block after line `insert_after_line` using the Edit tool
-6. If `fix_action` is vague/ambiguous (no exact RTL code) → log as `requires_investigation` — do NOT guess
-7. Log the change in output JSON
+5. **Capture the before state**: read and save the line at `insert_after_line` and 2 lines of surrounding context (this is the `diff_before`)
+6. Insert `fix_action` code block after line `insert_after_line` using the Edit tool
+7. **Capture the after state**: the `diff_after` = `diff_before` context + the inserted comment wrapper + `fix_action` lines
+8. If `fix_action` is vague/ambiguous (no exact RTL code) → log as `requires_investigation` — do NOT guess
+9. Log the full change (rtl_file full path, backup_file full path, diff_before, diff_after) in output JSON
 
 **Comment wrapper for RTL insertions:**
 ```verilog
@@ -134,11 +136,13 @@ For each `rtl_fix` or `tie_off` entry:
 1. Read the RTL file at the path specified in the fix
 2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>`
 3. Run `p4 edit <rtl_file>`
-4. Apply the RTL change using the Edit tool:
+4. Check for duplicates — if the `fix_action` line already exists in the file, skip it
+5. **Capture the before state**: read and save the line at the insertion point and 2 lines of surrounding context (this is the `diff_before`)
+6. Apply the RTL change using the Edit tool:
    - **`rtl_fix`**: Insert or correct the driver/connection as specified in `fix_action`
    - **`tie_off`**: Insert the `assign` statement from `fix_action` (e.g., `assign Tdr_data_out = 8'b0;`) immediately after the signal declaration line
-5. Check for duplicates — if the `fix_action` line already exists in the file, skip it
-6. Log the change in output JSON
+7. **Capture the after state**: the `diff_after` = `diff_before` context + the inserted comment wrapper + `fix_action` lines
+8. Log the full change (rtl_file full path, backup_file full path, diff_before, diff_after) in output JSON
 
 **IMPORTANT:**
 - Make MINIMAL changes only — fix exactly what the violation points to
@@ -184,15 +188,18 @@ Where `<check_type_short>`:
   "applied": [
     {
       "fix_type": "constraint",
-      "target_file": "<path>",
+      "target_file": "<full path to constraint file>",
       "fix_action": "<tcl command>",
       "resolves_violations": ["no_sync_xxx", "no_sync_yyy"]
     },
     {
       "fix_type": "rtl_fix",
-      "target_file": "<rtl_file_path>",
+      "target_file": "<full path to RTL file>",
+      "backup_file": "<full path to RTL file>.bak_<tag>",
       "fix_action": "<exact RTL lines inserted>",
       "insert_after_line": 88,
+      "diff_before": "<original lines at insertion point with 2 lines context>",
+      "diff_after": "<same context lines + inserted comment wrapper + fix_action lines>",
       "resolves_violations": ["no_sync_yyy"]
     }
   ],

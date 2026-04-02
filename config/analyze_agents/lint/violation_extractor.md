@@ -2,7 +2,7 @@
 
 **PERMISSIONS:** You have FULL READ ACCESS to all files under /proj/. Do not ask for permission - just read the files directly.
 
-Extract lint violations and counts. **Counts come from the spec file — NOT from re-filtering the report.**
+Extract lint violations and counts.
 
 ## Input
 - `ref_dir`: Tree directory
@@ -12,7 +12,18 @@ Extract lint violations and counts. **Counts come from the spec file — NOT fro
 
 ---
 
-## Step 1: Read Counts from Spec File (AUTHORITATIVE)
+## Path Selection — Read Spec First
+
+Before doing anything, check whether `<base_dir>/data/<tag>_spec` exists AND contains a `#table#` section:
+
+- **If YES** → follow **Path A** (spec file is authoritative — do NOT re-read the log file)
+- **If NO** (no spec, or spec has no `#table#`) → follow **Path B** (read directly from `leda_waiver.log`)
+
+---
+
+## Path A: Spec File Exists
+
+### Step A1: Read Counts from Spec File (AUTHORITATIVE)
 
 Read: `<base_dir>/data/<tag>_spec`
 
@@ -35,9 +46,7 @@ Extract these values from the data row(s). Sum across all tiles if multiple rows
 
 **These are the authoritative counts. Do NOT recount or recompute them from the report file.**
 
----
-
-## Step 2: Read Violation Details from Spec File
+### Step A2: Read Violation Details from Spec File
 
 The spec file contains a pre-filtered violation detail section — look for a header like:
 
@@ -56,11 +65,78 @@ This section lists ONLY the violations that passed the tool's own filter. Read t
 
 **Do NOT apply any additional filtering — the tool already filtered the violations correctly.**
 
+Then proceed to **Step 3: Group by RTL File**.
+
+---
+
+## Path B: No Spec File — Read Directly from leda_waiver.log
+
+Used when no spec file exists (e.g., analyze-fixer launched without a prior lint run).
+
+### Step B1: Find leda_waiver.log
+
+Glob for the most recent report under ref_dir:
+
+```
+<ref_dir>/out/*/config/*/pub/sim/publish/tiles/tile/*/cad/rhea_lint/leda_waiver.log
+```
+
+Use the most recently modified file if multiple matches exist.
+
+### Step B2: Parse the Unwaived Section
+
+Read the file. Look for the section marker:
+
+```
+Unwaived
+```
+
+Once inside the Unwaived section, collect every line that matches the pipe-separated format with a digit line number:
+
+```
+| <code> | <error> | <type> | <filename> | <line_number> | <message> |
+```
+
+A valid violation line has `| <digits> |` somewhere in it. Lines with only dashes or wildcards (`.*`) are not violations — skip them.
+
+Stop collecting when you hit `Unused Waivers` or `Waived` section markers.
+
+### Step B3: Apply RSMU/DFT Filter (same logic as lint_error_extract.pl)
+
+For each collected violation line, parse fields from right to left:
+1. Last field → `message`
+2. Second to last → `line_number`
+3. Third to last → `filename`
+4. Fourth to last → `type`
+5. Fifth to last → `error`
+6. Everything remaining → `code` (joined if split across pipes)
+
+**Filter rule — identical to lint_error_extract.pl line 82:**
+
+```
+if filename matches /rsmu|dft/ (case-insensitive):
+    filtered_count++
+    skip — do NOT add to violations list
+else:
+    unfiltered violations list
+```
+
+Compute counts:
+- `total_unwaived` = all valid pipe-separated digit lines in Unwaived section
+- `filtered_count` = count where filename matches `rsmu` or `dft` (case-insensitive)
+- `focus_violations` = `total_unwaived - filtered_count`
+
+### Step B4: Get Report Path
+
+`report_path` = the leda_waiver.log path found in Step B1.
+
+Then proceed to **Step 3: Group by RTL File**.
+
 ---
 
 ## Step 3: Group by RTL File
 
-Group all extracted violations by their RTL filename into `violations_by_file`.
+Group all extracted violations (from Path A or Path B) by their RTL filename into `violations_by_file`.
 
 If the filename is a basename only, resolve the full path by globbing under `<ref_dir>/src/rtl/`.
 
@@ -70,11 +146,11 @@ If the filename is a basename only, resolve the full path by globbing under `<re
 
 ```json
 {
-  "report_path": "<path from Logfile column>",
+  "report_path": "<path to leda_waiver.log>",
   "spec_file": "<base_dir>/data/<tag>_spec",
-  "total_unwaived": "<Unwaived column value>",
-  "filtered_count": "<Filtered column value>",
-  "focus_violations": "<Unfiltered column value>",
+  "total_unwaived": "<Unwaived count>",
+  "filtered_count": "<Filtered_RSMU/DFT count>",
+  "focus_violations": "<Unfiltered count>",
   "unique_files": "<count of unique RTL files>",
   "violations_by_code": {
     "<rule_code_1>": "<count>",
@@ -94,7 +170,7 @@ If the filename is a basename only, resolve the full path by globbing under `<re
 }
 ```
 
-**`focus_violations` MUST match the Unfiltered column value from the spec file — never adjust it.**
+**`focus_violations` MUST equal `total_unwaived - filtered_count` — never adjust it.**
 
 ---
 

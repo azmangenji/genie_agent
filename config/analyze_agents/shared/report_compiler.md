@@ -39,9 +39,9 @@ Read ONLY the JSON files for your assigned `check_type` (skip missing files grac
 
 | check_type | Files to Read |
 |------------|---------------|
-| `cdc_rdc`  | `data/<tag>_precondition_cdc.json`, `data/<tag>_extractor_cdc.json`, `data/<tag>_rtl_cdc_*.json`, `data/<tag>_rtl_rdc_*.json`, `data/<tag>_library_finder.json` |
-| `lint`     | `data/<tag>_extractor_lint.json`, `data/<tag>_rtl_lint_*.json` |
-| `spg_dft`  | `data/<tag>_precondition_spgdft.json`, `data/<tag>_extractor_spgdft.json`, `data/<tag>_rtl_spgdft_*.json`, `data/<tag>_library_finder.json` |
+| `cdc_rdc`  | `data/<tag>_precondition_cdc.json`, `data/<tag>_extractor_cdc.json`, `data/<tag>_rtl_cdc_*.json`, `data/<tag>_rtl_rdc_*.json`, `data/<tag>_library_finder.json`, `data/<tag>_fix_applied_cdc.json` |
+| `lint`     | `data/<tag>_extractor_lint.json`, `data/<tag>_rtl_lint_*.json`, `data/<tag>_fix_applied_lint.json` |
+| `spg_dft`  | `data/<tag>_precondition_spgdft.json`, `data/<tag>_extractor_spgdft.json`, `data/<tag>_rtl_spgdft_*.json`, `data/<tag>_library_finder.json`, `data/<tag>_fix_applied_spgdft.json` |
 
 Use Glob to find all RTL analyzer files for your check type:
 - CDC/RDC: `data/<tag>_rtl_cdc_*.json` and `data/<tag>_rtl_rdc_*.json`
@@ -76,8 +76,9 @@ Write HTML using the Write tool to the appropriate file above.
 2. Summary table (counts, focus, status)
 3. Violations by code/type
 4. Violation cards (up to 10)
-5. Recommendations
-6. Configuration files reference
+5. RTL Changes Applied (if `_fix_applied_lint.json` exists — RTL files only)
+6. Recommendations
+7. Configuration files reference
 
 **For `spg_dft`:**
 1. Header (IP, tag, ref_dir, check type = SpgDFT)
@@ -86,8 +87,13 @@ Write HTML using the Write tool to the appropriate file above.
 4. Library finder results (if any)
 5. Violations by rule
 6. Violation cards (up to 10)
-7. Recommendations
-8. Configuration files reference
+7. RTL Changes Applied (if `_fix_applied_spgdft.json` exists — RTL files only)
+8. Recommendations
+9. Configuration files reference
+
+**For `cdc_rdc`:**  (update existing list)
+After Library finder results, add:
+- RTL Changes Applied (if `_fix_applied_cdc.json` exists — RTL files only)
 
 ---
 
@@ -353,6 +359,39 @@ Write HTML using the Write tool to the appropriate file above.
       </tr>
     </tbody>
   </table>
+</div>
+
+<!-- ══════════════════════════════════════════
+     RTL CHANGES APPLIED (fixer mode only — omit section if no RTL fixes)
+     ══════════════════════════════════════════ -->
+<div style="margin-bottom:32px;">
+  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #7c3aed; padding-left:12px; margin-bottom:16px;">RTL Changes Applied ({rtl_fix_count} file(s))</div>
+
+  <!-- RTL file card — repeat for each RTL file that was modified -->
+  <div style="border:1px solid #e5e7eb; border-left:4px solid #7c3aed; border-radius:6px; padding:18px; margin-bottom:14px; background:#ffffff;">
+
+    <!-- File paths -->
+    <table style="font-size:14px; border-collapse:collapse; width:100%; margin-bottom:14px;">
+      <tr>
+        <td style="padding:4px 0; color:#666; width:130px; vertical-align:top;"><b>RTL File:</b></td>
+        <td style="padding:4px 0; color:#059669; font-family:monospace; font-size:14px;">{rtl_file_full_path}</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 0; color:#666; vertical-align:top;"><b>Backup:</b></td>
+        <td style="padding:4px 0; color:#888; font-family:monospace; font-size:14px;">{backup_file_full_path}</td>
+      </tr>
+    </table>
+
+    <!-- Before/After diff -->
+    <div style="font-size:14px; font-weight:600; color:#666; margin-bottom:6px;">Before:</div>
+    <pre style="background:#fff5f5; color:#7f1d1d; padding:12px 14px; border-radius:4px; font-size:14px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0 0 12px 0; border:1px solid #fecaca; white-space:pre;">{diff_before}</pre>
+
+    <div style="font-size:14px; font-weight:600; color:#666; margin-bottom:6px;">After:</div>
+    <pre style="background:#f0fdf4; color:#064e3b; padding:12px 14px; border-radius:4px; font-size:14px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0; border:1px solid #86efac; white-space:pre;">{diff_after}</pre>
+
+  </div>
+  <!-- end RTL file card -->
+
 </div>
 
 <!-- ══════════════════════════════════════════
