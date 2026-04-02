@@ -70,7 +70,8 @@ If the file does not exist, report "No consolidated fixes found for <check_type>
 ### SPG_DFT
 | File | Path | Apply when |
 |------|------|-----------|
-| DFT params | `<ref_dir>/src/meta/tools/spgdft/variant/<ip>/project.params` | Always (for constraint fixes) |
+| DFT params | `<ref_dir>/src/meta/tools/spgdft/variant/<ip>/project.params` | For `constraint` fixes |
+| RTL source files | Path as-is from RTL analyzer output (no `src/rtl/` resolution needed) | For `rtl_fix` fixes |
 
 ### Lint
 | File | Path | Apply when |
@@ -83,7 +84,7 @@ If the file does not exist, report "No consolidated fixes found for <check_type>
 
 **Why:** CDC/RDC and Lint reruns execute `rhea_build`/`rhea_drop`, which **rebuilds `publish_rtl/` from `src/rtl/` every time**. Any fix written to `publish_rtl/` or `library/` paths will be wiped on the next rerun. RTL fixes for these check types MUST target `src/rtl/`.
 
-**SPG_DFT does NOT run rhea_build** — its `publish_rtl/` is stable between rounds. RTL fix paths for SPG_DFT are used as-is (no resolution needed).
+**SPG_DFT does NOT run rhea_build** — its `publish_rtl/` is stable between rounds. RTL fix paths for SPG_DFT are used as-is (no `src/rtl/` resolution needed). Apply `rtl_fix` entries directly to the reported path.
 
 **For each `rtl_fix` (or `tie_off`) entry in CDC/RDC or Lint consolidated JSON:**
 
@@ -163,16 +164,29 @@ From the consolidated JSON, process all `fix_type: rtl_fix` entries:
 Do NOT apply — log them in `requires_investigation` list in output JSON.
 The orchestrator will spawn a Deep-Dive Agent for each investigate item.
 
-### For SPG_DFT — Constraint Fixes Only
+### For SPG_DFT — Constraint Fixes AND RTL Fixes
 
-From the consolidated JSON, process only `fix_type: constraint` entries. Skip `rtl_fix` and `investigate`.
+From the consolidated JSON, process `fix_type: constraint` AND `fix_type: rtl_fix` entries. Skip `investigate`.
 
 For each constraint fix:
 1. Read the current params file
 2. Check if already present (string match) — skip if duplicate
 3. Append under a dated comment block (same format as CDC/RDC above)
 
-For `rtl_fix` entries: log as `manual_rtl_fixes_pending`.
+For each `rtl_fix` entry:
+1. Use the `rtl_file` path as-is from the consolidated JSON — **do NOT resolve to `src/rtl/`** (SPG_DFT does not run rhea_build, so `publish_rtl/` is stable)
+2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>` (no p4 edit)
+3. Check if `fix_action` lines already exist — skip if duplicate
+4. **Capture the before state**: line at `insert_after_line` + 2 lines context (`diff_before`)
+5. Insert `fix_action` after `insert_after_line` using Edit tool with comment wrapper:
+```verilog
+// === Auto-applied by analyze-fixer Round <round> [<tag>] ===
+<fix_action lines>
+// ============================================================
+```
+6. **Capture the after state**: `diff_after` = context + comment wrapper + fix_action lines
+7. Log the full change (rtl_file, backup_file, diff_before, diff_after) in output JSON
+
 For `investigate` entries: log as `requires_investigation`.
 
 ### For Lint — RTL Fixes and Tie-offs
@@ -263,14 +277,7 @@ Where `<check_type_short>`:
       "base_dir": "<base_dir>"
     }
   ],
-  "manual_rtl_fixes_pending": [
-    {
-      "signal": "<signal_name>",
-      "rtl_file": "<path>",
-      "why": "<root cause>",
-      "suggested_fix": "<description of what to add>"
-    }
-  ],
+  "manual_rtl_fixes_pending": [],
   "files_modified": [
     "<path_to_constraint_file>",
     "<path_to_rtl_file>",
@@ -291,7 +298,7 @@ Where `<check_type_short>`:
 - **ZERO WAIVERS across all check types** — no CDC waivers, no lint waivers, no SPG_DFT waivers
 - For CDC/RDC: apply both `constraint` AND `rtl_fix` — `investigate` items are logged for Deep-Dive Agent
 - For Lint: apply both `rtl_fix` AND `tie_off` directly to RTL source — do NOT touch `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
-- For SPG_DFT: only apply `constraint` type fixes to `project.params` — log `rtl_fix` and `investigate`
+- For SPG_DFT: apply both `constraint` (to `project.params`) AND `rtl_fix` (to path as-is) — log `investigate` only
 - Always check for duplicates before applying any fix
 - Always backup before editing: `cp <file> <file>.bak_<tag>` (once per file per round)
 - `p4 edit <file>` ONLY for constraint/meta files (`src/meta/tools/...`) — NOT for RTL files (`src/rtl/...`)
