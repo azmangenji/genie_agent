@@ -108,3 +108,15 @@ Write to `<base_dir>/data/<tag>_deepdive_<N>.json`:
 ```
 
 **MANDATORY: Write this file. The orchestrator reads it to compile the round report and update the STALLED check.**
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write `data/<tag>_deepdive_<N>.json` using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Did you run `p4 edit` on any `src/rtl/...` file?** → That is wrong — RTL files need no `p4 edit`
+3. **Did you write RTL fixes to `publish_rtl/` paths?** → That is wrong — resolve CDC/RDC fixes to `src/rtl/`
+
+Do NOT finish your turn until the output JSON is written to disk.

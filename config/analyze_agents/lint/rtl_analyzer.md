@@ -186,3 +186,15 @@ Content: <your JSON output>
 ```
 
 The fix consolidator globs `data/<tag>_rtl_lint_*.json` to collect all RTL analyzer results. If you do not write the file, the fixes for this RTL file will be lost.
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write `data/<tag>_rtl_lint_<N>.json` using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — use `src/rtl/` paths in your `rtl_file` field
+3. **Did you suggest adding waivers?** → Wrong — ZERO waivers for Lint. All fixes must be in RTL source.
+
+Do NOT finish your turn until the output JSON is written to disk.

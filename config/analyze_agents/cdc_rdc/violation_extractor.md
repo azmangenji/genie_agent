@@ -124,4 +124,15 @@ For CDC/RDC violation types, schemes, and severity definitions:
 - CDC violation types (no_sync, multi_bits, combo_logic, DMUX, reconvergence)
 - RDC domain crossing schemes (rdc_areset, rdc_dff, rdc_isolation_*, rdc_ordered, etc.)
 - Reset tree check types (reset_as_data, reset_unresettable_register, nrr_on_reset_path, etc.)
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write `data/<tag>_extractor_cdc.json` using the Write tool?** → If not, do it now — do NOT finish without it
+2. Did you extract violations from BOTH CDC and RDC reports (when check_type is cdc_rdc)?
+
+Do NOT finish your turn until the output JSON is written to disk.
 - Result categories (Violations, Cautions, Evaluations, Proven, Waived)

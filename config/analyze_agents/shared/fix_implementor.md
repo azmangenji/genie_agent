@@ -319,3 +319,15 @@ Where `<check_type_short>`:
 - **SPG_DFT RTL fixes**: use path as-is — SPG_DFT does NOT run rhea_build, so `publish_rtl/` is stable between rounds
 - If `fix_action` is vague or ambiguous, log as `requires_investigation` — do NOT guess
 - `requires_investigation` list in output JSON is read by orchestrator to spawn Deep-Dive Agents — include full context (signal, investigation_context, ref_dir, ip, tag, base_dir)
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write the output JSON to disk using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Did you run `p4 edit` on any `src/rtl/...` file?** → That is wrong — RTL files need no `p4 edit`
+3. **Did you write RTL fixes to `publish_rtl/` paths?** → That is wrong — CDC/RDC and Lint fixes must target `src/rtl/`
+
+Do NOT finish your turn until `data/<tag>_fix_applied_<check_type_short>.json` is written to disk.

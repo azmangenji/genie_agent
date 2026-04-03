@@ -339,3 +339,15 @@ For CDC/RDC constraint syntax, violation types, fix patterns, and waiver format:
 - CDC violation types and fix approaches (no_sync, multi_bits, combo_logic)
 - RDC domain crossing schemes (rdc_areset, rdc_isolation_*, rdc_ordered, etc.)
 - Reset tree check types (reset_as_data, reset_unresettable_register, nrr_on_reset_path, etc.)
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write `data/<tag>_rtl_analysis_cdc_<N>.json` using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Did you run `p4 edit` on any file?** → Wrong — this agent is read-only, no file modifications allowed
+3. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — use `src/rtl/` paths in your `rtl_file` field
+
+Do NOT finish your turn until the output JSON is written to disk.

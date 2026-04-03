@@ -4,6 +4,18 @@
 
 ---
 
+## PRE-FLIGHT: Load Critical Rules (Do This First)
+
+**Before taking any other action:**
+
+1. Read `config/analyze_agents/shared/CRITICAL_RULES.md`
+2. Store its full content as `CRITICAL_RULES_BLOCK`
+3. Prepend `CRITICAL_RULES_BLOCK` at the **very TOP** of EVERY sub-agent prompt you construct
+
+This ensures agents always have the most critical rules at the top of their context before detailed instructions, preventing context-displacement of key rules during long analysis runs.
+
+---
+
 ## CRITICAL: MUST USE TASK TOOL TO INVOKE SUB-AGENTS
 
 **DO NOT analyze reports directly.** You MUST use the Task tool to spawn specialized sub-agents.
@@ -495,11 +507,13 @@ Once monitoring agent returns, **spawn analysis agents using the Task tool**.
 
 **DO NOT read reports directly in main session. ALWAYS invoke agents.**
 
-### CRITICAL: Include Permissions + Storage Info in Every Agent Prompt
+### CRITICAL: Include Critical Rules + Permissions + Storage Info in Every Agent Prompt
 
-**Every Task prompt MUST start with this block:**
+**Every Task prompt MUST start with these blocks IN ORDER:**
 
 ```
+<CRITICAL_RULES_BLOCK>    ← paste the full content of CRITICAL_RULES.md here (loaded in Pre-Flight above)
+
 **PERMISSIONS - READ THIS FIRST:**
 You have FULL READ ACCESS to all files under /proj/.
 Do NOT ask for permission - just read files directly using the Read tool.
@@ -510,6 +524,8 @@ Proceed immediately with reading any file paths under /proj/.
 Write your JSON findings to: <base_dir>/data/<tag>_<agent_file>.json
 Use the Write tool to save your output. Do NOT just return results in text.
 ```
+
+The CRITICAL_RULES_BLOCK at the top is the agent's first instruction. Placing it there prevents it from being displaced by RTL file contents later in the context.
 
 ### Agent Invocation Examples
 
@@ -1185,6 +1201,38 @@ That's it. All details are in the email.
 - For critical failures (no report found), abort that flow
 - Always compile partial results
 - Always send email with whatever was collected
+
+### Output File Validation — Apply After EVERY Sub-Agent Call
+
+After each sub-agent returns, immediately verify its required output file exists:
+```bash
+ls <base_dir>/data/<tag>_<expected_output> 2>/dev/null
+```
+
+**Expected output files:**
+
+| Agent | Expected File |
+|-------|--------------|
+| CDC precondition | `<tag>_precondition_cdc.json` |
+| CDC extractor | `<tag>_extractor_cdc.json` |
+| SPG_DFT extractor | `<tag>_extractor_spgdft.json` |
+| Lint extractor | `<tag>_extractor_lint.json` |
+| CDC RTL analyzer N | `<tag>_rtl_analysis_cdc_<N>.json` |
+| SPG_DFT RTL analyzer N | `<tag>_rtl_analysis_spgdft_<N>.json` |
+| Lint RTL analyzer N | `<tag>_rtl_analysis_lint_<N>.json` |
+| Library finder | `<tag>_library_finder.json` |
+| Fix consolidator (CDC) | `<tag>_consolidated_cdc.json` |
+| Fix consolidator (Lint) | `<tag>_consolidated_lint.json` |
+| Fix consolidator (SPG_DFT) | `<tag>_consolidated_spgdft.json` |
+| Fix implementor (CDC) | `<tag>_fix_applied_cdc.json` |
+| Fix implementor (Lint) | `<tag>_fix_applied_lint.json` |
+| Fix implementor (SPG_DFT) | `<tag>_fix_applied_spgdft.json` |
+| Deep-dive agent N | `<tag>_deepdive_<N>.json` |
+
+**If file is MISSING after agent completes:**
+1. Re-invoke the same agent **once** with this prepended to its prompt:
+   `"⚠️ RETRY: Your previous run did not write the required output JSON. You MUST call the Write tool to save results before finishing."`
+2. If still missing after retry: log `"STEP FAILED: <agent_name> output not written"` in the round report and continue with best-effort.
 
 ---
 

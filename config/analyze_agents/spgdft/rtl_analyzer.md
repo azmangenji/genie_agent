@@ -220,3 +220,15 @@ Content: <your JSON output>
 ```
 
 The report compiler globs `data/<tag>_rtl_*.json` to collect all RTL analyzer results. If you do not write the file, your analysis will be lost.
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write `data/<tag>_rtl_spgdft_<N>.json` using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Did you run `p4 edit` on any file?** → Wrong — this agent is read-only, no file modifications allowed
+3. **Did you propose RTL fix paths using `src/rtl/`?** → For SPG_DFT, use the path AS-IS (not src/rtl/ resolution)
+
+Do NOT finish your turn until the output JSON is written to disk.

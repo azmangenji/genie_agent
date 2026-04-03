@@ -200,3 +200,14 @@ Content: <your JSON output>
 ```
 
 The report compiler reads this file from disk. If you do not write it, the final report will be incomplete.
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write `data/<tag>_extractor_spgdft.json` using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Did you accidentally modify any source files?** → Wrong — this agent is read-only
+
+Do NOT finish your turn until the output JSON is written to disk.

@@ -529,3 +529,15 @@ After Library finder results, add:
    - `cdc_rdc`  → `data/<tag>_analysis_cdc.html`
    - `lint`     → `data/<tag>_analysis_lint.html`
    - `spg_dft`  → `data/<tag>_analysis_spgdft.html`
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write the HTML file to disk using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Is every `<td>` styled with explicit `color:` attribute?** → Required for AMD email client compatibility
+3. **Did you use violation counts from extractor JSON verbatim?** → Do NOT recount — trust the extractor numbers
+
+Do NOT finish your turn until the HTML report file is written to disk.

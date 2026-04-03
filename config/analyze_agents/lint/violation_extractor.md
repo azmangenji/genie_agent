@@ -202,3 +202,14 @@ Content: <your JSON output>
 ```
 
 The orchestrator reads `violations_by_file` to spawn one RTL analyzer agent per unique RTL file, and reads `focus_violations` / `total_unwaived` / `filtered_count` for the round report. If you do not write the file, no analysis will run.
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write `data/<tag>_extractor_lint.json` using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Did you accidentally add waiver entries?** → Wrong — lint extractors are read-only, no file modifications
+
+Do NOT finish your turn until the output JSON is written to disk.
