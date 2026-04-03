@@ -43,7 +43,7 @@ This directory provides Claude Code with skills, agents, and templates for UVM-b
 | `--execute` | `-e` | Actually execute (default is dry-run) |
 | `--xterm` | `-x` | Run in xterm popup window |
 | `--email` | `-m` | Send results to debuggers from assignment.csv |
-| `--to EMAIL` | | Override email recipients |
+| `--to EMAIL` | | Override email recipients — **MUST be used together with `--email`**, e.g. `--email --to Azman.BinBabah@amd.com` |
 | `--analyze` | `-a` | Claude monitors and analyzes results (static checks) |
 | `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
 | `--analyze-fixer` | | Analyze + auto-apply constraint fixes + rerun loop until clean (max 5 rounds) |

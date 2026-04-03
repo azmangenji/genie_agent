@@ -92,7 +92,7 @@ The agent runs from the current `main_agent` directory (your working directory).
 | `--execute` | `-e` | Actually execute the command (default is dry-run) |
 | `--xterm` | `-x` | Run task in xterm popup window (interactive mode) |
 | `--email` | `-m` | Send results to debugger emails from assignment.csv |
-| `--to EMAIL` | | Override email recipients (comma-separated). Use with `--email` |
+| `--to EMAIL` | | Override email recipients — **MUST be used together with `--email`**, e.g. `--email --to Azman.BinBabah@amd.com` |
 | `--list` | `-l` | List all available instructions |
 | `--status` | `-s` | Check status of a task by tag |
 | `--tasks` | `-t` | List tasks: `running`, `today`, `yesterday`, or `YYYY-MM-DD` |

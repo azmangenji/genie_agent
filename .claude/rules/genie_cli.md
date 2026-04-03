@@ -18,7 +18,7 @@ paths:
 | `--execute` | `-e` | Execute command (default is dry-run) |
 | `--xterm` | `-x` | Run in xterm popup window |
 | `--email` | `-m` | Send results to debuggers from assignment.csv |
-| `--to EMAIL` | | Override email recipients |
+| `--to EMAIL` | | Override email recipients — **MUST be used together with `--email`**, e.g. `--email --to Azman.BinBabah@amd.com` |
 | `--list` | `-l` | List all available instructions |
 | `--status` | `-s` | Check task status by tag |
 | `--tasks` | `-t` | List tasks: `running`, `today`, `yesterday`, or `YYYY-MM-DD` |
