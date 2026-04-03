@@ -695,13 +695,14 @@ Analyze-fixer extends the analyze flow by automatically applying all fixes and r
 
 | Check Type | Auto-Applied | NOT Auto-Applied |
 |------------|-------------|-----------------|
-| CDC/RDC | `constraint` fixes to `project.0in_ctrl.v.tcl` | — |
-| CDC/RDC | `rtl_fix` — exact synchronizer RTL inserted into source | — |
+| CDC/RDC | `constraint` fixes → `src/meta/tools/cdc0in/variant/<ip>/project.0in_ctrl.v.tcl` | — |
+| CDC/RDC | `rtl_fix` — exact synchronizer RTL inserted into **`src/rtl/`** (resolved from basename) | — |
 | CDC/RDC | `investigate` → resolved by Deep-Dive Agent | truly unresolvable items |
-| Lint | `rtl_fix` — driver/connection fix inserted into RTL source | — |
-| Lint | `tie_off` — `assign sig = 0;` inserted after declaration | — |
+| Lint | `rtl_fix` — driver/connection fix inserted into **`src/rtl/`** (resolved from basename) | — |
+| Lint | `tie_off` — `assign sig = 0;` inserted after declaration in **`src/rtl/`** | — |
 | Lint | `investigate` → resolved by Deep-Dive Agent | truly unresolvable items |
-| SPG_DFT | `constraint` fixes to `project.params` | `rtl_fix`, `investigate` |
+| SPG_DFT | `constraint` fixes → `src/meta/tools/spgdft/variant/<ip>/project.params` | — |
+| SPG_DFT | `rtl_fix` — exact RTL inserted using **path as-is** (publish_rtl/ stable, no rhea_build) | `investigate` |
 
 **ZERO WAIVERS** — no entries added to any waiver XML file across any check type.
 
@@ -725,7 +726,14 @@ Round N:
   STEP 2: Fix Implementor
     - Applies: constraint fixes + rtl_fix to target files
     - Logs: investigate items → requires_investigation list
-    - Backup: <file>.bak_<tag> before first edit; p4 edit before modify
+    - Backup: cp <file> <file>.bak_<tag> — once per file per round
+    - p4 edit ONLY for constraint/meta files (src/meta/tools/...) — NEVER for RTL files (src/rtl/...)
+    - CDC/RDC & Lint RTL: resolve path to src/rtl/ via `find src/rtl -name <basename>`
+      (publish_rtl/ is wiped every rerun — edits there are lost)
+    - SPG_DFT RTL: use path as-is (SPG_DFT does not run rhea_build; publish_rtl/ is stable)
+    - For full_static_check: implementors run SEQUENTIALLY (CDC → Lint → SPG_DFT)
+      to prevent duplicate edits to the same src/rtl/ file
+    - Cross-check duplicate check: reads existing _fix_applied_*.json before applying
     - Writes: data/<tag>_fix_applied_<type>.json
 
   STEP 2b: Deep-Dive Agents (parallel, one per investigate item)
@@ -789,6 +797,49 @@ Both analyze and analyze-fixer modes delegate ALL work to a single **foreground 
 
 ---
 
+## Reliability Defenses — Agent Forgetting Prevention
+
+Agents can forget critical rules as their context fills with RTL file contents. Two layers prevent this:
+
+### Layer 1 — CRITICAL_RULES.md (Prevention)
+
+`config/analyze_agents/shared/CRITICAL_RULES.md` contains a ≤25-line rule card. The orchestrator:
+
+1. Reads this file at startup (Pre-Flight block)
+2. Stores content as `CRITICAL_RULES_BLOCK`
+3. Prepends it at the **top** of every sub-agent prompt — before detailed instructions
+
+Placing rules at the top ensures they are never displaced by RTL content later in context.
+
+**Rules covered:**
+- `p4 edit` ONLY for `src/meta/tools/...` — NEVER for `src/rtl/...`
+- CDC/RDC & Lint RTL paths must resolve to `src/rtl/` (publish_rtl/ is wiped each rerun)
+- SPG_DFT RTL paths use path as-is (stable between reruns)
+- Output JSON MUST be written to disk with Write tool
+- Lint: ZERO waivers — all fixes in RTL source only
+- Fix Implementors run SEQUENTIALLY for full_static_check
+
+### Layer 2 — Output Validation + Retry (Recovery)
+
+After every sub-agent completes, the orchestrator checks if the required JSON was written:
+
+```bash
+ls data/<tag>_<expected_output>.json 2>/dev/null
+```
+
+- **EXISTS** → proceed to next step
+- **MISSING** → re-invoke agent once with `"⚠️ RETRY: You did not write the output JSON. Call Write tool."`
+- **Still missing after retry** → log `"STEP FAILED: <agent_name>"` in report, continue best-effort
+
+### Self-Check Footers
+
+Each agent MD file ends with a SELF-CHECK block reminding the agent to:
+1. Write its output JSON before finishing
+2. Not apply `p4 edit` to RTL files
+3. Not write RTL fixes to `publish_rtl/` paths
+
+---
+
 ## Key Design Decisions
 
 | Decision | Reason |
@@ -817,13 +868,21 @@ Both analyze and analyze-fixer modes delegate ALL work to a single **foreground 
 | Foreground orchestrator agent | Live output visible; fresh context window; main session context not consumed |
 | Zero waivers across all check types | All violations fixed in RTL or constrained — no entries added to any waiver XML |
 | CDC/RDC rtl_fix auto-applied | Synchronizer RTL inserted directly — requires exact RTL lines + file + insert_after_line from analyzer |
+| SPG_DFT rtl_fix auto-applied (path as-is) | SPG_DFT does NOT run rhea_build — publish_rtl/ is stable between rounds, so path as-is is safe |
+| CDC/RDC & Lint RTL paths resolved to src/rtl/ | rhea_build wipes publish_rtl/ on every rerun — fixes written there are lost; src/rtl/ is the true source |
+| p4 edit constraint files only, never RTL | RTL files (src/rtl/) are written directly — they are not Perforce-managed in the same way as meta files |
+| Sequential fix implementors for full_static_check | Parallel implementors could write duplicate RTL to the same src/rtl/ file; sequential ensures each sees the previous one's edits |
+| Cross-check duplicate prevention (Step 1b) | After sequential execution, each implementor also reads previous _fix_applied_*.json to catch any cross-type duplicates |
+| CRITICAL_RULES.md prepended to all prompts | Placing critical rules at prompt start prevents context-displacement as agents accumulate RTL content |
+| Output validation + retry after each agent | Catches missing JSON output (most common failure mode) and retries once before logging error |
 | Per-round email + final summary | Engineers see progress after each round; final email shows full violation trend |
 
 ---
 
-**Version:** 1.3 | **Created:** 2026-03-19 | **Updated:** 2026-04-01
+**Version:** 1.4 | **Created:** 2026-03-19 | **Updated:** 2026-04-02
 
 **Changelog:**
+- v1.4: RTL path resolution — CDC/RDC & Lint fixes now target `src/rtl/` (publish_rtl/ wiped each rerun); SPG_DFT rtl_fix now auto-applied (path as-is, publish_rtl/ stable); p4 edit restricted to constraint/meta files only; sequential fix implementor execution for full_static_check; cross-check duplicate prevention (Step 1b reads existing _fix_applied_*.json); added Reliability Defenses section (CRITICAL_RULES.md, output validation + retry, SELF-CHECK footers); IP_CONFIG.yaml used for report path resolution in all extractors
 - v1.3: Added Entry Points C/D (`--analyze-fixer`, `--analyze-fixer-only`); full analyze-fixer mode section (fix implementor, deep-dive agent, fix_history, round loop, termination conditions); updated lint RTL analyzer to file-grouped approach; updated CDC/RDC RTL analyzer to require exact RTL for rtl_fix; zero waivers policy; foreground orchestrator; updated file storage table with fixer files
 - v1.2: Added Entry Point B (`--analyze-only`, analyze instructions, `SKIP_MONITORING=true`); added Fix Consolidator (Wave 2.5); updated SpgDFT extractor to read from spec file; updated CDC RTL analyzer `-type` selection; updated HTML report style to light/clean
 - v1.1: 3-report / 3-email split for full_static_check

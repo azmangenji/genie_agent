@@ -258,7 +258,8 @@ Also creates: `data/<tag>_analyze` with the same info.
               │                              │                              │
     ┌─────────┴─────────┐          ┌─────────┴─────────┐          ┌─────────┴─────────┐
     │   CDC Violations  │          │   RDC Violations  │          │                   │
-    │   (up to 5)       │          │   (up to 5)       │          │                   │
+    │  (up to 10, or 20 │          │  (up to 10, or 20 │          │                   │
+    │  if RDC clean)    │          │  if CDC clean)    │          │                   │
     └────────┬──────────┘          └────────┬──────────┘          │                   │
              │                              │                     │                   │
     ┌────────┴────────┐            ┌────────┴────────┐            │                   │
@@ -850,8 +851,8 @@ Also read the clock port from the instantiation's port connections (`.CP(...)`, 
    Do NOT spawn agents for clean checks.
 
 3. Spawn whichever RTL analyzer agents are NOT skipped (in PARALLEL)
-   - CDC: up to 5 violations in parallel
-   - RDC: up to 5 violations in parallel
+   - CDC: up to 10 violations in parallel (or up to 20 if RDC is CLEAN)
+   - RDC: up to 10 violations in parallel (or up to 20 if CDC is CLEAN)
    - Lint: one agent per unique RTL file (all violations in that file handled by one agent)
    - SpgDFT: up to N violations in parallel
    - Library Finder: 1 agent (if unresolved/blackbox > 0)
@@ -1022,10 +1023,10 @@ cdc report crossing -id no_sync_99 -comment "Static signal" -status waived
 
 | Flow | Agents | Est. Tokens |
 |------|--------|-------------|
-| **CDC/RDC** | Precondition + Library + Extractor + 5 RTL | ~22,000 |
-| **Lint** | Extractor + 5 RTL | ~18,000 |
-| **SpgDFT** | Precondition + Library + Extractor + 5 RTL | ~22,000 |
-| **Full Static** | All three flows | ~62,000 |
+| **CDC/RDC** | Precondition + Library + Extractor + 10 RTL | ~35,000 |
+| **Lint** | Extractor + N RTL | ~18,000 |
+| **SpgDFT** | Precondition + Library + Extractor + N RTL | ~22,000 |
+| **Full Static** | All three flows | ~75,000 |
 
 vs Single Agent (~100,000+ tokens)
 
@@ -1156,7 +1157,8 @@ That's it. All details are in the email.
    └── SpgDFT RTL Analyzers → skip if SpgDFT focus_violations == 0
          │
 7. Spawn whichever RTL analyzer agents are NOT skipped (IN PARALLEL)
-   │   - One agent per violation (up to 5 CDC + 5 RDC + N Lint + N SpgDFT)
+   │   - One agent per violation (up to 10 CDC + 10 RDC + N Lint + N SpgDFT)
+   │   - If RDC is CLEAN: CDC gets up to 20 slots; if CDC is CLEAN: RDC gets up to 20 slots
    │   - Skipped checks → mark "CLEAN" in report
          │
 7.5 Spawn FIX CONSOLIDATOR AGENT(S) via Task tool (IN PARALLEL):

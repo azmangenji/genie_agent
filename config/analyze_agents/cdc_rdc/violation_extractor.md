@@ -15,13 +15,30 @@ Extract **ERROR severity** violations from CDC and RDC reports.
 
 **Important:** Select violations to cover ALL violation types (buckets), not just pick from one bucket.
 
-For each check (CDC, RDC):
+### Budget Rules
+
+| Condition | CDC budget | RDC budget |
+|-----------|-----------|-----------|
+| Both CDC and RDC have violations | up to 10 | up to 10 |
+| RDC is CLEAN (0 violations after filter) | up to 20 | 0 |
+| CDC is CLEAN (0 violations after filter) | 0 | up to 20 |
+
+**If RDC is clean, give all 20 slots to CDC — and vice versa.**
+
+For each check, within its budget:
 1. First, group violations by type (bucket)
 2. Select up to 2-3 violations PER bucket type
-3. Total up to 10 violations per check, but distributed across ALL buckets
+3. Distribute across ALL buckets up to the budget limit
 
-**Example:** If CDC has 3 violation types:
-- `no_sync`: 100 violations → show 3-4 examples
+**Example — RDC clean, CDC gets full budget:**
+- CDC budget = 20 (RDC = 0, so CDC gets all 20 slots)
+- `no_sync`: 100 violations → show 8-10 examples
+- `series_redundant`: 5 violations → show 5 examples
+- `reconvergence`: 2 violations → show 2 examples
+
+**Example — both have violations:**
+- CDC budget = 10, RDC budget = 10
+- `no_sync`: 100 violations → show 3-4 examples (per check)
 - `series_redundant`: 5 violations → show 2-3 examples
 - `reconvergence`: 2 violations → show 2 examples
 
@@ -78,10 +95,11 @@ Read the actual report and extract whatever fields exist. Common fields:
 2. Read CDC Section 3 (CDC Results) and RDC Section 5 (RDC Results)
 3. Parse the violation table - extract whatever columns exist
 4. Filter LOW_RISK patterns
-5. **Group by violation type first** (bucket)
-6. **Select 2-3 violations from EACH bucket** (cover all types)
-7. Total up to 10 violations per check, distributed across all buckets
-8. Group by clock domain pairs (whatever domains exist in report)
+5. **Determine budgets** — apply Budget Rules above (check if other report is clean first)
+6. **Group by violation type first** (bucket)
+7. **Select 2-3 violations from EACH bucket** (cover all types)
+8. Total up to budget limit per check (10 normal / 20 if other check is clean), distributed across all buckets
+9. Group by clock domain pairs (whatever domains exist in report)
 
 ## Output
 
