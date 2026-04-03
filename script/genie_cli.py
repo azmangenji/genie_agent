@@ -1165,6 +1165,7 @@ class GenieCLI:
         spg_dft_params_list = []
         p4_file_list = []
         p4_description = ""
+        net_name = ""
 
         # Split by newlines, commas, and " and " to handle multi-line input and inline params
         # Replace " and " with newline (but only when followed by a param pattern)
@@ -1291,6 +1292,16 @@ class GenieCLI:
                     clean_lines.append(remaining)
                 continue
 
+            # NetName pattern: NetName: <net_suffix>
+            net_name_match = re.search(r'NetName:\s*(\S+)', line, re.I)
+            if net_name_match:
+                net_name = net_name_match.group(1).strip()
+                print(f"# Detected NetName: {net_name}")
+                remaining = (line[:net_name_match.start()] + ' ' + line[net_name_match.end():]).strip()
+                if remaining:
+                    clean_lines.append(remaining)
+                continue
+
             # Check if this line contains a PARAM = VALUE pattern
             if '=' in line:
                 # Try to extract PARAM = VALUE from the line
@@ -1355,6 +1366,7 @@ class GenieCLI:
             'analogip': 'analogip', 'sram': 'sram', 'std': 'std', 'edatool': 'edatool',
             'checkType': 'checkType', 'updateType': 'updateType',
             'params': 'params', 'controls': 'controls', 'tune': 'tune', 'tag': 'tag',
+            'netName': 'netName',
             'disk': self.vtoInfo['disk'], 'project': self.vtoInfo['project'],
             'ownTiles': self.vtoInfo['tile'], 'ip': self.vtoInfo.get('ip', 'ip')
         }
@@ -1508,6 +1520,10 @@ class GenieCLI:
                 script = best_match['script']
                 matched_instruction = best_match['text']
 
+        # Populate netName into arguementInfo if detected
+        if net_name:
+            arguementInfo['netName'] = 'netName:' + net_name
+
         # Bundle all special content lists
         special_content = {
             'params': params_list,
@@ -1519,7 +1535,8 @@ class GenieCLI:
             'version': version_list,
             'spg_dft_params': spg_dft_params_list,
             'p4_file': p4_file_list,
-            'p4_description': p4_description
+            'p4_description': p4_description,
+            'net_name': net_name
         }
         return script, matched_instruction, arguementInfo, special_content
 
@@ -1570,6 +1587,7 @@ class GenieCLI:
         spg_dft_params_list = special_content.get('spg_dft_params', [])
         p4_file_list = special_content.get('p4_file', [])
         p4_description = special_content.get('p4_description', '')
+        net_name = special_content.get('net_name', '')
 
         if not script:
             print("ERROR: Could not match instruction to any known command")
@@ -1685,6 +1703,8 @@ class GenieCLI:
                 print(f"    - {p}")
         if p4_description:
             print(f"  p4_description: {p4_description}")
+        if net_name:
+            print(f"  net_name: {net_name}")
         print()
 
         if dry_run:

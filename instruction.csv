@@ -79,3 +79,7 @@ could you analyze and fix cdc_rdc at following directory,analyze_fixer_only $ref
 could you analyze and fix lint at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
 could you analyze and fix spg_dft at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
 could you fix violations at following directory,analyze_fixer_only $refDir $ip $checkType $tag,136,analyze_fixer,,,abinbaba@amd.com
+could you find equivalent nets at following directory,rtg_oss_feint/supra/find_equivalent_nets.csh $refDir $tag $target $netName $tile,141,start run,,,abinbaba@amd.com
+could you find equivalent nets,rtg_oss_feint/supra/find_equivalent_nets.csh $refDir $tag $target $netName $tile,141,start run,,,abinbaba@amd.com
+could you run find equivalent nets at following directory,rtg_oss_feint/supra/find_equivalent_nets.csh $refDir $tag $target $netName $tile,141,start run,,,abinbaba@amd.com
+could you run find equivalent nets,rtg_oss_feint/supra/find_equivalent_nets.csh $refDir $tag $target $netName $tile,141,start run,,,abinbaba@amd.com
