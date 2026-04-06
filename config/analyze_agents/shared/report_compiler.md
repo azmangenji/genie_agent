@@ -102,9 +102,9 @@ After Library finder results, add:
 **Read these rules BEFORE writing any HTML. Do NOT deviate from the template below.**
 
 1. **COPY THE TEMPLATE LITERALLY.** Do NOT add outer wrapper tables, gray page backgrounds (`#f0f0f0`), or any structural elements not in the template.
-2. **`max-width` is `680px`** — NEVER use `width="860"` or any other fixed table width. NEVER use `max-width:960px`.
-3. **`body padding` is `16px 20px`** — NEVER use `padding:28px` or more. That creates the large empty space at the top.
-4. **MINIMUM font-size is `14px` everywhere** — NEVER write `font-size:11px`, `font-size:12px`, or `font-size:13px` ANYWHERE. This includes badges, labels, monospace text, footers, and `<pre>` blocks.
+2. **`max-width` is `960px`** — NEVER use any other fixed table width. NEVER use `max-width:680px` (too narrow for browser).
+3. **`body padding` is `20px 28px`** — gives breathing room on browser view.
+4. **MINIMUM font-size is `16px` everywhere** — NEVER write `font-size:11px`, `font-size:12px`, `font-size:13px`, `font-size:14px`, or `font-size:15px` ANYWHERE. This includes badges, labels, monospace text, footers, and `<pre>` blocks.
 5. **Header is a light left-border div** (as shown in template) — NEVER use a dark/filled background color block for the header.
 6. **Table cell numbers use the SAME font-size as the table** — NEVER set numbers to `font-size:18px` or `font-size:20px` to make them look "big".
 7. **Zero nested table structures in the header** — one simple `<div>` is enough.
@@ -113,7 +113,7 @@ After Library finder results, add:
 
 ## HTML Template — Light / Clean Style
 
-**White background, 15px font, minimal decoration. No flowchart, no arrows, no gates.**
+**White background, 17px font, generous spacing. No flowchart, no arrows, no gates.**
 
 ```html
 <!DOCTYPE html>
@@ -122,75 +122,75 @@ After Library finder results, add:
 <meta charset="UTF-8">
 <title>{check_type_label} Analysis - {ip} @ {dir_name}</title>
 </head>
-<body style="font-family:Arial,Helvetica,sans-serif; font-size:15px; color:#1a1a1a; background:#ffffff; margin:0; padding:16px 20px;">
-<div style="max-width:680px; margin:0 auto;">
+<body style="font-family:Arial,Helvetica,sans-serif; font-size:17px; color:#1a1a1a; background:#ffffff; margin:0; padding:20px 28px;">
+<div style="max-width:960px; margin:0 auto;">
 
 <!-- ══════════════════════════════════════════
      HEADER
      ══════════════════════════════════════════ -->
-<div style="border-left:5px solid {accent_color}; padding:14px 20px; background:{accent_light_bg}; border-radius:0 6px 6px 0; margin-bottom:28px;">
-  <div style="font-size:22px; font-weight:700; color:{accent_dark};">{check_type_label} Analysis Report</div>
-  <div style="font-size:14px; color:#555; margin-top:6px;">
+<div style="border-left:6px solid {accent_color}; padding:14px 20px; background:{accent_light_bg}; border-radius:0 8px 8px 0; margin-bottom:28px;">
+  <div style="font-size:26px; font-weight:700; color:{accent_dark};">{check_type_label} Analysis Report</div>
+  <div style="font-size:16px; color:#555; margin-top:8px;">
     <b>IP:</b> {ip} &nbsp;&nbsp;|&nbsp;&nbsp; <b>Tag:</b> {tag} &nbsp;&nbsp;|&nbsp;&nbsp; <b>Tree:</b> {dir_name}
   </div>
-  <div style="font-size:14px; color:#888; margin-top:3px;">{ref_dir}</div>
+  <div style="font-size:16px; color:#888; margin-top:4px;">{ref_dir}</div>
 </div>
 
 <!-- ══════════════════════════════════════════
      SUMMARY TABLE
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid {accent_color}; padding-left:12px; margin-bottom:14px;">Summary</div>
-  <table style="width:100%; border-collapse:collapse; font-size:15px;">
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid {accent_color}; padding-left:12px; margin-bottom:12px;">Summary</div>
+  <table style="width:100%; border-collapse:collapse; font-size:17px;">
     <thead>
       <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
-        <th style="padding:11px 14px; text-align:left; color:#444; font-weight:600;">Check</th>
-        <th style="padding:11px 14px; text-align:center; color:#444; font-weight:600;">Total</th>
-        <th style="padding:11px 14px; text-align:center; color:#444; font-weight:600;">Filtered (DFT/RSMU)</th>
-        <th style="padding:11px 14px; text-align:center; color:#444; font-weight:600;">Focus</th>
-        <th style="padding:11px 14px; text-align:center; color:#444; font-weight:600;">Status</th>
+        <th style="padding:11px 16px; text-align:left; color:#444; font-weight:600;">Check</th>
+        <th style="padding:11px 16px; text-align:center; color:#444; font-weight:600;">Total</th>
+        <th style="padding:11px 16px; text-align:center; color:#444; font-weight:600;">Filtered (DFT/RSMU)</th>
+        <th style="padding:11px 16px; text-align:center; color:#444; font-weight:600;">Focus</th>
+        <th style="padding:11px 16px; text-align:center; color:#444; font-weight:600;">Status</th>
       </tr>
     </thead>
     <tbody>
       <!-- CDC row — only for cdc_rdc check_type -->
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:11px 14px; color:#c0392b; font-weight:600;">CDC</td>
-        <td style="padding:11px 14px; text-align:center; color:#1a1a1a;">{cdc_total}</td>
-        <td style="padding:11px 14px; text-align:center; color:#666;">{cdc_filtered}</td>
-        <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{cdc_focus}</td>
-        <td style="padding:11px 14px; text-align:center;">
+        <td style="padding:11px 16px; color:#c0392b; font-weight:600;">CDC</td>
+        <td style="padding:11px 16px; text-align:center; color:#1a1a1a;">{cdc_total}</td>
+        <td style="padding:11px 16px; text-align:center; color:#666;">{cdc_filtered}</td>
+        <td style="padding:11px 16px; text-align:center; color:#2563eb; font-weight:700;">{cdc_focus}</td>
+        <td style="padding:11px 16px; text-align:center;">
           <!-- NEEDS ACTION badge: bg #fee2e2 color #b91c1c | CLEAN badge: bg #d1fae5 color #065f46 -->
-          <span style="background:{cdc_badge_bg}; color:{cdc_badge_color}; padding:3px 11px; border-radius:4px; font-size:14px; font-weight:600;">{cdc_status}</span>
+          <span style="background:{cdc_badge_bg}; color:{cdc_badge_color}; padding:4px 12px; border-radius:4px; font-size:16px; font-weight:600;">{cdc_status}</span>
         </td>
       </tr>
       <!-- RDC row — only for cdc_rdc check_type -->
       <tr style="border-bottom:1px solid #eee; background:#fafafa;">
-        <td style="padding:11px 14px; color:#c0392b; font-weight:600;">RDC</td>
-        <td style="padding:11px 14px; text-align:center; color:#1a1a1a;">{rdc_total}</td>
-        <td style="padding:11px 14px; text-align:center; color:#666;">{rdc_filtered}</td>
-        <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{rdc_focus}</td>
-        <td style="padding:11px 14px; text-align:center;">
-          <span style="background:{rdc_badge_bg}; color:{rdc_badge_color}; padding:3px 11px; border-radius:4px; font-size:14px; font-weight:600;">{rdc_status}</span>
+        <td style="padding:11px 16px; color:#c0392b; font-weight:600;">RDC</td>
+        <td style="padding:11px 16px; text-align:center; color:#1a1a1a;">{rdc_total}</td>
+        <td style="padding:11px 16px; text-align:center; color:#666;">{rdc_filtered}</td>
+        <td style="padding:11px 16px; text-align:center; color:#2563eb; font-weight:700;">{rdc_focus}</td>
+        <td style="padding:11px 16px; text-align:center;">
+          <span style="background:{rdc_badge_bg}; color:{rdc_badge_color}; padding:4px 12px; border-radius:4px; font-size:16px; font-weight:600;">{rdc_status}</span>
         </td>
       </tr>
       <!-- Lint row — only for lint check_type -->
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:11px 14px; color:#d97706; font-weight:600;">Lint</td>
-        <td style="padding:11px 14px; text-align:center; color:#1a1a1a;">{lint_total}</td>
-        <td style="padding:11px 14px; text-align:center; color:#666;">{lint_filtered}</td>
-        <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{lint_focus}</td>
-        <td style="padding:11px 14px; text-align:center;">
-          <span style="background:{lint_badge_bg}; color:{lint_badge_color}; padding:3px 11px; border-radius:4px; font-size:14px; font-weight:600;">{lint_status}</span>
+        <td style="padding:11px 16px; color:#d97706; font-weight:600;">Lint</td>
+        <td style="padding:11px 16px; text-align:center; color:#1a1a1a;">{lint_total}</td>
+        <td style="padding:11px 16px; text-align:center; color:#666;">{lint_filtered}</td>
+        <td style="padding:11px 16px; text-align:center; color:#2563eb; font-weight:700;">{lint_focus}</td>
+        <td style="padding:11px 16px; text-align:center;">
+          <span style="background:{lint_badge_bg}; color:{lint_badge_color}; padding:4px 12px; border-radius:4px; font-size:16px; font-weight:600;">{lint_status}</span>
         </td>
       </tr>
       <!-- SpgDFT row — only for spg_dft check_type -->
       <tr style="border-bottom:1px solid #eee; background:#fafafa;">
-        <td style="padding:11px 14px; color:#059669; font-weight:600;">SpgDFT</td>
-        <td style="padding:11px 14px; text-align:center; color:#1a1a1a;">{spg_total}</td>
-        <td style="padding:11px 14px; text-align:center; color:#666;">{spg_filtered}</td>
-        <td style="padding:11px 14px; text-align:center; color:#2563eb; font-weight:700;">{spg_focus}</td>
-        <td style="padding:11px 14px; text-align:center;">
-          <span style="background:{spg_badge_bg}; color:{spg_badge_color}; padding:3px 11px; border-radius:4px; font-size:14px; font-weight:600;">{spg_status}</span>
+        <td style="padding:11px 16px; color:#059669; font-weight:600;">SpgDFT</td>
+        <td style="padding:11px 16px; text-align:center; color:#1a1a1a;">{spg_total}</td>
+        <td style="padding:11px 16px; text-align:center; color:#666;">{spg_filtered}</td>
+        <td style="padding:11px 16px; text-align:center; color:#2563eb; font-weight:700;">{spg_focus}</td>
+        <td style="padding:11px 16px; text-align:center;">
+          <span style="background:{spg_badge_bg}; color:{spg_badge_color}; padding:4px 12px; border-radius:4px; font-size:16px; font-weight:600;">{spg_status}</span>
         </td>
       </tr>
     </tbody>
@@ -200,36 +200,36 @@ After Library finder results, add:
 <!-- ══════════════════════════════════════════
      PRECONDITIONS (CDC/RDC only)
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #c0392b; padding-left:12px; margin-bottom:14px;">Preconditions</div>
-  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid #c0392b; padding-left:12px; margin-bottom:12px;">Preconditions</div>
+  <table style="width:100%; border-collapse:collapse; font-size:16px;">
     <thead>
       <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Type</th>
-        <th style="padding:10px 14px; text-align:center; color:#444; font-weight:600;">Count</th>
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Signals / Modules</th>
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Action</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Type</th>
+        <th style="padding:10px 16px; text-align:center; color:#444; font-weight:600;">Count</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Signals / Modules</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Action</th>
       </tr>
     </thead>
     <tbody>
       <!-- One row per precondition type; alternate background #fff / #fafafa -->
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#555;">Inferred Clocks</td>
-        <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{inferred_clk_count}</td>
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{inferred_clk_signals}</td>
-        <td style="padding:10px 14px; color:#555; font-size:14px;">{inferred_clk_action}</td>
+        <td style="padding:10px 16px; color:#555;">Inferred Clocks</td>
+        <td style="padding:10px 16px; text-align:center; color:#1a1a1a; font-family:monospace;">{inferred_clk_count}</td>
+        <td style="padding:10px 16px; color:#333; font-family:monospace; font-size:16px;">{inferred_clk_signals}</td>
+        <td style="padding:10px 16px; color:#555; font-size:16px;">{inferred_clk_action}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee; background:#fafafa;">
-        <td style="padding:10px 14px; color:#555;">Inferred Resets</td>
-        <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{inferred_rst_count}</td>
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{inferred_rst_signals}</td>
-        <td style="padding:10px 14px; color:#555; font-size:14px;">{inferred_rst_action}</td>
+        <td style="padding:10px 16px; color:#555;">Inferred Resets</td>
+        <td style="padding:10px 16px; text-align:center; color:#1a1a1a; font-family:monospace;">{inferred_rst_count}</td>
+        <td style="padding:10px 16px; color:#333; font-family:monospace; font-size:16px;">{inferred_rst_signals}</td>
+        <td style="padding:10px 16px; color:#555; font-size:16px;">{inferred_rst_action}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#c0392b;">Unresolved Modules</td>
-        <td style="padding:10px 14px; text-align:center; color:#1a1a1a; font-family:monospace;">{unresolved_count}</td>
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{unresolved_modules}</td>
-        <td style="padding:10px 14px; color:#555; font-size:14px;">{unresolved_action}</td>
+        <td style="padding:10px 16px; color:#c0392b;">Unresolved Modules</td>
+        <td style="padding:10px 16px; text-align:center; color:#1a1a1a; font-family:monospace;">{unresolved_count}</td>
+        <td style="padding:10px 16px; color:#333; font-family:monospace; font-size:16px;">{unresolved_modules}</td>
+        <td style="padding:10px 16px; color:#555; font-size:16px;">{unresolved_action}</td>
       </tr>
     </tbody>
   </table>
@@ -238,20 +238,20 @@ After Library finder results, add:
 <!-- ══════════════════════════════════════════
      LIBRARY FINDER (if blackbox/unresolved > 0)
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #2563eb; padding-left:12px; margin-bottom:14px;">Library Additions Required</div>
-  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid #2563eb; padding-left:12px; margin-bottom:12px;">Library Additions Required</div>
+  <table style="width:100%; border-collapse:collapse; font-size:16px;">
     <thead>
       <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Module</th>
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Library Path</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Module</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Library Path</th>
       </tr>
     </thead>
     <tbody>
       <!-- One row per module found -->
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{module_name}</td>
-        <td style="padding:10px 14px; color:#2563eb; font-family:monospace; font-size:14px;">{library_path}</td>
+        <td style="padding:10px 16px; color:#333; font-family:monospace; font-size:16px;">{module_name}</td>
+        <td style="padding:10px 16px; color:#2563eb; font-family:monospace; font-size:16px;">{library_path}</td>
       </tr>
     </tbody>
   </table>
@@ -260,24 +260,29 @@ After Library finder results, add:
 <!-- ══════════════════════════════════════════
      VIOLATIONS BY TYPE / BUCKET
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid {accent_color}; padding-left:12px; margin-bottom:14px;">Violations by Type</div>
-  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid {accent_color}; padding-left:12px; margin-bottom:12px;">Violations by Type</div>
+  <table style="width:100%; border-collapse:collapse; font-size:16px;">
     <thead>
       <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Type</th>
-        <th style="padding:10px 14px; text-align:center; color:#444; font-weight:600;">Total</th>
-        <th style="padding:10px 14px; text-align:center; color:#444; font-weight:600;">Filtered</th>
-        <th style="padding:10px 14px; text-align:center; color:#444; font-weight:600;">Focus</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Type</th>
+        <th style="padding:10px 16px; text-align:center; color:#444; font-weight:600;">Total</th>
+        <th style="padding:10px 16px; text-align:center; color:#444; font-weight:600;">Filtered</th>
+        <th style="padding:10px 16px; text-align:center; color:#444; font-weight:600;">Focus</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Action</th>
       </tr>
     </thead>
     <tbody>
       <!-- One row per violation type; alternate #fff / #fafafa -->
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#333; font-family:monospace;">{viol_type}</td>
-        <td style="padding:10px 14px; text-align:center; color:#1a1a1a;">{viol_total}</td>
-        <td style="padding:10px 14px; text-align:center; color:#666;">{viol_filtered}</td>
-        <td style="padding:10px 14px; text-align:center; color:#2563eb; font-weight:600;">{viol_focus}</td>
+        <td style="padding:10px 16px; color:#333; font-family:monospace; font-size:16px;">{viol_type}</td>
+        <td style="padding:10px 16px; text-align:center; color:#1a1a1a;">{viol_total}</td>
+        <td style="padding:10px 16px; text-align:center; color:#666;">{viol_filtered}</td>
+        <td style="padding:10px 16px; text-align:center; color:#2563eb; font-weight:600;">{viol_focus}</td>
+        <td style="padding:10px 16px; color:#555;">
+          <!-- AUTO-FIXED: green bold | Manual - ...: red -->
+          {viol_action}
+        </td>
       </tr>
     </tbody>
   </table>
@@ -286,54 +291,54 @@ After Library finder results, add:
 <!-- ══════════════════════════════════════════
      VIOLATION CARDS — repeat for each violation
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid {accent_color}; padding-left:12px; margin-bottom:16px;">
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid {accent_color}; padding-left:12px; margin-bottom:20px;">
     Top Violations ({shown} of {total} focus)
   </div>
 
   <!-- Violation card — repeat this block for each violation -->
-  <div style="border:1px solid #e5e7eb; border-left:4px solid {accent_color}; border-radius:6px; padding:18px; margin-bottom:14px; background:#ffffff;">
+  <div style="border:1px solid #e5e7eb; border-left:5px solid {accent_color}; border-radius:8px; padding:18px; margin-bottom:12px; background:#ffffff;">
 
     <!-- Title row -->
-    <div style="font-size:15px; font-weight:700; color:#1a1a1a; margin-bottom:10px;">
+    <div style="font-size:17px; font-weight:700; color:#1a1a1a; margin-bottom:8px;">
       {violation_id}
       <!-- Risk badge: HIGH=#fee2e2/#b91c1c  MEDIUM=#fef3c7/#92400e  LOW=#d1fae5/#065f46 -->
-      <span style="background:{risk_bg}; color:{risk_color}; padding:2px 9px; border-radius:4px; font-size:14px; font-weight:700; margin-left:8px;">{risk_level}</span>
-      <span style="background:#f1f5f9; color:#475569; padding:2px 9px; border-radius:4px; font-size:14px; margin-left:4px;">{viol_type}</span>
+      <span style="background:{risk_bg}; color:{risk_color}; padding:4px 12px; border-radius:4px; font-size:16px; font-weight:700; margin-left:10px;">{risk_level}</span>
+      <span style="background:#f1f5f9; color:#475569; padding:4px 12px; border-radius:4px; font-size:16px; margin-left:6px;">{viol_type}</span>
     </div>
 
     <!-- Signal/location details -->
-    <table style="font-size:14px; border-collapse:collapse; width:100%; margin-bottom:12px;">
+    <table style="font-size:16px; border-collapse:collapse; width:100%; margin-bottom:12px;">
       <tr>
-        <td style="padding:4px 0; color:#666; width:150px; vertical-align:top;"><b>Signal:</b></td>
-        <td style="padding:4px 0; color:#1a1a1a; font-family:monospace; font-size:14px;">{signal_name}</td>
+        <td style="padding:6px 0; color:#666; width:170px; vertical-align:top;"><b>Signal:</b></td>
+        <td style="padding:6px 0; color:#1a1a1a; font-family:monospace; font-size:16px;">{signal_name}</td>
       </tr>
       <tr>
-        <td style="padding:4px 0; color:#666; vertical-align:top;"><b>Clock Crossing:</b></td>
-        <td style="padding:4px 0; color:#2563eb; font-family:monospace; font-size:14px;">{src_clock} → {dst_clock}</td>
+        <td style="padding:6px 0; color:#666; vertical-align:top;"><b>Clock Crossing:</b></td>
+        <td style="padding:6px 0; color:#2563eb; font-family:monospace; font-size:16px;">{src_clock} → {dst_clock}</td>
       </tr>
       <tr>
-        <td style="padding:4px 0; color:#666; vertical-align:top;"><b>RTL Location:</b></td>
-        <td style="padding:4px 0; color:#059669; font-family:monospace; font-size:14px;">{rtl_file}:{line}</td>
+        <td style="padding:6px 0; color:#666; vertical-align:top;"><b>RTL Location:</b></td>
+        <td style="padding:6px 0; color:#059669; font-family:monospace; font-size:16px;">{rtl_file}:{line}</td>
       </tr>
       <tr>
-        <td style="padding:4px 0; color:#666; vertical-align:top;"><b>Signal Purpose:</b></td>
-        <td style="padding:4px 0; color:#333; font-size:14px;">{signal_purpose}</td>
+        <td style="padding:6px 0; color:#666; vertical-align:top;"><b>Signal Purpose:</b></td>
+        <td style="padding:6px 0; color:#333; font-size:16px;">{signal_purpose}</td>
       </tr>
     </table>
 
     <!-- Root cause -->
-    <div style="padding:11px 14px; background:#fffbeb; border-left:3px solid #d97706; border-radius:4px; font-size:14px; color:#333; margin-bottom:8px;">
+    <div style="padding:11px 16px; background:#fffbeb; border-left:4px solid #d97706; border-radius:4px; font-size:16px; color:#333; margin-bottom:12px; line-height:1.6;">
       <b style="color:#b45309;">Root Cause:</b> {why_no_sync}
     </div>
 
     <!-- Recommendation -->
-    <div style="padding:11px 14px; background:#f0fdf4; border-left:3px solid #059669; border-radius:4px; font-size:14px; color:#333; margin-bottom:8px;">
+    <div style="padding:11px 16px; background:#f0fdf4; border-left:4px solid #059669; border-radius:4px; font-size:16px; color:#333; margin-bottom:12px; line-height:1.6;">
       <b style="color:#059669;">Fix ({fix_type}):</b> {fix_justification}
     </div>
 
     <!-- Code snippet -->
-    <pre style="background:#f5f5f5; color:#1a1a1a; padding:12px 14px; border-radius:4px; font-size:14px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0; border:1px solid #e5e7eb; white-space:pre;">{fix_action}</pre>
+    <pre style="background:#f5f5f5; color:#1a1a1a; padding:12px 16px; border-radius:6px; font-size:16px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0; border:1px solid #e5e7eb; white-space:pre; line-height:1.6;">{fix_action}</pre>
 
   </div>
   <!-- end violation card -->
@@ -343,19 +348,19 @@ After Library finder results, add:
 <!-- ══════════════════════════════════════════
      BLACKBOX MODULES (SpgDFT only)
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #059669; padding-left:12px; margin-bottom:14px;">Blackbox Modules</div>
-  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid #059669; padding-left:12px; margin-bottom:12px;">Blackbox Modules</div>
+  <table style="width:100%; border-collapse:collapse; font-size:16px;">
     <thead>
       <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Module</th>
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Message</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Module</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Message</th>
       </tr>
     </thead>
     <tbody>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#333; font-family:monospace; font-size:14px;">{module_name}</td>
-        <td style="padding:10px 14px; color:#555; font-size:14px;">{message}</td>
+        <td style="padding:10px 16px; color:#333; font-family:monospace; font-size:16px;">{module_name}</td>
+        <td style="padding:10px 16px; color:#555; font-size:16px;">{message}</td>
       </tr>
     </tbody>
   </table>
@@ -364,30 +369,34 @@ After Library finder results, add:
 <!-- ══════════════════════════════════════════
      RTL CHANGES APPLIED (fixer mode only — omit section if no RTL fixes)
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #7c3aed; padding-left:12px; margin-bottom:16px;">RTL Changes Applied ({rtl_fix_count} file(s))</div>
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid #7c3aed; padding-left:12px; margin-bottom:20px;">RTL Changes Applied ({rtl_fix_count} file(s))</div>
 
   <!-- RTL file card — repeat for each RTL file that was modified -->
-  <div style="border:1px solid #e5e7eb; border-left:4px solid #7c3aed; border-radius:6px; padding:18px; margin-bottom:14px; background:#ffffff;">
+  <div style="border:1px solid #e5e7eb; border-left:5px solid #7c3aed; border-radius:8px; padding:18px; margin-bottom:12px; background:#ffffff;">
 
     <!-- File paths -->
-    <table style="font-size:14px; border-collapse:collapse; width:100%; margin-bottom:14px;">
+    <table style="font-size:16px; border-collapse:collapse; width:100%; margin-bottom:12px;">
       <tr>
-        <td style="padding:4px 0; color:#666; width:130px; vertical-align:top;"><b>RTL File:</b></td>
-        <td style="padding:4px 0; color:#059669; font-family:monospace; font-size:14px;">{rtl_file_full_path}</td>
+        <td style="padding:6px 0; color:#666; width:150px; vertical-align:top;"><b>RTL File:</b></td>
+        <td style="padding:6px 0; color:#059669; font-family:monospace; font-size:16px;">{rtl_file_full_path}</td>
       </tr>
       <tr>
-        <td style="padding:4px 0; color:#666; vertical-align:top;"><b>Backup:</b></td>
-        <td style="padding:4px 0; color:#888; font-family:monospace; font-size:14px;">{backup_file_full_path}</td>
+        <td style="padding:6px 0; color:#666; vertical-align:top;"><b>Backup:</b></td>
+        <td style="padding:6px 0; color:#888; font-family:monospace; font-size:16px;">{backup_file_full_path}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0; color:#666; vertical-align:top;"><b>Violation:</b></td>
+        <td style="padding:6px 0; color:#d97706; font-size:16px;">{violation_description}</td>
       </tr>
     </table>
 
     <!-- Before/After diff -->
-    <div style="font-size:14px; font-weight:600; color:#666; margin-bottom:6px;">Before:</div>
-    <pre style="background:#fff5f5; color:#7f1d1d; padding:12px 14px; border-radius:4px; font-size:14px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0 0 12px 0; border:1px solid #fecaca; white-space:pre;">{diff_before}</pre>
+    <div style="font-size:16px; font-weight:600; color:#666; margin-bottom:8px;">Before:</div>
+    <pre style="background:#fff5f5; color:#7f1d1d; padding:12px 16px; border-radius:6px; font-size:16px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0 0 16px 0; border:1px solid #fecaca; white-space:pre; line-height:1.6;">{diff_before}</pre>
 
-    <div style="font-size:14px; font-weight:600; color:#666; margin-bottom:6px;">After:</div>
-    <pre style="background:#f0fdf4; color:#064e3b; padding:12px 14px; border-radius:4px; font-size:14px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0; border:1px solid #86efac; white-space:pre;">{diff_after}</pre>
+    <div style="font-size:16px; font-weight:600; color:#666; margin-bottom:8px;">After:</div>
+    <pre style="background:#f0fdf4; color:#064e3b; padding:12px 16px; border-radius:6px; font-size:16px; font-family:'Courier New',Courier,monospace; overflow-x:auto; margin:0; border:1px solid #86efac; white-space:pre; line-height:1.6;">{diff_after}</pre>
 
   </div>
   <!-- end RTL file card -->
@@ -397,29 +406,29 @@ After Library finder results, add:
 <!-- ══════════════════════════════════════════
      RECOMMENDATIONS
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #2563eb; padding-left:12px; margin-bottom:16px;">Recommendations</div>
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid #2563eb; padding-left:12px; margin-bottom:20px;">Recommendations</div>
 
   <!-- High priority -->
-  <div style="padding:14px 18px; background:#fff5f5; border-left:4px solid #c0392b; border-radius:4px; margin-bottom:10px;">
-    <div style="font-size:14px; font-weight:700; color:#c0392b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">High Priority ({high_count})</div>
-    <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
+  <div style="padding:14px 18px; background:#fff5f5; border-left:5px solid #c0392b; border-radius:6px; margin-bottom:8px;">
+    <div style="font-size:16px; font-weight:700; color:#c0392b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">High Priority ({high_count})</div>
+    <ul style="margin:0; padding-left:22px; font-size:16px; color:#333; line-height:1.8;">
       <li style="color:#333;">{high_item_1}</li>
     </ul>
   </div>
 
   <!-- Medium priority -->
-  <div style="padding:14px 18px; background:#fffbeb; border-left:4px solid #d97706; border-radius:4px; margin-bottom:10px;">
-    <div style="font-size:14px; font-weight:700; color:#d97706; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Medium Priority ({med_count})</div>
-    <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
+  <div style="padding:14px 18px; background:#fffbeb; border-left:5px solid #d97706; border-radius:6px; margin-bottom:8px;">
+    <div style="font-size:16px; font-weight:700; color:#d97706; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Medium Priority ({med_count})</div>
+    <ul style="margin:0; padding-left:22px; font-size:16px; color:#333; line-height:1.8;">
       <li style="color:#333;">{med_item_1}</li>
     </ul>
   </div>
 
   <!-- Low priority -->
-  <div style="padding:14px 18px; background:#f0fdf4; border-left:4px solid #059669; border-radius:4px; margin-bottom:10px;">
-    <div style="font-size:14px; font-weight:700; color:#059669; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Low Priority ({low_count})</div>
-    <ul style="margin:0; padding-left:20px; font-size:14px; color:#333; line-height:1.7;">
+  <div style="padding:14px 18px; background:#f0fdf4; border-left:5px solid #059669; border-radius:6px; margin-bottom:8px;">
+    <div style="font-size:16px; font-weight:700; color:#059669; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Low Priority ({low_count})</div>
+    <ul style="margin:0; padding-left:22px; font-size:16px; color:#333; line-height:1.8;">
       <li style="color:#333;">{low_item_1}</li>
     </ul>
   </div>
@@ -428,34 +437,34 @@ After Library finder results, add:
 <!-- ══════════════════════════════════════════
      CONFIGURATION FILES
      ══════════════════════════════════════════ -->
-<div style="margin-bottom:32px;">
-  <div style="font-size:17px; font-weight:700; color:#1a1a1a; border-left:4px solid #2563eb; padding-left:12px; margin-bottom:14px;">Configuration Files</div>
-  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+<div style="margin-bottom:30px;">
+  <div style="font-size:20px; font-weight:700; color:#1a1a1a; border-left:5px solid #2563eb; padding-left:12px; margin-bottom:12px;">Configuration Files</div>
+  <table style="width:100%; border-collapse:collapse; font-size:16px;">
     <thead>
       <tr style="background:#f5f7fa; border-bottom:2px solid #dde1e7;">
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Check</th>
-        <th style="padding:10px 14px; text-align:left; color:#444; font-weight:600;">Config File</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Check</th>
+        <th style="padding:10px 16px; text-align:left; color:#444; font-weight:600;">Config File</th>
       </tr>
     </thead>
     <tbody>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#c0392b; font-weight:600;">CDC / RDC</td>
-        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:14px;">{cdc_config_path}</td>
+        <td style="padding:10px 16px; color:#c0392b; font-weight:600;">CDC / RDC</td>
+        <td style="padding:10px 16px; color:#1a1a1a; font-family:monospace; font-size:16px;">{cdc_config_path}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee; background:#fafafa;">
-        <td style="padding:10px 14px; color:#d97706; font-weight:600;">Lint</td>
-        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:14px;">{lint_config_path}</td>
+        <td style="padding:10px 16px; color:#d97706; font-weight:600;">Lint</td>
+        <td style="padding:10px 16px; color:#1a1a1a; font-family:monospace; font-size:16px;">{lint_config_path}</td>
       </tr>
       <tr style="border-bottom:1px solid #eee;">
-        <td style="padding:10px 14px; color:#059669; font-weight:600;">SpgDFT</td>
-        <td style="padding:10px 14px; color:#1a1a1a; font-family:monospace; font-size:14px;">{spgdft_config_path}</td>
+        <td style="padding:10px 16px; color:#059669; font-weight:600;">SpgDFT</td>
+        <td style="padding:10px 16px; color:#1a1a1a; font-family:monospace; font-size:16px;">{spgdft_config_path}</td>
       </tr>
     </tbody>
   </table>
 </div>
 
 <!-- Footer -->
-<div style="text-align:center; padding:16px; font-size:14px; color:#888; border-top:1px solid #eee; margin-top:16px;">
+<div style="text-align:center; padding:20px; font-size:16px; color:#888; border-top:1px solid #eee; margin-top:20px;">
   Generated by Claude Code Analysis &nbsp;|&nbsp; {check_type_label} &nbsp;|&nbsp; {tag} &nbsp;|&nbsp; {ip} @ {dir_name}
 </div>
 
