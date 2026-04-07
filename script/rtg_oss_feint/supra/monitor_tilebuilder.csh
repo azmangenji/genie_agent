@@ -8,7 +8,7 @@ set target_run_dir = ":"
 set reply = ""
 touch $source_dir/data/${tag}_spec
 
-# Maximum total runtime limit (2.5 days = 216000 seconds)
+# Maximum total runtime limit (~60 hours)
 # After this limit, monitoring will gracefully exit and send email with current status
 # This prevents issues with xterm/DISPLAY expiring after ~3 days
 set max_total_runtime = 216000
@@ -117,7 +117,7 @@ set max_runtime_reached = 0
 
 while ($target_done == 0)
     if ($target_elapsed % 300 == 0) then
-        set status_check_log = "${refdir_name}/status_check_${target_elapsed}.log"
+        set status_check_log = "${refdir_name}/status_check_${tag}_${target_elapsed}.log"
 
         # DEBUG: Periodic DISPLAY check (every status check)
         if ($target_elapsed % 1800 == 0) then
@@ -225,7 +225,7 @@ while ($target_done == 0)
     if ($target_elapsed % 1800 == 0 && $target_elapsed > 0) then
         echo "Cleaning up old status_check logs (older than 30 minutes)..."
         set cleanup_count = 0
-        find ${refdir_name} -name "status_check_*.log" -mmin +30 >& /tmp/old_logs_$$.tmp
+        find ${refdir_name} -name "status_check_${tag}_*.log" -mmin +30 >& /tmp/old_logs_$$.tmp
         if (-f /tmp/old_logs_$$.tmp && -s /tmp/old_logs_$$.tmp) then
             foreach old_log (`cat /tmp/old_logs_$$.tmp`)
                 if (-f "$old_log") then
