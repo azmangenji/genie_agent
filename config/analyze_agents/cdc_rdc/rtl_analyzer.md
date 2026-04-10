@@ -69,10 +69,15 @@ If `fix_history` is non-empty, before analyzing any violation:
 For each violation from violation_extractor:
 
 ### Step 1: Find RTL File
-Use Grep to find signal in RTL:
+Search in library pub area first (preferred), then src/rtl as fallback:
 ```bash
+# Priority 1: library pub area (survives reruns)
+find <ref_dir>/out -path "*/library/*/pub/src/rtl/*" -name "*.v" -o -path "*/library/*/pub/src/rtl/*" -name "*.sv" | xargs grep -l "<signal_name>" 2>/dev/null
+
+# Priority 2: project src/rtl (fallback)
 grep -r "<signal_name>" <ref_dir>/src --include="*.sv" --include="*.v" -l
 ```
+Prefer the `library/*/pub/src/rtl/` match if found in both.
 
 ### Step 2: Understand the Signal (CRITICAL)
 
@@ -165,7 +170,7 @@ Based on your root cause analysis:
 
 - **RTL fix** (`rtl_fix`): If it's a real bug (frequent toggling, no valid reason for missing sync) — add synchronizer in RTL.
   - `fix_action` MUST be **exact RTL lines** to insert (e.g., the complete synchronizer instantiation block)
-  - Also provide: `rtl_file` (exact path), `insert_after_line` (line number), `insert_description` (brief rationale)
+  - Also provide: `rtl_file` (exact path — prefer `out/*/library/*/pub/src/rtl/` over `src/rtl/`), `insert_after_line` (line number), `insert_description` (brief rationale)
   - Look at existing synchronizer instantiations in the file to determine the correct tech cell to use
   - If you cannot produce exact RTL (e.g., sync cell unknown, hierarchy unclear) → use `investigate` instead
 
@@ -348,6 +353,6 @@ Before ending your turn, verify:
 
 1. **Did you write `data/<tag>_rtl_analysis_cdc_<N>.json` using the Write tool?** → If not, do it now — do NOT finish without it
 2. **Did you run `p4 edit` on any file?** → Wrong — this agent is read-only, no file modifications allowed
-3. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — use `src/rtl/` paths in your `rtl_file` field
+3. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — prefer `out/*/library/*/pub/src/rtl/` paths in your `rtl_file` field (survives reruns); fall back to `src/rtl/` only if file is not found in any library
 
 Do NOT finish your turn until the output JSON is written to disk.

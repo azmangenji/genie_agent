@@ -7,7 +7,7 @@
 Analyze **ALL lint violations in one RTL file** and recommend a fix for each.
 
 ## Input
-- `rtl_file`: RTL file path (e.g., `src/rtl/umcdat/umcdat_core.sv`)
+- `rtl_file`: RTL file path — prefer `out/*/library/*/pub/src/rtl/<file>` (e.g., `out/.../library/dsn_health-mathura_mcd-mcd/pub/src/rtl/dsn_hp_block_mcd.v`); fall back to `src/rtl/<subdir>/<file>` only if file not found in any library
 - `violations`: List of all violations in this file (from extractor `violations_by_file`)
 - `ref_dir`: Tree directory
 - `ip`: IP name
@@ -194,7 +194,7 @@ The fix consolidator globs `data/<tag>_rtl_lint_*.json` to collect all RTL analy
 Before ending your turn, verify:
 
 1. **Did you write `data/<tag>_rtl_lint_<N>.json` using the Write tool?** → If not, do it now — do NOT finish without it
-2. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — use `src/rtl/` paths in your `rtl_file` field
+2. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — prefer `out/*/library/*/pub/src/rtl/` paths in your `rtl_file` field (survives reruns); fall back to `src/rtl/` only if file is not found in any library
 3. **Did you suggest adding waivers?** → Wrong — ZERO waivers for Lint. All fixes must be in RTL source.
 
 Do NOT finish your turn until the output JSON is written to disk.

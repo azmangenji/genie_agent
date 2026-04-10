@@ -96,24 +96,32 @@ When applying any RTL fix below: if `fix_action` is in `already_applied_actions`
 
 ## Step 2a: Resolve RTL File Paths (CDC/RDC and Lint only)
 
-**Why:** CDC/RDC and Lint reruns execute `rhea_build`/`rhea_drop`, which **rebuilds `publish_rtl/` from `src/rtl/` every time**. Any fix written to `publish_rtl/` or `library/` paths will be wiped on the next rerun. RTL fixes for these check types MUST target `src/rtl/`.
+**Why:** CDC/RDC and Lint reruns execute `rhea_build`/`rhea_drop`, which **rebuilds `publish_rtl/` from library and src/rtl every time**. Any fix written directly to `publish_rtl/` will be wiped on the next rerun.
 
-**SPG_DFT does NOT run rhea_build** — its `publish_rtl/` is stable between rounds. RTL fix paths for SPG_DFT are used as-is (no `src/rtl/` resolution needed). Apply `rtl_fix` entries directly to the reported path.
+**Preferred fix target: `out/*/library/*/pub/src/rtl/`**
+The library `pub/src/rtl/` path survives flow reruns — the flow copies FROM it, not over it. This is the correct target for ALL RTL files, including library components (e.g., `dsn_health-mathura_mcd-mcd`, `dftmisc-mathura-mcd`) that do NOT exist in the project `src/rtl/`.
+
+**SPG_DFT does NOT run rhea_build** — its `publish_rtl/` is stable between rounds. RTL fix paths for SPG_DFT are used as-is (no resolution needed). Apply `rtl_fix` entries directly to the reported path.
 
 **For each `rtl_fix` (or `tie_off`) entry in CDC/RDC or Lint consolidated JSON:**
 
-1. Take `rtl_file` from the entry (may point to `publish_rtl/`, `library/`, or already `src/rtl/`)
-2. Extract the filename: `basename = os.path.basename(rtl_file)` (e.g., `rtl_umcdat.v`)
-3. Check if path already starts with `<ref_dir>/src/rtl/` → use as-is
-4. Otherwise, resolve to `src/rtl/`:
+1. Take `rtl_file` from the entry (may point to `publish_rtl/`, `library/tmp/`, `library/pub/`, or already `src/rtl/`)
+2. Extract the filename: `basename = os.path.basename(rtl_file)` (e.g., `dsn_hp_block_mcd.v`)
+3. **Priority 1 — Check `library/*/pub/src/rtl/`** (preferred, survives reruns):
+```bash
+find <ref_dir>/out -path "*/library/*/pub/src/rtl/*" -name "<basename>" 2>/dev/null
+```
+   - If exactly one match → use that path
+   - If multiple matches → pick the one whose library name best matches the module context
+4. **Priority 2 — Check `src/rtl/`** (fallback for project-owned files not in any library):
 ```bash
 find <ref_dir>/src/rtl -name "<basename>" 2>/dev/null
 ```
-5. If exactly one match → use that path as the target RTL file
-6. If multiple matches → pick the one whose directory name best matches the module context (e.g., signal path from violation)
-7. If no match → log as `unresolvable_rtl_path`, skip this fix, add to `requires_investigation`
+   - If exactly one match → use that path
+   - If multiple matches → pick the one whose directory best matches the module context
+5. If no match in either location → log as `unresolvable_rtl_path`, skip this fix, add to `requires_investigation`
 
-**Note:** `insert_after_line` from the consolidated JSON was recorded from `publish_rtl/` — since `src/rtl/` is the source that generates `publish_rtl/`, the line numbers should match. If the file has already been modified, re-search for the context lines rather than using the line number blindly.
+**Note:** `insert_after_line` from the consolidated JSON was recorded from `publish_rtl/` — since `library/pub/src/rtl/` is the source that generates `publish_rtl/`, the line numbers should match. If the file has already been modified, re-search for the context lines rather than using the line number blindly.
 
 ---
 
@@ -321,7 +329,7 @@ Where `<check_type_short>`:
 - For `full_static_check`: fix implementors run sequentially (CDC → Lint → SPG_DFT) — never in parallel
 - Always backup before editing: `cp <file> <file>.bak_<tag>` (once per file per round)
 - `p4 edit <file>` ONLY for constraint/meta files (`src/meta/tools/...`) — NOT for RTL files (`src/rtl/...`)
-- **CDC/RDC and Lint RTL fixes**: always resolve to `src/rtl/` — `publish_rtl/` is rebuilt from `src/rtl/` on every rerun and will wipe any direct edits
+- **CDC/RDC and Lint RTL fixes**: resolve to `out/*/library/*/pub/src/rtl/` first (preferred — survives reruns, works for library components), then fall back to `src/rtl/` — never edit `publish_rtl/` directly (wiped on every rerun)
 - **SPG_DFT RTL fixes**: use path as-is — SPG_DFT does NOT run rhea_build, so `publish_rtl/` is stable between rounds
 - If `fix_action` is vague or ambiguous, log as `requires_investigation` — do NOT guess
 - `requires_investigation` list in output JSON is read by orchestrator to spawn Deep-Dive Agents — include full context (signal, investigation_context, ref_dir, ip, tag, base_dir)
@@ -334,6 +342,6 @@ Before ending your turn, verify:
 
 1. **Did you write the output JSON to disk using the Write tool?** → If not, do it now — do NOT finish without it
 2. **Did you run `p4 edit` on any `src/rtl/...` file?** → That is wrong — RTL files need no `p4 edit`
-3. **Did you write RTL fixes to `publish_rtl/` paths?** → That is wrong — CDC/RDC and Lint fixes must target `src/rtl/`
+3. **Did you write RTL fixes to `publish_rtl/` paths?** → That is wrong — CDC/RDC and Lint fixes must target `out/*/library/*/pub/src/rtl/` (preferred) or `src/rtl/` (fallback)
 
 Do NOT finish your turn until `data/<tag>_fix_applied_<check_type_short>.json` is written to disk.
