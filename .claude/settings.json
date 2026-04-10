@@ -7,6 +7,20 @@
     "defaultMode": "bypassPermissions"
   },
   "model": "Claude-Opus-4.5",
+  "enabledPlugins": {
+    "atlassian@claude-plugins-official": true,
+    "rtl-ppa-optimizer@tilebuilder-marketplace": true,
+    "tcm-lint@tilebuilder-marketplace": true,
+    "supra-doc@tilebuilder-marketplace": true
+  },
+  "extraKnownMarketplaces": {
+    "tilebuilder-marketplace": {
+      "source": {
+        "source": "directory",
+        "path": "/tool/aticad/1.0/flow/TileBuilder/genie/marketplace"
+      }
+    }
+  },
   "alwaysThinkingEnabled": true,
   "statusLine": {
     "type": "command",
