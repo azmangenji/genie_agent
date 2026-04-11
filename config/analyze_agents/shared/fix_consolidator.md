@@ -53,7 +53,14 @@ Use Glob to find all files:
 - Lint: `data/<tag>_rtl_lint_*.json`
 - SpgDFT: `data/<tag>_rtl_spgdft_*.json`
 
-Read every file. Collect all `fix_type` + `fix_action` + any cell/signal names from each agent.
+**⚠️ VALIDATION — MANDATORY before proceeding:**
+If the Glob returns zero files for your check_type:
+- This means RTL analyzers did not run or all failed to write output
+- Do NOT proceed with empty data — write output JSON with `"error": "no RTL analyzer outputs found"` and `"unified_fixes": []`
+- Set `"summary.total_rtl_agents": 0` and include the error note
+- Write this output to disk and STOP — an empty consolidation produces misleading results
+
+Read every file found. Collect all `fix_type` + `fix_action` + any cell/signal names from each agent.
 
 ---
 
@@ -264,6 +271,20 @@ Content: <your JSON output>
 
 The report compiler reads this file for the Recommendations section.
 If you do not write it, recommendations will be inconsistent.
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write the consolidated JSON to disk using the Write tool?** → If not, do it now — do NOT finish without it
+2. **Did you find zero RTL analyzer JSONs?** → If yes, you should have written an error JSON and stopped — do not output an empty `unified_fixes: []` without an `"error"` field
+3. **Does `summary.unified_fixes` equal `len(unified_fixes)`?** → These must match — do not set them independently
+4. **Does `summary.instance_name_confusions_detected` equal `len(discarded)` entries with `reason: "instance_name_confusion"`?** → Must match
+5. **Are all violation IDs in `resolves_violations` arrays real IDs from the extractor JSON?** → Do NOT invent IDs — use only IDs that appeared in the extractor output
+
+Do NOT finish your turn until the consolidated JSON is written to disk.
 
 ---
 

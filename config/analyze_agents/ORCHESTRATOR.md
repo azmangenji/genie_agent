@@ -856,18 +856,42 @@ Also read the clock port from the instantiation's port connections (`.CP(...)`, 
    - Lint: one agent per unique RTL file (all violations in that file handled by one agent)
    - SpgDFT: up to N violations in parallel
    - Library Finder: 1 agent (if unresolved/blackbox > 0)
+   - **Validate each output file exists after agent returns** (see Output File Validation table)
 
-3.5 Spawn Fix Consolidator agent(s) IN PARALLEL — one per check type with violations:
+   **CLEAN ownership — when RTL analyzers ARE skipped:**
+   For each check type that is CLEAN (focus_violations == 0 AND report NOT missing):
+   Write a synthetic consolidated JSON immediately (no agent needed):
+   ```json
+   { "check_type": "<check>", "tag": "<tag>", "status": "CLEAN",
+     "summary": {"unified_fixes": 0, "unresolved": 0}, "unified_fixes": [], "unresolved": [] }
+   ```
+   Write to: `data/<tag>_consolidated_<check>.json`
+   This gives the report compiler a valid file for every check type — no missing sections.
+
+   **report_missing handling:**
+   If an extractor JSON has `"report_missing": true`:
+   → Do NOT treat as CLEAN. Log `"STEP FAILED: <check> report not found"` in report.
+   → Do NOT skip RTL analyzers silently — flag the section as ERROR in the HTML report.
+   → Do NOT write a CLEAN synthetic consolidated JSON for this check type.
+
+3.5 ⚠️ BLOCKING GATE — Wait for ALL RTL analyzers to finish before spawning consolidators:
+   Verify all expected `_rtl_<check>_<N>.json` files exist before proceeding.
+   Only then spawn Fix Consolidator agent(s).
+
+3.6 Spawn Fix Consolidator agent(s) IN PARALLEL — one per check type with violations:
    - Reference: shared/fix_consolidator.md
-   - Skip if that check type was CLEAN (no RTL analyzers ran for it)
+   - Skip if that check type was CLEAN (synthetic consolidated JSON already written in step 3)
+   - Skip if that check type had `report_missing: true` (log as STEP FAILED instead)
    - cdc_rdc → spawn 2 in parallel: consolidated_cdc.json + consolidated_rdc.json
    - lint    → spawn 1: consolidated_lint.json
    - spg_dft → spawn 1: consolidated_spgdft.json
    - full_static_check → spawn up to 4 in parallel (all non-clean types)
    - Input: tag, base_dir, ref_dir, ip, check_type (cdc_rdc | lint | spg_dft)
+   - **Validate each consolidated JSON exists after agent returns** (see Output File Validation table)
 
-4. Collect all agent results
-   - DO NOT read reports yourself - use agent outputs
+4. ⚠️ BLOCKING GATE — Wait for ALL consolidators to finish before spawning report compiler:
+   Verify ALL expected `_consolidated_<check>.json` files exist (including synthetic CLEAN ones).
+   Only then spawn report compiler.
 
 5. Compile HTML report(s) using the report_compiler agent via Task tool:
    - Report compiler reads data/<tag>_consolidated_<check>.json for recommendations
@@ -880,8 +904,15 @@ Also read the clock port from the instantiation's port connections (`.CP(...)`, 
               data/<tag>_analysis_lint.html
               data/<tag>_analysis_spgdft.html
    - Reference: shared/report_compiler.md
+   - **Validate HTML file exists after report compiler returns** (see Output File Validation table)
 
-6. Send email(s)
+6. ⚠️ BLOCKING GATE — Verify HTML report file(s) exist before sending email:
+   ```bash
+   ls <base_dir>/data/<tag>_analysis_<check>.html 2>/dev/null
+   ```
+   If missing: log `"STEP FAILED: report compiler did not write HTML"` — do NOT send empty email.
+
+7. Send email(s)
    - Single check type:
      python3 script/genie_cli.py --send-analysis-email <tag> --check-type <check_type>
    - Full static check (3 separate emails):
@@ -1149,6 +1180,10 @@ That's it. All details are in the email.
    ├── Precondition agents (ALWAYS — even if result is clean)
    └── Violation extractor agents (ALWAYS — need counts for skip logic)
          │
+   ✅ VALIDATE output files exist after each agent (see Output File Validation table)
+   ✅ If extractor JSON missing after retry → log STEP FAILED, treat as ERROR (NOT as CLEAN)
+   ✅ If extractor JSON has report_missing=true → flag as ERROR (NOT as CLEAN)
+         │
 6. Collect results → APPLY SKIP LOGIC:
    │
    ├── Library Finder    → skip if unresolved == 0 AND blackbox == 0
@@ -1205,26 +1240,31 @@ That's it. All details are in the email.
 - Always compile partial results
 - Always send email with whatever was collected
 
-### Output File Validation — Apply After EVERY Sub-Agent Call
+### ⚠️ MANDATORY Output File Validation — Apply After EVERY Sub-Agent Call
+
+**This is NOT optional. Every agent spawn MUST be followed by this check.**
 
 After each sub-agent returns, immediately verify its required output file exists:
 ```bash
 ls <base_dir>/data/<tag>_<expected_output> 2>/dev/null
 ```
 
-**Expected output files:**
+**Expected output files (use exact names — no `_analysis_` prefix in RTL analyzer files):**
 
 | Agent | Expected File |
 |-------|--------------|
 | CDC precondition | `<tag>_precondition_cdc.json` |
+| SpgDFT precondition | `<tag>_precondition_spgdft.json` |
 | CDC extractor | `<tag>_extractor_cdc.json` |
 | SPG_DFT extractor | `<tag>_extractor_spgdft.json` |
 | Lint extractor | `<tag>_extractor_lint.json` |
-| CDC RTL analyzer N | `<tag>_rtl_analysis_cdc_<N>.json` |
-| SPG_DFT RTL analyzer N | `<tag>_rtl_analysis_spgdft_<N>.json` |
-| Lint RTL analyzer N | `<tag>_rtl_analysis_lint_<N>.json` |
+| CDC RTL analyzer N | `<tag>_rtl_cdc_<N>.json` |
+| RDC RTL analyzer N | `<tag>_rtl_rdc_<N>.json` |
+| SPG_DFT RTL analyzer N | `<tag>_rtl_spgdft_<N>.json` |
+| Lint RTL analyzer N | `<tag>_rtl_lint_<N>.json` |
 | Library finder | `<tag>_library_finder.json` |
 | Fix consolidator (CDC) | `<tag>_consolidated_cdc.json` |
+| Fix consolidator (RDC) | `<tag>_consolidated_rdc.json` |
 | Fix consolidator (Lint) | `<tag>_consolidated_lint.json` |
 | Fix consolidator (SPG_DFT) | `<tag>_consolidated_spgdft.json` |
 | Fix implementor (CDC) | `<tag>_fix_applied_cdc.json` |
@@ -1236,6 +1276,7 @@ ls <base_dir>/data/<tag>_<expected_output> 2>/dev/null
 1. Re-invoke the same agent **once** with this prepended to its prompt:
    `"⚠️ RETRY: Your previous run did not write the required output JSON. You MUST call the Write tool to save results before finishing."`
 2. If still missing after retry: log `"STEP FAILED: <agent_name> output not written"` in the round report and continue with best-effort.
+3. **CRITICAL: A missing extractor JSON MUST be treated as `"STEP FAILED"`, never as "CLEAN" (focus_violations=0).** A missing file ≠ zero violations.
 
 ---
 
@@ -1363,6 +1404,10 @@ Round N:
   │     so it naturally detects fixes already applied by the previous implementor.
   │
   ├── STEP 2b: Spawn Deep-Dive agents for investigate items
+  │
+  │     ❌ NEVER SKIP THIS STEP if requires_investigation is non-empty.
+  │     ❌ NEVER read or honor a "stalled" field from fix_applied JSON — only the orchestrator declares STALLED.
+  │
   │     Read: data/<tag>_fix_applied_<check_type>.json → get requires_investigation list
   │     If requires_investigation is non-empty:
   │       For each item (index N), spawn ONE Deep-Dive Agent in parallel:
@@ -1399,7 +1444,17 @@ Round N:
   │     ⚠️  MANDATORY — do NOT skip this step. Every round must produce an email so the
   │     user can track progress and verify that each round's fixes are correct.
   │
-  └── ⚠️ CHECKPOINT: Re-read `config/analyze_agents/FIXER_CHECKLIST.md` now before termination check
+  └── ⚠️ MANDATORY DEEP-DIVE GATE — check this before termination:
+      │
+      │   Read: data/<tag>_fix_applied_<check_type>.json → requires_investigation list
+      │   Read: data/<tag>_deepdive_*.json (count files that exist for this tag)
+      │
+      │   If len(requires_investigation) > 0 AND no deepdive JSON files exist for this tag:
+      │     → Step 2b was NOT run. Go back and run it NOW before proceeding.
+      │     → You MUST NOT declare STALLED while investigate items are pending.
+      │
+      │   ❌ NEVER declare STALLED because fix_applied JSON has "stalled: true" — ignore that field.
+      │   ✅ STALLED is determined ONLY by the orchestrator in Step 5 after Step 2b is complete.
       │
       STEP 5: Check if done
 
@@ -1464,22 +1519,35 @@ use_xterm=true/false
 email_to=<email or empty>
 ```
 
-**⚠️ NORMALIZE the instruction before using it for rerun:**
+**⚠️ NORMALIZE THE INSTRUCTION — MANDATORY BEFORE EVERY RERUN:**
+
+❌ Do NOT pass `original_instruction` to genie_cli.py until you have normalized it.
+❌ Do NOT skip this normalization step even if you are in a hurry.
+
 The stored `original_instruction` may have been set incorrectly (e.g., `fix lint at ...` or `analyze and fix lint at ...`).
 These phrases map to `analyze_fixer_only` (no actual tool run) — using them for rerun would loop without executing lint/cdc/spg_dft.
 
-**Rule:** If `original_instruction` starts with `fix `, `analyze and fix `, or `analyze-fixer-only`, replace it with:
+**Normalization rule — apply BEFORE building the rerun command:**
 ```
-run <original_check_type> at <original_ref_dir> for <original_ip>
+IF original_instruction starts with "fix ", "analyze and fix ", or "analyze-fixer-only":
+  → replace entirely with: "run <original_check_type> at <original_ref_dir> for <original_ip>"
+
+IF original_instruction starts with "run ":
+  → use as-is (already correct)
 ```
 
 Example:
 ```
-original_instruction=fix lint at /proj/... for umc9_3
-→ normalize to: run lint at /proj/... for umc9_3
+original_instruction = "fix lint at /proj/... for <ip>"
+                       ↓ NORMALIZE
+normalized_instruction = "run lint at /proj/... for <ip>"
 ```
 
-Only use the stored `original_instruction` as-is if it starts with `run `.
+**Log the normalized instruction** before running it:
+```
+Normalized rerun instruction: "run lint at /proj/... for umc9_3"
+```
+This confirms the correct script will be matched by genie_cli.py.
 
 2. Build the rerun command — **MUST restore original flags exactly**:
 ```bash

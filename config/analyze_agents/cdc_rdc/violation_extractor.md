@@ -68,7 +68,13 @@ ls -t <ref_dir>/<resolved_rdc_pattern> 2>/dev/null | head -1
 ```
 
 If no `{tile}` placeholder exists in the pattern, use it as-is.
-Use the resulting paths as the CDC and RDC report files.
+
+**⚠️ REPORT MISSING HANDLING — CRITICAL:**
+If a report file is NOT found (empty output from ls):
+- Set `"report_missing": true` in the output JSON for that check (cdc or rdc)
+- Set `"focus_violations": 0` BUT include `"report_missing": true` so the orchestrator does NOT treat this as CLEAN
+- Do NOT silently output empty violation lists — the orchestrator MUST know the file was missing
+- **A missing report ≠ zero violations. It means the check did not run or output was not found.**
 
 ## LOW_RISK Patterns to SKIP
 

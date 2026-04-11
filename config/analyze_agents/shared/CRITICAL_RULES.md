@@ -30,7 +30,7 @@
 - **NEVER say "coordinate with library owner"**, "requires library owner review", or any equivalent. You have full write access to all files. If the fix is safe, apply it regardless of whether the file is in a library path.
 - **NEVER refuse to fix a library file** (`out/*/library/*/pub/src/rtl/`). Library path does NOT mean library owner action required — it is just the correct file path to edit.
 - The `if/if` → `else-if` restructuring in always blocks is ALWAYS safe to apply: if conditions are mutually exclusive it is equivalent; if they can overlap it establishes correct explicit priority instead of undefined last-assignment-wins behavior.
-- Inline pragmas (`// spyglass disable <rule>`) are ALWAYS safe to apply: they are pure comments with zero functional impact.
+- Block pragmas (`//spyglass disable_block <rule>` / `//spyglass enable_block <rule>`) are ALWAYS safe to apply: pure comments, zero functional impact, and recognized by SWAN 58.2. Do NOT use `// spyglass disable <rule>` inline format — it is not recognized by SWAN 58.2.
 
 ## Full Static Check Fix Order
 - Fix Implementors run **SEQUENTIALLY**: CDC/RDC → Lint → SPG_DFT

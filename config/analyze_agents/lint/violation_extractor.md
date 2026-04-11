@@ -90,7 +90,14 @@ Run to find the most recently modified matching file:
 ls -t <ref_dir>/<resolved_pattern> 2>/dev/null | head -1
 ```
 
-Use the resulting path as `leda_waiver.log`. If no file found, report error and stop.
+Use the resulting path as `leda_waiver.log`.
+
+**⚠️ REPORT MISSING HANDLING — CRITICAL:**
+If no file found (empty output from ls):
+- Do NOT proceed with empty data — that would produce `focus_violations: 0` which looks like CLEAN
+- Write output JSON with `"report_missing": true`, `"focus_violations": 0`, `"total_unwaived": 0`, `"report_path": null`
+- Include a `"note": "leda_waiver.log not found — check did not complete or path pattern is wrong"`
+- Write this JSON to disk and STOP — do not attempt to parse a missing file
 
 ### Step B2: Parse the Unwaived Section
 
@@ -155,11 +162,12 @@ If the filename is a basename only, resolve the full path by globbing under `<re
 
 ```json
 {
-  "report_path": "<path to leda_waiver.log>",
+  "report_path": "<path to leda_waiver.log or null if missing>",
+  "report_missing": false,
   "spec_file": "<base_dir>/data/<tag>_spec",
-  "total_unwaived": "<Unwaived count>",
-  "filtered_count": "<Filtered_RSMU/DFT count>",
-  "focus_violations": "<Unfiltered count>",
+  "total_unwaived": 0,
+  "filtered_count": 0,
+  "focus_violations": 0,
   "unique_files": "<count of unique RTL files>",
   "violations_by_code": {
     "<rule_code_1>": "<count>",
@@ -180,6 +188,8 @@ If the filename is a basename only, resolve the full path by globbing under `<re
 ```
 
 **`focus_violations` MUST equal `total_unwaived - filtered_count` — never adjust it.**
+**All count fields (`total_unwaived`, `filtered_count`, `focus_violations`, `unique_files`) MUST be integers, not strings.**
+**`report_missing` MUST be `false` (boolean) for successful reads, `true` only when report file was not found.**
 
 ---
 

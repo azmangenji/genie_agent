@@ -93,7 +93,7 @@ For each violation in the `violations` list:
 | Future use | Port reserved for future feature | MEDIUM | `tie_off` — tie to 0 until implemented |
 | Parent drives it | Signal connected at parent hierarchy | LOW | `investigate` — verify parent connection first |
 | Legacy port | Kept for backward compatibility | LOW | `tie_off` — tie to 0, or `rtl_fix` to remove port |
-| False positive — static analysis limitation | Code is confirmed correct after reading RTL; violation is a tool limitation (e.g. index bounds provably safe, signal driven at parent level) | LOW | `pragma_suppress` — `// spyglass disable <rule>  // <justification>` after each offending statement |
+| False positive — static analysis limitation | Code is confirmed correct after reading RTL; violation is a tool limitation (e.g. index bounds provably safe, signal driven at parent level) | LOW | `pragma_suppress` — wrap offending statement with `//spyglass disable_block <rule>` before and `//spyglass enable_block <rule>` after |
 | Multiple `if` blocks in same always block assigning same signal (`if/if` anti-pattern) | Two or more independent `if (condA)` … `if (condB)` blocks both assign the same signal — last assignment wins, priority is implicit/ambiguous | MEDIUM | `rtl_fix` — replace the second (and any further) `if` with `else if` to establish explicit priority; always correct: equivalent when conditions are mutually exclusive, safer when they can overlap |
 
 **IMPORTANT: NO WAIVERS. No xml_suppress. Violations resolved by `rtl_fix`, `tie_off`, `pragma_suppress`, or `investigate` only.**
@@ -109,7 +109,7 @@ Use `pragma_suppress` when ALL THREE are true after reading the RTL:
 
 `investigate` is ONLY appropriate when reading the RTL does not reveal whether the code is correct or what the correct fix should be.
 
-Inline pragmas use iEDA SWAN LEDA syntax: `// spyglass disable <rule>  // <justification>` — do NOT use `disable_block`/`enable_block`.
+Use SWAN 58.2 block pragma format: `//spyglass disable_block <rule>` before the offending statement, `//spyglass enable_block <rule>` after. Do NOT use `// spyglass disable <rule>` inline format — it is not recognized by SWAN 58.2.
 
 ### Step 4: Formulate Fix for Each Signal
 
@@ -119,12 +119,12 @@ Inline pragmas use iEDA SWAN LEDA syntax: `// spyglass disable <rule>  // <justi
   - If `fix_mode` is omitted, assume `"insert"`.
   - If the correct fix cannot be determined from the RTL alone, use `investigate` instead.
 - **`tie_off`**: `fix_action` MUST be the exact RTL line to insert (e.g., `assign Tdr_data_out = 8'b0;`). Insert after the signal's declaration line.
-- **`pragma_suppress`**: Insert an inline iEDA SWAN/LEDA pragma immediately after the offending statement. Syntax: `// spyglass disable <rule>  // <justification>`. Do NOT use `disable_block`/`enable_block`. Set:
+- **`pragma_suppress`**: Wrap the offending statement with SWAN 58.2 block pragmas. Do NOT use `// spyglass disable <rule>` inline — it is not recognized. Set:
   - `pragma_rule`: copy the exact violation `code` field verbatim — do NOT rename or guess
-  - `insert_after_line`: line number of the offending statement — pragma goes on the NEXT line
+  - `insert_after_line`: line number of the offending statement — fix implementor will wrap it with `//spyglass disable_block <rule>` before and `//spyglass enable_block <rule>` after
   - `fix_action`: human-readable description of what is suppressed and why
   - `fix_justification`: your reasoning from reading the RTL (e.g. "index bounded by generate parameter", "always blocks drive disjoint conditions")
-  - **For multi-driver violations spanning multiple always blocks**: output ONE `pragma_suppress` entry per driver line — each with its own `insert_after_line`. The fix implementor will insert a pragma after each one. Read the RTL to find all driver statements.
+  - **For multi-driver violations spanning multiple always blocks**: output ONE `pragma_suppress` entry per driver line — each with its own `insert_after_line`. The fix implementor will wrap each one with its own disable_block/enable_block pair.
 
 - **`investigate`**: Provide a description of what to investigate (e.g., "Check parent module for connection of port X"). Use ONLY when reading the RTL does not reveal whether the code is correct or what the correct fix should be.
 
@@ -193,8 +193,8 @@ Return a JSON object with analysis for ALL violations in this file:
       "fix_type": "pragma_suppress",
       "pragma_rule": "<exact code from extractor — copy verbatim>",
       "insert_after_line": 42,
-      "fix_action": "Insert '// spyglass disable <rule>  // index bounded by generate parameter' on line 43",
-      "fix_justification": "Single statement, code is correct. iEDA SWAN inline pragma is the appropriate fix."
+      "fix_action": "Wrap line 42 with //spyglass disable_block <rule> before and //spyglass enable_block <rule> after — index is bounded by generate parameter, false positive",
+      "fix_justification": "Single statement, code is correct. SWAN 58.2 block pragma is the appropriate fix."
     },
     {
       "violation_code": "<exact code from extractor>",
@@ -208,7 +208,7 @@ Return a JSON object with analysis for ALL violations in this file:
       "fix_type": "pragma_suppress",
       "pragma_rule": "<exact code from extractor — copy verbatim>",
       "insert_after_line": 88,
-      "fix_action": "Insert '// spyglass disable <rule>  // always blocks drive disjoint conditions' after line 88 (driver 1 of 2)",
+      "fix_action": "Wrap line 88 with //spyglass disable_block <rule> / //spyglass enable_block <rule> — always blocks drive disjoint conditions (driver 1 of 2)",
       "fix_justification": "Code is correct — read RTL, confirmed driver at line 88 and driver at line 102 cover mutually exclusive conditions."
     },
     {
@@ -223,7 +223,7 @@ Return a JSON object with analysis for ALL violations in this file:
       "fix_type": "pragma_suppress",
       "pragma_rule": "<exact code from extractor — copy verbatim>",
       "insert_after_line": 102,
-      "fix_action": "Insert '// spyglass disable <rule>  // always blocks drive disjoint conditions' after line 102 (driver 2 of 2)",
+      "fix_action": "Wrap line 102 with //spyglass disable_block <rule> / //spyglass enable_block <rule> — always blocks drive disjoint conditions (driver 2 of 2)",
       "fix_justification": "Code is correct — second driver at line 102 is mutually exclusive with driver at line 88."
     },
     {
@@ -238,7 +238,7 @@ Return a JSON object with analysis for ALL violations in this file:
       "fix_type": "pragma_suppress",
       "pragma_rule": "<exact code from extractor — copy verbatim>",
       "insert_after_line": 120,
-      "fix_action": "Insert '// spyglass disable <rule>  // clock is real, gated path not traceable by tool' after line 120",
+      "fix_action": "Wrap line 120 with //spyglass disable_block <rule> / //spyglass enable_block <rule> — clock is real, gated path not traceable by tool",
       "fix_justification": "Read RTL — clock signal is real and functional; gating logic prevents static trace. Pragma suppresses the false positive."
     }
   ]
@@ -284,7 +284,7 @@ Before ending your turn, verify:
 2. **Did you propose RTL fix paths using `publish_rtl/`?** → Wrong — prefer `out/*/library/*/pub/src/rtl/` paths in your `rtl_file` field (survives reruns); fall back to `src/rtl/` only if file is not found in any library
 3. **Did you suggest adding waivers?** → Wrong — ZERO waivers for Lint. All fixes must be in RTL source.
 4. **Did you use `investigate` for a violation where reading the RTL shows the code is correct?** → Wrong — if the code is correct and cannot be fixed without functional risk, use `pragma_suppress`. It does not require library owner action.
-5. **Did you use `pragma_suppress` with `disable_block`/`enable_block` syntax?** → Wrong — use `// spyglass disable <rule>` (iEDA SWAN inline format) inserted AFTER the offending statement.
+5. **Did you use `// spyglass disable <rule>` inline pragma format?** → Wrong — SWAN 58.2 does not recognize inline format. Use `pragma_suppress` fix_type; the fix implementor will wrap the statement with `//spyglass disable_block <rule>` / `//spyglass enable_block <rule>`.
 6. **Did you use `xml_suppress`?** → Wrong — xml_suppress is not allowed (it is a waiver). Use `pragma_suppress` on each individual driver statement instead.
 7. **Did you use a single `pragma_suppress` for a multi-driver violation?** → Wrong — output one `pragma_suppress` entry per driver statement, each with its own `insert_after_line`. Read the RTL to find all driver lines.
 8. **Did you copy `pragma_rule` verbatim from the violation `code` field?** → If not, fix it — do NOT guess or rename.

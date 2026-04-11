@@ -44,10 +44,11 @@ Look for blackbox-related entries in the report:
 
 ## Instructions
 
-1. Find moresimple.rpt using Glob
-2. Search for "BlackboxModule" or "blackbox" entries
-3. Extract module names
-4. Return JSON summary
+1. Find moresimple.rpt using IP_CONFIG.yaml path pattern (same as violation extractor — use `ls -t` not slow Glob)
+2. **⚠️ VALIDATION:** If no report found → write output JSON with `"report_missing": true`, `"blackbox_modules": {"count": 0, "modules": []}`, `"needs_library_search": false`, `"error": "moresimple.rpt not found"` — write to disk and STOP
+3. Search for "BlackboxModule" or "blackbox" entries
+4. Extract module names
+5. Write JSON summary to disk
 
 ## Config File
 
@@ -68,3 +69,15 @@ Content: <your JSON output>
 ```
 
 The report compiler reads this file from disk. If you do not write it, the final report will be incomplete.
+
+---
+
+## SELF-CHECK Before Finishing
+
+Before ending your turn, verify:
+
+1. **Did you write `data/<tag>_precondition_spgdft.json` using the Write tool?** → If not, do it now — do NOT finish without it
+2. **If report was not found, did you set `report_missing: true`?** → Required — do not produce empty output that looks like "no blackboxes found"
+3. **Did you accidentally modify any source files?** → Wrong — this agent is read-only
+
+Do NOT finish your turn until the output JSON is written to disk.

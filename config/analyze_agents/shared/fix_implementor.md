@@ -247,21 +247,23 @@ From the consolidated JSON, process `fix_type: rtl_fix`, `fix_type: tie_off`, an
 
 #### For `pragma_suppress` entries:
 
-**iEDA SWAN inline pragma format**: `// spyglass disable <rule>  // <justification>` — do NOT use `disable_block`/`enable_block`.
+**SWAN 58.2 block pragma format** — use `//spyglass disable_block <rule>` / `//spyglass enable_block <rule>`. Do NOT use `// spyglass disable <rule>` inline format — it is NOT recognized by SWAN 58.2 and has no effect.
 
 1. Resolve RTL file path (same Step 2a logic — `out/*/library/*/pub/src/rtl/` preferred, `src/rtl/` fallback)
 2. Backup the file (once per file): `cp <rtl_file> <rtl_file>.bak_<tag>` (no p4 edit)
-3. Read the file; check that line `insert_after_line` does not already have `// spyglass disable <pragma_rule>` on the next line — skip if already present
-4. **Capture the before state**: the line at `insert_after_line` + 1 line after (`diff_before`)
-5. Apply using the Edit tool — insert ONE pragma line immediately after `insert_after_line`:
+3. Read the file; check that `//spyglass disable_block <pragma_rule>` does not already wrap the offending line — skip if already present
+4. **Capture the before state**: the offending line + 1 line of context above and below (`diff_before`)
+5. Apply using the Edit tool — wrap the offending statement with block pragmas:
    ```
-   // spyglass disable <pragma_rule>  // <fix_justification summary>
+   //spyglass disable_block <pragma_rule>
+   <offending statement line>
+   //spyglass enable_block <pragma_rule>
    ```
-   Use the line at `insert_after_line` as the `old_string` anchor; `new_string` = original line + `\n    // spyglass disable <pragma_rule>  // <justification>`
+   Use the exact content of the offending line as `old_string`; `new_string` = `//spyglass disable_block <pragma_rule>\n` + original line + `\n//spyglass enable_block <pragma_rule>`
 6. **Capture the after state** (`diff_after`)
 7. Log as `pragma_suppress` in applied list with `pragma_rule`, `insert_after_line`, rtl_file, backup_file, diff_before, diff_after
 
-**No comment wrapper** — the pragma itself is the fix. Insert it bare.
+**No additional comment wrapper** — the disable_block/enable_block pair is the fix.
 
 **IMPORTANT for all Lint fixes:**
 - Make MINIMAL changes only — fix exactly what the violation points to
@@ -304,7 +306,7 @@ Where `<check_type_short>`:
   "tie_offs_applied": <count>,
   "pragma_suppresses_applied": <count>,
   "library_entries_added": <count>,
-  "deep_dive_pending": <count>,
+  "deep_dive_pending": <count of requires_investigation items — MUST equal len(requires_investigation), never 0 if list is non-empty>,
   "applied": [
     {
       "fix_type": "constraint",
@@ -349,6 +351,8 @@ Where `<check_type_short>`:
 
 **MANDATORY: Write this file to disk using the Write tool. If you do not write it, the orchestrator cannot compile the round report.**
 
+**❌ Do NOT add a `stalled` field to the output JSON.** The orchestrator — not the fix implementor — determines whether the round is STALLED. Adding `stalled: true` will cause the orchestrator to short-circuit and skip deep-dive agents.
+
 ---
 
 ## Notes
@@ -357,7 +361,7 @@ Where `<check_type_short>`:
 - For CDC/RDC: apply both `constraint` AND `rtl_fix` — `investigate` items are logged for Deep-Dive Agent
 - For Lint: apply `rtl_fix`, `tie_off`, and `pragma_suppress` — do NOT touch `src/meta/waivers/lint/variant/<ip>/umc_waivers.xml`
 - For SPG_DFT: apply both `constraint` (to `project.params`) AND `rtl_fix` (to path as-is) — log `investigate` only
-- `pragma_suppress` inserts `// spyglass disable <rule>  // <justification>` on the line AFTER the offending statement — iEDA SWAN/LEDA inline format (NOT `disable_block`/`enable_block`); zero functional impact; one pragma per driver statement for multi-driver violations
+- `pragma_suppress` wraps the offending statement with `//spyglass disable_block <rule>` before and `//spyglass enable_block <rule>` after — SWAN 58.2 block pragma format (do NOT use `// spyglass disable <rule>` inline format — it is not recognized by SWAN 58.2); zero functional impact; one disable_block/enable_block pair per offending statement
 - `xml_suppress` and `lint_constraint` are NOT valid fix types — do NOT apply them
 - Always check for duplicates before applying any fix — both within the file (read actual file content) AND across check types (read existing `<tag>_fix_applied_*.json` from Step 1b)
 - For `full_static_check`: fix implementors run sequentially (CDC → Lint → SPG_DFT) — never in parallel
