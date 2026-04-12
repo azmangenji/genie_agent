@@ -18,4 +18,16 @@ source $source_dir/script/rtg_oss_feint/get_rhel_version.csh
 #    endif
 #endif
 
+# Remove stale rhea_lint session.lock before launching LSF to prevent incremental
+# analysis from restoring a stale compiled DB (e.g. after fixer-applied RTL edits)
+if (-d out) then
+    set lock_files = (`find out -name "session.lock" -path "*/rhea_lint/vcst_rtdb*"`)
+    if ($#lock_files > 0) then
+        foreach lock_file ($lock_files)
+            echo "Removing stale rhea_lint session.lock: $lock_file"
+            rm -f $lock_file
+        end
+    endif
+endif
+
 lsf_bsub -P rtg-mcip-ver -R "select[type==${RHEL_TYPE}] rusage[mem=50000]" -q normal -I dj -c -v -e 'releaseflow::dropflow(:umc_top_drop2cad).build(:rhea_drop,:rhea_lint)' -l lint.log

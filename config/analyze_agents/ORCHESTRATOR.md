@@ -1489,25 +1489,74 @@ Round N:
         1. CLEAN: focus_violations == 0
            → Go to FINAL SUMMARY with result=CLEAN
 
-        2. STALLED: constraints_applied == 0 AND rtl_fixes_applied == 0 AND tie_offs_applied == 0 AND deep_dive_applied == 0
-           → No new fixes were applied this round (including deep-dive) — remaining
-             violations are not auto-fixable (all unresolved investigate items)
+        2. STALLED (pre-check — infrastructure issues first):
+           Before declaring STALLED, check if the static check run itself failed due to a
+           fixable infrastructure issue. Read the spec file and log file for known error patterns:
+
+           ┌─────────────────────────────────────────────────────────────────────┐
+           │              INFRASTRUCTURE AUTO-FIX TABLE                          │
+           ├──────────────────────────────┬──────────────────────────────────────┤
+           │ Error Pattern                │ Auto-Fix Action                      │
+           ├──────────────────────────────┼──────────────────────────────────────┤
+           │ "session.lock" in log/spec   │ find <ref_dir>/out -name             │
+           │ (vcst_rtdb lock not released)│ "session.lock" -path "*/vcst_rtdb*"  │
+           │                              │ → rm -f each file found              │
+           │                              │ → mark infrastructure_fixed=true     │
+           ├──────────────────────────────┼──────────────────────────────────────┤
+           │ "Script exit status: 1" with │ Check log for root cause:            │
+           │ no lint report generated     │ - If session.lock → fix above        │
+           │                              │ - If LSF queue error → note only     │
+           │                              │ - If disk full → note only           │
+           └──────────────────────────────┴──────────────────────────────────────┘
+
+           If infrastructure_fixed=true:
+             → Do NOT declare STALLED
+             → Trigger rerun immediately (same round number — does NOT consume a round)
+             → This rerun is a free retry: violations may still be > 0 and fixes > 0
+
+           Only after infrastructure check passes (or no infrastructure issue found):
+
+           STALLED: constraints_applied == 0 AND rtl_fixes_applied == 0 AND
+                    tie_offs_applied == 0 AND deep_dive_applied == 0 AND
+                    infrastructure_fixed == false
+           → No new fixes applied AND no fixable infrastructure issue → truly stuck
            → Do NOT rerun — it would produce the same result
            → Go to FINAL SUMMARY with result=STALLED
 
         3. MAX ROUNDS: round >= MAX_ROUNDS
            → Go to FINAL SUMMARY with result=MAX_ROUNDS_REACHED
 
-        4. Otherwise (fixes were applied AND violations remain AND rounds left):
+        4. Otherwise (fixes were applied OR infrastructure was fixed, AND violations remain AND rounds left):
            → Rerun static check (see Rerun below)
            → Loop to Round N+1
            **❌ NEVER output "MANUAL LINT/CDC/SPG RERUN NEEDED" and stop.**
            **✅ ALWAYS trigger the rerun autonomously using the normalized instruction.**
+           **✅ Infrastructure fixes (session.lock removal) are free retries — goal is 0 errors.**
 ```
 
 ### Triggering a Rerun
 
 After applying fixes, trigger the next round by running the static check again.
+
+0. **Pre-Rerun Workspace Cleanup (do this FIRST, before every rerun):**
+
+   Proactively remove known infrastructure issues that cause tool failures.
+   Run these cleanup steps even if no issue was seen in the previous round:
+
+   ```bash
+   # Remove stale rhea_lint session.lock (prevents vcst_rtdb restore_session on stale DB)
+   find <ref_dir>/out -name "session.lock" -path "*/rhea_lint/vcst_rtdb*"
+   # → rm -f each file found (no-op if none exist)
+   ```
+
+   Log what was cleaned up:
+   ```
+   Pre-rerun cleanup: removed N session.lock file(s) under <ref_dir>/out
+   Pre-rerun cleanup: nothing to clean
+   ```
+
+   ✅ This is a no-op on clean workspaces — always safe to run.
+   ✅ Prevents a killed or interrupted lint round from poisoning the next round's results.
 
 1. Read `data/<tag>_fixer_state` — get ALL original flags:
 ```
@@ -1550,6 +1599,13 @@ Normalized rerun instruction: "run lint at /proj/... for umc9_3"
 This confirms the correct script will be matched by genie_cli.py.
 
 2. Build the rerun command — **MUST restore original flags exactly**:
+
+⚠️ **ANTI-DOUBLE-LAUNCH RULE — READ BEFORE RUNNING:**
+- Run genie_cli.py **DIRECTLY via Bash (foreground only)** — NEVER via a background Task tool call.
+- A background Task returns before genie_cli.py prints the tag → you lose the tag → you re-run → **two concurrent lint runs**.
+- After running genie_cli.py, capture the tag from stdout immediately. Do NOT run it again.
+- If the tag is not visible in the output, grep the log or check `data/` for the newest `*_metadata` file — do NOT re-run genie_cli.py.
+
 ```bash
 cd <base_dir>
 
@@ -1558,12 +1614,15 @@ XTERM_FLAG=""                              # if use_xterm=true  → XTERM_FLAG="
 EMAIL_FLAG="--email"                       # if use_email=true  → EMAIL_FLAG="--email" (default true)
 TO_FLAG=""                                 # if email_to is set → TO_FLAG="--to <email_to>"
 
+# ✅ CORRECT: run foreground Bash — captures tag from stdout
 python3 script/genie_cli.py \
-  -i "<original_instruction>" \
+  -i "<normalized_instruction>" \
   --execute \
   $XTERM_FLAG \
   $EMAIL_FLAG \
   $TO_FLAG
+
+# ❌ WRONG: do NOT wrap this in a background Task tool call — causes double-launch
 ```
 
 **`--email` MUST always be included on every rerun** — this sends the lint/cdc/spg completion email when the tool finishes, AND enables the `_analysis_email` file so the per-round analysis email recipients are resolved correctly.
