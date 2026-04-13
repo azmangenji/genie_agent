@@ -1862,6 +1862,8 @@ class GenieCLI:
                 task_type = 'clock_reset_analysis'
             elif 'find_equivalent_nets' in script_lower:
                 task_type = 'find_equivalent_nets'
+            elif 'eco_analyze' in script_lower:
+                task_type = 'eco_analyze'
             else:
                 task_type = check_type or update_type or 'task'
 
@@ -2048,6 +2050,38 @@ class GenieCLI:
             print()
             print("To kill:")
             print(f"  python3 script/genie_cli.py --kill {tag}")
+        elif 'eco_analyze' in script.lower() and not dry_run:
+            # eco_analyze runs synchronously (thin wrapper, seconds) to capture the signal
+            log_file = os.path.join(self.base_dir, 'runs', f'{tag}.log')
+            import subprocess as _sp
+            run_output = _sp.run(
+                f"cd {self.base_dir} && tcsh -f {run_script}",
+                shell=True, executable='/bin/tcsh',
+                capture_output=True, text=True, timeout=120
+            )
+            # Write output to log file
+            with open(log_file, 'w') as _lf:
+                _lf.write(run_output.stdout)
+                if run_output.stderr:
+                    _lf.write('\n--- STDERR ---\n')
+                    _lf.write(run_output.stderr)
+            eco_signal_found = 'ECO_ANALYZE_MODE_ENABLED' in run_output.stdout
+            # Extract signal params from output
+            eco_signal_params = {}
+            for _line in run_output.stdout.splitlines():
+                if '=' in _line and any(_line.startswith(k) for k in ['TAG=', 'REF_DIR=', 'TILE=', 'LOG_FILE=', 'SPEC_FILE=']):
+                    _k, _, _v = _line.partition('=')
+                    eco_signal_params[_k] = _v
+            print()
+            print(f"eco_analyze completed (exit code {run_output.returncode})")
+            print(f"Log: {log_file}")
+            return {
+                'tag': tag, 'command': command, 'script': script,
+                'args': arguementInfo, 'run_script': run_script,
+                'eco_mode': eco_signal_found,
+                'eco_signal_params': eco_signal_params,
+            }
+
         else:
             # Execute the script in background and capture PID
             log_file = os.path.join(self.base_dir, 'runs', f'{tag}.log')
@@ -4704,6 +4738,32 @@ Examples:
     if result:
         print()
         print("=" * 70)
+
+        # ECO analyze mode: eco_analyze.csh ran synchronously, emit signal if validation passed
+        if result.get('eco_mode'):
+            tag = result.get('tag', '')
+            eco_params = result.get('eco_signal_params', {})
+            ref_dir = eco_params.get('REF_DIR', result.get('args', {}).get('refDir', '').replace('refDir:', '').strip(':'))
+            tile = eco_params.get('TILE', result.get('args', {}).get('tile', '').replace('tile:', '').strip(':'))
+            log_file = eco_params.get('LOG_FILE', os.path.join(cli.base_dir, 'runs', f'{tag}.log'))
+            spec_file = eco_params.get('SPEC_FILE', os.path.join(cli.base_dir, 'data', f'{tag}_spec'))
+            print()
+            print("=" * 70)
+            print("ECO_ANALYZE_MODE_ENABLED")
+            print(f"TAG={tag}")
+            print(f"REF_DIR={ref_dir}")
+            print(f"TILE={tile}")
+            print(f"LOG_FILE={log_file}")
+            print(f"SPEC_FILE={spec_file}")
+            print("=" * 70)
+            return
+        elif result.get('eco_mode') == False and 'eco_analyze' in result.get('script', '').lower():
+            # eco_analyze ran but validation FAILED
+            tag = result.get('tag', '')
+            print()
+            print("ERROR: ECO analyze validation failed. Check spec file:")
+            print(f"  {os.path.join(cli.base_dir, 'data', f'{tag}_spec')}")
+            return
 
         # analyze_only / analyze_fixer_only instruction: emit signal immediately, skip monitoring
         if result.get('analyze_only'):

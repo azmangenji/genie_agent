@@ -1,7 +1,8 @@
 #!/bin/tcsh
 # Find equivalent nets using TileBuilderIntFM (Formality ECO)
 # Called by agent task execution
-# Parameters: refDir, tag, target, netName
+# Parameters: refDir, tag, target, netName, tile
+# target supports comma-separated list for parallel execution
 
 set refDir    = $1
 set tag       = $2
@@ -15,8 +16,15 @@ touch $source_dir/data/${tag}_spec
 # Strip "refDir:" prefix and any leading colons
 set refdir_name = `echo $refDir | sed 's/refDir://' | sed 's/^://g'`
 
-# Strip "target:" prefix
-set target_name = `echo $target | sed 's/target://'`
+# Strip "target:" prefix — result may be comma-separated list of targets
+# If empty or not specified, default to all 3 PreEco targets
+set target_raw = `echo $target | sed 's/target://'`
+if ("$target_raw" == "" || "$target_raw" == "target") then
+    set target_raw = "FmEqvPreEcoSynthesizeVsPreEcoSynRtl,FmEqvPreEcoPrePlaceVsPreEcoSynthesize,FmEqvPreEcoRouteVsPreEcoPrePlace"
+    echo "No target specified — defaulting to all 3 PreEco targets"
+endif
+set target_list = (`echo $target_raw | sed 's/,/ /g'`)
+set target_count = $#target_list
 
 # Strip "netName:" prefix — result is comma-separated net names
 set net_raw   = `echo $netName | sed 's/netName://'`
@@ -24,22 +32,14 @@ set net_raw   = `echo $netName | sed 's/netName://'`
 # Count nets
 set net_count = `echo $net_raw | tr ',' '\n' | wc -l`
 
-# Build space-separated list with tile prefix for TCL: "umccmd/NET1 umccmd/NET2 ..."
-# (tile_name not yet set here — built after tile parsing below)
-
 # Strip tile prefix
 set tile_name = `echo $tile | sed 's/:/ /g' | awk '{$1="";print $0}'`
 
 # Build space-separated list for TCL foreach
-# If net already contains '/', use as-is; otherwise prepend tile_name/
+# Always prepend tile_name/ — nets with '/' are relative to tile, not to top
 set net_full_list = ""
 foreach _net (`echo $net_raw | sed 's/,/ /g'`)
-    set _has_slash = `echo $_net | grep -c "/"`
-    if ($_has_slash > 0) then
-        set net_full_list = "$net_full_list $_net"
-    else
-        set net_full_list = "$net_full_list $tile_name/$_net"
-    endif
+    set net_full_list = "$net_full_list $tile_name/$_net"
 end
 set net_full_list = `echo $net_full_list`
 
@@ -67,11 +67,8 @@ if (! -f "$refdir_name/revrc.main") then
     exit 1
 endif
 
-if ("$target_name" == "" || "$target_name" == "target") then
-    echo "ERROR: FM target not specified" >> $source_dir/data/${tag}_spec
-    echo "Valid targets: FmEqvPreEcoSynthesizeVsPreEcoSynRtl, FmEqvPreEcoPreplaceVsPreEcoSynthesize," >> $source_dir/data/${tag}_spec
-    echo "              FmEqvPreEcoRouteVsPreEcoPrePlace, FmEqvEcoSynthesizeVsEcoSynRtl," >> $source_dir/data/${tag}_spec
-    echo "              FmEqvEcoPreplaceVsEcoSynthesize, FmEqvEcoRouteVsEcoPrePlace" >> $source_dir/data/${tag}_spec
+if ($target_count == 0) then
+    echo "ERROR: FM target list is empty after parsing" >> $source_dir/data/${tag}_spec
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
@@ -86,14 +83,14 @@ if ("$net_raw" == "" || "$net_raw" == "netName") then
 endif
 
 echo "TileBuilder directory: $refdir_name"
-echo "FM target:             $target_name"
+echo "FM target(s):          $target_raw  (count: $target_count)"
 echo "Net name(s):           $net_raw  (count: $net_count)"
 
 # --- Phase 2: Source LSF environment ---
 source $source_dir/script/rtg_oss_feint/lsf_tilebuilder.csh
 
-# --- Phase 3: Check FM target status via TileBuilderShow ---
-echo "Checking FM target status via TileBuilderShow..."
+# --- Phase 3: Check ALL FM target statuses via one TileBuilderShow ---
+echo "Checking FM target statuses via TileBuilderShow..."
 set tb_status_log = "/tmp/tb_fm_status_${tag}.log"
 
 cd $refdir_name
@@ -101,40 +98,53 @@ TileBuilderTerm -x "TileBuilderShow >& $tb_status_log"
 cd $source_dir
 sleep 5
 
-set fm_status = "UNKNOWN"
-if (-f "$tb_status_log" && -s "$tb_status_log") then
-    set fm_status = `grep "$target_name" $tb_status_log | awk '{print $NF}'`
-    if ("$fm_status" == "") then
-        set fm_status = "NOT_FOUND"
+# Validate each target status
+foreach tgt ($target_list)
+    set fm_status = "UNKNOWN"
+    if (-f "$tb_status_log" && -s "$tb_status_log") then
+        set fm_status = `grep "$tgt" $tb_status_log | awk '{print $NF}'`
+        if ("$fm_status" == "") set fm_status = "NOT_FOUND"
     endif
-endif
+
+    echo "FM target '$tgt' status: $fm_status"
+
+    if ("$fm_status" == "NOTRUN" || "$fm_status" == "RUNNING" || "$fm_status" == "UNKNOWN" || "$fm_status" == "NOT_FOUND") then
+        echo "#text#" >> $source_dir/data/${tag}_spec
+        echo "ERROR: FM target '$tgt' status is '$fm_status'" >> $source_dir/data/${tag}_spec
+        echo "Please ensure the Formality run has completed before running this command." >> $source_dir/data/${tag}_spec
+        echo "#text end#" >> $source_dir/data/${tag}_spec
+        rm -f $tb_status_log
+        cd $source_dir
+        set run_status = "failed"
+        source $source_dir/script/rtg_oss_feint/finishing_task.csh
+        exit 1
+    endif
+end
 rm -f $tb_status_log
 
-echo "FM target status: $fm_status"
+echo "All $target_count FM targets validated — launching in parallel"
 
-if ("$fm_status" == "NOTRUN" || "$fm_status" == "RUNNING" || "$fm_status" == "UNKNOWN" || "$fm_status" == "NOT_FOUND") then
-    echo "#text#" >> $source_dir/data/${tag}_spec
-    echo "ERROR: FM target '$target_name' status is '$fm_status'" >> $source_dir/data/${tag}_spec
-    echo "Please ensure the Formality run has completed before running this command." >> $source_dir/data/${tag}_spec
-    echo "#text end#" >> $source_dir/data/${tag}_spec
-    cd $source_dir
-    set run_status = "failed"
-    source $source_dir/script/rtg_oss_feint/finishing_task.csh
-    exit 1
-endif
+# --- Phase 4: Suppress xterm (once, before parallel launches) ---
+set userctl = "$HOME/.TileBuilder.general.controls"
+set tb_ctrl_existed = 0
+if (-f $userctl) set tb_ctrl_existed = 1
+echo "TILEBUILDERINTFM_TERMINAL =" >> $userctl
 
-echo "FM target is $fm_status — proceeding with find_equivalent_nets"
+# --- Phase 5: Generate TCL per target and launch all in parallel ---
+set result_files = ()
 
-# --- Phase 4: Generate TCL append script ---
-set tcl_script = "/tmp/fm_find_equiv_${tag}.tcl"
-set output_rpt = "rpts/${target_name}/find_equivalent_nets_${tag}.txt"
-set result_file = "${refdir_name}/${output_rpt}"
+foreach tgt ($target_list)
+    set tcl_script  = "/tmp/fm_find_equiv_${tag}_${tgt}.tcl"
+    set output_rpt  = "rpts/${tgt}/find_equivalent_nets_${tag}.txt"
+    set result_file = "${refdir_name}/${output_rpt}"
 
-cat > $tcl_script << TCLEOF
+    # Remove stale result file so poll detects only fresh output
+    rm -f $result_file
+
+    cat > $tcl_script << TCLEOF
 # find_equivalent_nets — auto-generated by find_equivalent_nets.csh
-# Tag: ${tag}
+# Tag: ${tag}  Target: ${tgt}
 
-# Dynamically resolve reference top path via ParamsDB (already sourced by FmInteractive.cmd)
 set topModule \$P(TOP_MODULE)
 set ref_lib   [string toupper "FMWORK_REF_\${topModule}"]
 set ref_top   "\${ref_lib}/\${topModule}"
@@ -156,79 +166,88 @@ redirect ${refdir_name}/${output_rpt} {
 exit
 TCLEOF
 
-echo "Generated TCL script: $tcl_script"
+    echo "Launching TileBuilderIntFM for target: $tgt"
+    cd $refdir_name
+    TileBuilderTerm -x "TileBuilderIntFM --nogui --append $tcl_script $tgt" &
+    cd $source_dir
 
-# --- Phase 5: Run TileBuilderIntFM ---
-echo "Running TileBuilderIntFM --nogui --append $tcl_script $target_name ..."
+    set result_files = ($result_files $result_file)
+end
 
-# Suppress xterm window by writing to ~/.TileBuilder.general.controls
-# TileBuilderIntFM reads this file (not env vars) to control terminal behaviour
-set userctl = "$HOME/.TileBuilder.general.controls"
-set tb_ctrl_existed = 0
-if (-f $userctl) set tb_ctrl_existed = 1
-echo "TILEBUILDERINTFM_TERMINAL =" >> $userctl
-
-# Remove stale result file so poll detects only fresh output
-rm -f $result_file
-
-cd $refdir_name
-TileBuilderTerm -x "TileBuilderIntFM --nogui --append $tcl_script $target_name" &
-cd $source_dir
-
-# --- Phase 6: Poll for output file ---
+# --- Phase 6: Poll until ALL result files have sentinel ---
 set max_wait = 60
 set wait_count = 0
 
-echo "Waiting for output (max ${max_wait} minutes)..."
+echo "Waiting for all $target_count targets to complete (max ${max_wait} minutes)..."
 
 while ($wait_count < $max_wait)
     sleep 60
     set wait_count = `expr $wait_count + 1`
 
-    if (-f "$result_file") then
-        set complete = `grep -c "FIND_EQUIVALENT_NETS_COMPLETE" $result_file`
-        if ($complete > 0) then
-            echo "Output complete after ${wait_count} minute(s): $result_file"
-            break
+    set done_count = 0
+    foreach rf ($result_files)
+        if (-f "$rf") then
+            set complete = `grep -c "FIND_EQUIVALENT_NETS_COMPLETE" $rf`
+            if ($complete > 0) @ done_count++
         endif
-    endif
+    end
 
-    echo "Waiting... (${wait_count}/${max_wait} minutes elapsed)"
+    echo "Waiting... ${done_count}/${target_count} targets done (${wait_count}/${max_wait} min)"
+
+    if ($done_count == $target_count) then
+        echo "All targets complete after ${wait_count} minute(s)"
+        break
+    endif
 end
 
-set sentinel_found = 0
-if (-f "$result_file") set sentinel_found = `grep -c "FIND_EQUIVALENT_NETS_COMPLETE" $result_file`
-if (! -f "$result_file" || $sentinel_found == 0) then
-    echo "#text#" >> $source_dir/data/${tag}_spec
-    echo "ERROR: find_equivalent_nets timed out after ${max_wait} minutes" >> $source_dir/data/${tag}_spec
-    echo "Expected output: $result_file" >> $source_dir/data/${tag}_spec
-    echo "#text end#" >> $source_dir/data/${tag}_spec
-    rm -f $tcl_script
+# Check for any incomplete targets
+set all_ok = 1
+foreach rf ($result_files)
+    set sentinel_found = 0
+    if (-f "$rf") set sentinel_found = `grep -c "FIND_EQUIVALENT_NETS_COMPLETE" $rf`
+    if (! -f "$rf" || $sentinel_found == 0) then
+        echo "#text#" >> $source_dir/data/${tag}_spec
+        echo "ERROR: find_equivalent_nets timed out for: $rf" >> $source_dir/data/${tag}_spec
+        echo "#text end#" >> $source_dir/data/${tag}_spec
+        set all_ok = 0
+    endif
+end
+
+if ($all_ok == 0) then
+    foreach tgt ($target_list)
+        rm -f /tmp/fm_find_equiv_${tag}_${tgt}.tcl
+    end
     cd $source_dir
     set run_status = "failed"
     source $source_dir/script/rtg_oss_feint/finishing_task.csh
     exit 1
 endif
 
-# --- Phase 7: Write results and finish ---
+# --- Phase 7: Write results for all targets and finish ---
 echo "#table#" >> $source_dir/data/${tag}_spec
 echo "Field,Value" >> $source_dir/data/${tag}_spec
-echo "FM Target,$target_name" >> $source_dir/data/${tag}_spec
-
-# Write all nets in one row — join with " | " to avoid comma column-split
 set net_value = `echo $net_full_list | sed 's/  */ | /g'`
 echo "Net(s),$net_value" >> $source_dir/data/${tag}_spec
-
-echo "Output,$result_file" >> $source_dir/data/${tag}_spec
+echo "Targets Run,$target_raw" >> $source_dir/data/${tag}_spec
 echo "#table end#" >> $source_dir/data/${tag}_spec
-echo "#text#" >> $source_dir/data/${tag}_spec
-grep -v "FIND_EQUIVALENT_NETS_COMPLETE" $result_file >> $source_dir/data/${tag}_spec
-echo "#text end#" >> $source_dir/data/${tag}_spec
 
-rm -f $tcl_script
+# Write results per target with clear header
+foreach tgt ($target_list)
+    set rf = "${refdir_name}/rpts/${tgt}/find_equivalent_nets_${tag}.txt"
+    echo "#text#" >> $source_dir/data/${tag}_spec
+    echo "===========================================" >> $source_dir/data/${tag}_spec
+    echo "TARGET: $tgt" >> $source_dir/data/${tag}_spec
+    echo "===========================================" >> $source_dir/data/${tag}_spec
+    grep -v "FIND_EQUIVALENT_NETS_COMPLETE" $rf >> $source_dir/data/${tag}_spec
+    echo "#text end#" >> $source_dir/data/${tag}_spec
+end
 
-# Restore ~/.TileBuilder.general.controls — remove the suppression line we appended
-# If file didn't exist before, remove it entirely; otherwise strip only our added line
+# Cleanup TCL scripts
+foreach tgt ($target_list)
+    rm -f /tmp/fm_find_equiv_${tag}_${tgt}.tcl
+end
+
+# Restore ~/.TileBuilder.general.controls
 if ($tb_ctrl_existed == 0) then
     rm -f $userctl
 else

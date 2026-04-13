@@ -351,6 +351,44 @@ FIXER_ROUND=<N>
 
 ---
 
+## ECO Analyze Mode
+
+When `ECO_ANALYZE_MODE_ENABLED` is detected in output:
+
+1. **Spawn ONE orchestrator agent** (general-purpose) — do NOT do the ECO analysis yourself:
+   ```
+   Agent(
+     description="ECO analyze <tile> at <ref_dir>",
+     subagent_type="general-purpose",
+     prompt="""
+     You are the ECO orchestrator. Read config/eco_agents/ORCHESTRATOR.md and
+     execute the full ECO analyze flow for the following inputs:
+
+     TAG=<tag>
+     REF_DIR=<ref_dir>
+     TILE=<tile>
+     LOG_FILE=<log_file>
+     SPEC_FILE=<spec_file>
+     BASE_DIR=<parent of the 'runs/' folder in LOG_FILE>
+     """
+   )
+   ```
+2. When the agent completes, say only: `"ECO analysis complete. Email sent."`
+
+**Signal format:**
+```
+ECO_ANALYZE_MODE_ENABLED
+TAG=<tag>
+REF_DIR=<ref_dir>
+TILE=<tile>
+LOG_FILE=<log_file>
+SPEC_FILE=<spec_file>
+```
+
+**Trigger:** `"analyze eco at <refdir> for <tile>"` or `"run eco analysis at <refdir> for <tile>"`
+
+---
+
 **Version:** 2.4 | **Last Updated:** 2026-04-01
 
 **Note:** Detailed documentation loads on-demand from `.claude/rules/` when working with relevant files.
