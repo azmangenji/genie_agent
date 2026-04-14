@@ -1,12 +1,16 @@
 #!/bin/tcsh
 # Validate ECO TileBuilder directory and emit ECO_ANALYZE_MODE_ENABLED signal
-# Parameters: refDir tag tile
+# Parameters: refDir tag tile integer(jira_number)
 # Called by genie_cli.py — runs synchronously (thin wrapper, seconds)
 
 set refDir    = $1
 set tag       = $2
 set tile      = $3
+set jira_raw  = $4
 set source_dir = `pwd`
+
+# Extract JIRA number (strip integer: prefix if present)
+set jira_num = `echo $jira_raw | sed 's/integer://' | sed 's/^://g' | xargs`
 
 touch $source_dir/data/${tag}_spec
 
@@ -14,7 +18,7 @@ touch $source_dir/data/${tag}_spec
 set refdir_name = `echo $refDir | sed 's/refDir://' | sed 's/^://g'`
 set tile_name   = `echo $tile   | sed 's/tile://'   | sed 's/^://g' | xargs`
 
-echo "ECO Analyze: validating $tile_name at $refdir_name"
+echo "ECO Analyze: validating $tile_name at $refdir_name (JIRA: $jira_num)"
 
 # --- Validation: refDir ---
 
@@ -76,6 +80,7 @@ end
 echo "#table#" >> $source_dir/data/${tag}_spec
 echo "Field,Value" >> $source_dir/data/${tag}_spec
 echo "Tile,$tile_name" >> $source_dir/data/${tag}_spec
+echo "JIRA,$jira_num" >> $source_dir/data/${tag}_spec
 echo "TileBuilder Dir,$refdir_name" >> $source_dir/data/${tag}_spec
 echo "PreEco RTL,$refdir_name/data/PreEco/SynRtl" >> $source_dir/data/${tag}_spec
 echo "PostEco RTL,$refdir_name/data/SynRtl" >> $source_dir/data/${tag}_spec
@@ -92,6 +97,7 @@ echo "ECO_ANALYZE_MODE_ENABLED"
 echo "TAG=$tag"
 echo "REF_DIR=$refdir_name"
 echo "TILE=$tile_name"
+echo "JIRA=$jira_num"
 echo "LOG_FILE=$source_dir/runs/${tag}.log"
 echo "SPEC_FILE=$source_dir/data/${tag}_spec"
 echo "========================================================================"

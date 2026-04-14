@@ -3945,6 +3945,12 @@ Examples:
                         help='Round number for --send-fixer-round-email')
     parser.add_argument('--result', type=str, metavar='RESULT',
                         help='Final result for --send-fixer-summary-email (CLEAN, STALLED, MAX_ROUNDS_REACHED)')
+    parser.add_argument('--send-eco-email', type=str, metavar='TAG',
+                        help='Send ECO analysis HTML report email for a completed ECO run')
+    parser.add_argument('--eco-round', type=int, metavar='N',
+                        help='Round number for --send-eco-email (omit for final summary)')
+    parser.add_argument('--eco-result', type=str, metavar='RESULT',
+                        help='Final result for ECO summary email (PASS, FAIL, MAX_ROUNDS_REACHED)')
     parser.add_argument('--kill', '-k', type=str, metavar='TAG',
                         help='Kill a running background task by tag')
     parser.add_argument('--status', '-s', type=str, metavar='TAG',
@@ -4429,6 +4435,74 @@ Examples:
 
         cli.send_email(emails, subject, html_content, use_html=True)
         print(f"Fixer summary email sent to: {', '.join(emails)}")
+        print(f"Subject: {subject}")
+        return
+
+    # Handle --send-eco-email: send ECO analysis/round/summary HTML report email
+    if args.send_eco_email:
+        tag = args.send_eco_email
+        eco_round   = getattr(args, 'eco_round', None)
+        eco_result  = getattr(args, 'eco_result', None)
+
+        eco_analyze_file = os.path.join(cli.base_dir, 'data', f'{tag}_eco_analyze')
+        email_flag_file  = os.path.join(cli.base_dir, 'data', f'{tag}_email')
+
+        # Choose HTML file: per-round report or final report
+        if eco_round is not None:
+            html_file = os.path.join(cli.base_dir, 'data', f'{tag}_eco_report_round{eco_round}.html')
+            if not os.path.exists(html_file):
+                html_file = os.path.join(cli.base_dir, 'data', f'{tag}_eco_report.html')
+        else:
+            html_file = os.path.join(cli.base_dir, 'data', f'{tag}_eco_report.html')
+
+        if not os.path.exists(html_file):
+            print(f"Error: ECO HTML report not found: {html_file}")
+            sys.exit(1)
+
+        # Read metadata from _eco_analyze file
+        tile = ref_dir = ''
+        if os.path.exists(eco_analyze_file):
+            with open(eco_analyze_file) as f:
+                for line in f:
+                    if line.startswith('tile='):    tile    = line.split('=', 1)[1].strip()
+                    elif line.startswith('ref_dir='): ref_dir = line.split('=', 1)[1].strip()
+
+        # Get email recipients: priority --to > _email > assignment.csv
+        emails = []
+        if args.to:
+            emails = [e.strip() for e in args.to.split(',') if e.strip()]
+        elif os.path.exists(email_flag_file):
+            with open(email_flag_file) as f:
+                emails = [e.strip() for e in f.read().strip().split(',') if e.strip()]
+        elif cli.debugger_emails:
+            emails = cli.debugger_emails
+
+        if not emails:
+            print(f"Error: No email recipients found for ECO tag {tag}")
+            sys.exit(1)
+
+        dir_name = os.path.basename(ref_dir) if ref_dir else ''
+        base = f"{tile} @ {dir_name}" if (tile and dir_name) else (tile or dir_name or tag)
+
+        # Build subject based on context
+        if eco_round is not None and eco_result is None:
+            subject = f"[ECO Round {eco_round}] {base} ({tag})"
+        elif eco_result:
+            result_upper = eco_result.upper()
+            if 'PASS' in result_upper:
+                subject = f"[ECO PASS] {base} — PostEco FM clean ({tag})"
+            elif 'MAX' in result_upper:
+                subject = f"[ECO MAX ROUNDS] {base} — manual fix needed ({tag})"
+            else:
+                subject = f"[ECO FAIL] {base} — manual fix needed ({tag})"
+        else:
+            subject = f"[ECO Analysis] {base} ({tag})"
+
+        with open(html_file) as f:
+            html_content = f.read()
+
+        cli.send_email(emails, subject, html_content, use_html=True)
+        print(f"ECO email sent to: {', '.join(emails)}")
         print(f"Subject: {subject}")
         return
 
