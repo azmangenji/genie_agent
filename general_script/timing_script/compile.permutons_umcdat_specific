@@ -1,0 +1,345 @@
+# ============================================================================
+# ORIGINAL PERMUTONS (from baseline)
+# ============================================================================
+
+# COMMENTED OUT: Power-focused, not timing
+# Reason: Goal is WNS improvement, not area/power reduction
+#create_permuton \
+#  -name compile.flow.high_effort_area \
+#  -description true/false \
+#  -stages {compile} \
+#  -focus fusion \
+#  -target power \
+#  -type app \
+#  -range {false true} \
+#  -datatype categorical
+
+# ✅ KEPT: Direct timing optimization effort control
+# Impact: Controls overall timing optimization aggressiveness (0=low, 3=ultra)
+# UPDATED: Extended range from {0 1} to {0 1 2 3} for more aggressive timing optimization
+create_permuton \
+  -name compile.flow.high_effort_timing \
+  -description {Extended range for aggressive timing optimization} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type app \
+  -range {0 1 2 3} \
+  -datatype discrete
+
+# COMMENTED OUT: Overlaps with high_effort_timing
+# Reason: Advanced Logic Restructuring is enabled by high timing effort levels
+# ALR is redundant when high_effort_timing is already aggressive
+#create_permuton \
+#  -name dso_enable_ALR \
+#  -description {Permute options to enable advanced logic restructuring modes.  } \
+#  -stages {compile} \
+#  -focus general \
+#  -target timing \
+#  -type custom \
+#  -range {area_timing timing_power} \
+#  -datatype categorical \
+#  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_enable_ALR_procs.tcl \
+#  -before_proc {dso_before_ALR_alt dso_enable_ALR cost} \
+#  -after_proc dso_after_ALR \
+#  -checkpoints {compile*final_opto* place*final_opto* clock*} \
+#  -arg_values {cost medium}
+
+# ✅ KEPT: Path margin adjustment for timing pressure
+# Impact: Tightens timing margins to force tool to work harder on critical paths
+create_permuton \
+  -name dso_scale_margins \
+  -description {Adjust pre-existing global/customized path margins by a percentage of a main clock. Reverts back after checkpoint.} \
+  -type custom \
+  -range {-1 0} \
+  -datatype discrete \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_scale_margins_procs.tcl \
+  -before_proc {dso_scale_setup_path_margins_global {dso_scale_margins main_clock}} \
+  -after_proc dso_reset_setup_path_margins_global \
+  -checkpoints {*_opt*} \
+  -arg_values {main_clock USE_FASTEST_CLOCK}
+
+# COMMENTED OUT: Power-focused placement
+# Reason: Focus on timing-driven placement, not power-aware placement
+#create_permuton \
+#  -name place.coarse.eLpp_amt_power \
+#  -type app \
+#  -range {0.45 0.5 0.55 0.6 0.65} \
+#  -datatype discrete
+
+# COMMENTED OUT: Power fusion optimization
+# Reason: Power-focused, not timing critical
+#create_permuton \
+#  -name dso_permuton_power_fusion_7 \
+#  -description non-descript \
+#  -stages {clock compile route} \
+#  -focus fusion \
+#  -target power \
+#  -type custom \
+#  -range {0.2 0.4 0.95} \
+#  -datatype categorical \
+#  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_power_fusion_7_procs.tcl \
+#  -before_proc {dso_permuton_proc_14 dso_permuton_power_fusion_7} \
+#  -after_proc dso_permuton_proc_13 \
+#  -checkpoints {compile* place* clock_opt* route_opt* hyper_route_opt*}
+
+# COMMENTED OUT: Power fusion optimization
+# Reason: Similar to power_fusion_7, power-focused not timing
+#create_permuton \
+#  -name dso_permuton_power_fusion_8 \
+#  -description non-descript \
+#  -stages {clock compile route} \
+#  -focus fusion \
+#  -target power \
+#  -type custom \
+#  -range {0.2 0.9} \
+#  -datatype categorical \
+#  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_power_fusion_8_procs.tcl \
+#  -before_proc {dso_permuton_proc_16 dso_permuton_power_fusion_8} \
+#  -after_proc dso_permuton_proc_15 \
+#  -checkpoints {compile* place* clock_opt* route_opt* hyper_route_opt*}
+
+# ✅ KEPT: Area-timing trade-off control
+# Impact: Critical for timing - allows area growth for timing improvement
+create_permuton \
+  -name dso_permuton_biasatp \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {0.1 0.2 0.3 0.4 0.5} \
+  -datatype discrete \
+  -disable_value 0.5 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_biasatp_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_biasatp_proc dso_permuton_biasatp} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_biasatp_proc \
+  -checkpoints {compile*}
+
+# COMMENTED OUT: Overlaps with biasatp
+# Reason: Both control area-timing trade-off; biasatp is more direct
+# biasts controls slack threshold for area recovery (similar function)
+#create_permuton \
+#  -name dso_permuton_biasts \
+#  -description {Compile fusion opto. } \
+#  -stages {compile place} \
+#  -focus fusion \
+#  -target timing \
+#  -type custom \
+#  -range {0.3 0.35 0.4 0.5} \
+#  -datatype discrete \
+#  -disable_value 0.5 \
+#  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_biasts_procs.tcl \
+#  -before_proc {::DSO::PERMUTONS::dso_before_permuton_biasts_proc dso_permuton_biasts} \
+#  -after_proc ::DSO::PERMUTONS::dso_after_permuton_biasts_proc \
+#  -checkpoints {compile*}
+
+# ✅ KEPT: Register retiming and merging (ADDED BACK)
+# Impact: Excellent for pipeline-heavy designs like encryption (UMCDAT)
+# Reason: Complements aes_pipeline_balance by providing global retiming control
+create_permuton \
+  -name dso_permuton_ramd \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {-1 0.1 0.15 0.2 0.25} \
+  -datatype discrete \
+  -disable_value -1 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_ramd_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_ramd_proc dso_permuton_ramd} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_ramd_proc \
+  -checkpoints {compile*}
+
+# ============================================================================
+# UMCDAT-SPECIFIC PERMUTONS
+# Target: Security/Encryption Timing Issues
+# Focus: AES pipelines, XTS transformation, key expansion, ECC logic
+# ============================================================================
+#
+# Problem Analysis:
+#   - UMCSEC encryption pipelines: 3,095 failing paths (119% of total!)
+#   - RdKeyPipe: 274 paths, WrKeyPipe: 170 paths (key expansion)
+#   - XtsDatPipe: 426 paths (XTS data transformation)
+#   - ECCRD: 354 paths (ECC read logic)
+#   - Aes128Mode_reg: 122 critical startpoint paths (4.7%)
+#   - Deep pipelines: 22-35 levels of logic
+# ============================================================================
+
+# ✅ KEPT: Permuton 1 - AES Pipeline Stage Balancing
+# Impact: 119% of failures (3,095 paths - MASSIVE! Paths counted across multiple stages)
+# Reason: BIGGEST bottleneck by far, targets main encryption pipeline
+create_permuton \
+  -name umcdat_aes_pipeline_balance \
+  -description {Balance AES encryption pipeline stages to distribute logic evenly and reduce critical path depth} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none light balanced aggressive} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_aes_pipeline_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umcdat_before_aes_pipeline_proc umcdat_aes_pipeline_balance} \
+  -after_proc ::DSO::PERMUTONS::umcdat_after_aes_pipeline_proc \
+  -checkpoints {compile*final_opto*}
+
+# ✅ KEPT: Permuton 2 - Key Expansion Pipeline Retiming
+# Impact: 17.1% of failures (444 paths: RdKeyPipe 274 + WrKeyPipe 170)
+# Reason: SECOND HIGHEST impact, specific key expansion bottleneck
+create_permuton \
+  -name umcdat_key_pipeline_retime \
+  -description {Retime key expansion pipelines (RdKeyPipe, WrKeyPipe) to move registers for optimal timing} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none forward backward adaptive} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_key_retime_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umcdat_before_key_retime_proc umcdat_key_pipeline_retime} \
+  -after_proc ::DSO::PERMUTONS::umcdat_after_key_retime_proc \
+  -checkpoints {compile*final_opto*}
+
+# ✅ KEPT: Permuton 3 - XTS Data Pipeline Optimization
+# Impact: 16.4% of failures (426 paths in XTSPIPE, XtsDatPipeNxt)
+# Reason: THIRD HIGHEST impact, XTS-specific Galois field multiplication bottleneck
+create_permuton \
+  -name umcdat_xts_pipeline_opt \
+  -description {Optimize XTS data transformation pipeline: restructure logic and add pipeline stages if needed} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none restructure add_stage both} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_xts_pipeline_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umcdat_before_xts_pipeline_proc umcdat_xts_pipeline_opt} \
+  -after_proc ::DSO::PERMUTONS::umcdat_after_xts_pipeline_proc \
+  -checkpoints {compile*final_opto*}
+
+# COMMENTED OUT: Permuton 4 - Aes128Mode Control Fanout Reduction
+# Impact: 4.7% (122 paths from Aes128Mode_reg)
+# Reason: Covered by aes_pipeline_balance - Aes128Mode fanout is part of overall AES pipeline
+# Pipeline balancing will redistribute this load
+#create_permuton \
+#  -name umcdat_aes_mode_fanout \
+#  -description {Reduce fanout from Aes128Mode_reg control signal using replication and buffering} \
+#  -stages {compile place} \
+#  -focus fusion \
+#  -target timing \
+#  -type custom \
+#  -range {none replicate buffer both} \
+#  -datatype categorical \
+#  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_aes_mode_procs.tcl \
+#  -before_proc {::DSO::PERMUTONS::umcdat_before_aes_mode_proc umcdat_aes_mode_fanout} \
+#  -after_proc ::DSO::PERMUTONS::umcdat_after_aes_mode_proc \
+#  -checkpoints {compile* place*}
+
+# ✅ KEPT: Permuton 5 - ECC Read Path Optimization
+# Impact: 13.6% of failures (354 paths in ECCRD, EccSymbl)
+# Reason: FOURTH HIGHEST impact, unique ECC matrix multiplication logic
+create_permuton \
+  -name umcdat_ecc_read_opt \
+  -description {Optimize ECC read logic paths (ECCRD): focus effort on EccSymbl and syndrome generation} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {standard high ultra} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_ecc_read_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umcdat_before_ecc_read_proc umcdat_ecc_read_opt} \
+  -after_proc ::DSO::PERMUTONS::umcdat_after_ecc_read_proc \
+  -checkpoints {compile*final_opto*}
+
+# COMMENTED OUT: Permuton 6 - WDB FIFO Optimization
+# Impact: 7.5% (195 paths in wrstor_fifo, RdAdr_s_reg)
+# Reason: Moderate impact, not critical enough for top 4
+# FIFO optimization is generic compared to encryption-specific issues
+#create_permuton \
+#  -name umcdat_wdb_fifo_opt \
+#  -description {Optimize WDB write storage FIFO read paths for faster access} \
+#  -stages {compile place} \
+#  -focus fusion \
+#  -target timing \
+#  -type custom \
+#  -range {false true} \
+#  -datatype categorical \
+#  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_wdb_fifo_procs.tcl \
+#  -before_proc {::DSO::PERMUTONS::umcdat_before_wdb_fifo_proc umcdat_wdb_fifo_opt} \
+#  -after_proc ::DSO::PERMUTONS::umcdat_after_wdb_fifo_proc \
+#  -checkpoints {compile* place*}
+
+# COMMENTED OUT: Permuton 7 - Deep Pipeline Register Insertion
+# Impact: ~119% (same UMCSEC pipelines as aes_pipeline_balance)
+# Reason: Overlaps with aes_pipeline_balance
+# Pipeline balancing already redistributes logic levels and can insert stages
+# aes_pipeline_balance "aggressive" mode already handles deep path insertion
+#create_permuton \
+#  -name umcdat_deep_pipeline_insert \
+#  -description {Insert additional pipeline registers in paths with 25+ logic levels to break long chains} \
+#  -stages {compile} \
+#  -focus fusion \
+#  -target timing \
+#  -type custom \
+#  -range {none conservative moderate aggressive} \
+#  -datatype categorical \
+#  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_deep_pipeline_procs.tcl \
+#  -before_proc {::DSO::PERMUTONS::umcdat_before_deep_pipeline_proc umcdat_deep_pipeline_insert} \
+#  -after_proc ::DSO::PERMUTONS::umcdat_after_deep_pipeline_proc \
+#  -checkpoints {compile*final_opto*}
+
+# COMMENTED OUT: Permuton 8 - Encryption Datapath Buffering
+# Impact: ~119% (same UMCSEC datapath as aes_pipeline_balance)
+# Reason: Generic buffering overlaps with aes_pipeline_balance
+# Pipeline balancing is more fundamental than just buffering wires
+#create_permuton \
+#  -name umcdat_encrypt_datapath_buffer \
+#  -description {Add strategic buffering on encryption datapath to reduce wire delay in deep logic chains} \
+#  -stages {compile place} \
+#  -focus fusion \
+#  -target timing \
+#  -type custom \
+#  -range {1.0 1.5 2.0 2.5} \
+#  -datatype discrete \
+#  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_encrypt_buffer_procs.tcl \
+#  -before_proc {::DSO::PERMUTONS::umcdat_before_encrypt_buffer_proc umcdat_encrypt_datapath_buffer} \
+#  -after_proc ::DSO::PERMUTONS::umcdat_after_encrypt_buffer_proc \
+#  -checkpoints {compile* place*}
+
+# COMMENTED OUT: Permuton 9 - BEQ TX Path Optimization
+# Impact: 7.8% (204 paths in beq_tx, CA CRC)
+# Reason: Moderate impact (7.8%), similar to wdb_fifo_opt (7.5%)
+# Focus on top 4 highest-impact optimizations first
+#create_permuton \
+#  -name umcdat_beq_tx_opt \
+#  -description {Optimize BEQ transmit logic paths including CA CRC and write storage FIFO interface} \
+#  -stages {compile} \
+#  -focus fusion \
+#  -target timing \
+#  -type custom \
+#  -range {false true} \
+#  -datatype categorical \
+#  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_beq_tx_procs.tcl \
+#  -before_proc {::DSO::PERMUTONS::umcdat_before_beq_tx_proc umcdat_beq_tx_opt} \
+#  -after_proc ::DSO::PERMUTONS::umcdat_after_beq_tx_proc \
+#  -checkpoints {compile*final_opto*}
+
+# COMMENTED OUT: Permuton 10 - RdDatPipe Stage Balancing
+# Impact: Subset of 119% (RdDatPipe is part of UMCSEC_RDPIPE)
+# Reason: RdDatPipe covered by aes_pipeline_balance (Permuton 1)
+# aes_pipeline_balance already balances all pipeline stages including RdDatPipe
+#create_permuton \
+#  -name umcdat_rddatpipe_balance \
+#  -description {Balance read data pipeline stages (RdDatPipe) across all 7 pipeline instances for even logic distribution} \
+#  -stages {compile} \
+#  -focus fusion \
+#  -target timing \
+#  -type custom \
+#  -range {none light balanced aggressive} \
+#  -datatype categorical \
+#  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umcdat_rddatpipe_procs.tcl \
+#  -before_proc {::DSO::PERMUTONS::umcdat_before_rddatpipe_proc umcdat_rddatpipe_balance} \
+#  -after_proc ::DSO::PERMUTONS::umcdat_after_rddatpipe_proc \
+#  -checkpoints {compile*final_opto*}

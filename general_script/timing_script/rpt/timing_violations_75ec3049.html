@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timing Violations Report - Lineage 75ec3049</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        
+        h1 { text-align: center; color: #00d4ff; margin-bottom: 10px; font-size: 2em; text-shadow: 0 0 20px rgba(0, 212, 255, 0.3); }
+        .subtitle { text-align: center; color: #888; margin-bottom: 30px; font-size: 0.95em; }
+        
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .card { background: rgba(255, 255, 255, 0.05); border-radius: 12px; padding: 18px; text-align: center; border: 1px solid rgba(255, 255, 255, 0.1); }
+        .card-title { color: #888; font-size: 0.8em; margin-bottom: 6px; text-transform: uppercase; }
+        .card-value { font-size: 1.6em; font-weight: bold; }
+        .card-value.red { color: #ff6b6b; }
+        .card-value.yellow { color: #ffd93d; }
+        .card-value.blue { color: #00d4ff; }
+        .card-subtitle { color: #666; font-size: 0.75em; margin-top: 4px; }
+        
+        .category-section { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 22px; margin-bottom: 22px; border: 1px solid rgba(255, 255, 255, 0.08); }
+        .category-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+        .category-title { font-size: 1.2em; font-weight: 600; }
+        .category-title.io { color: #ff6b6b; }
+        .category-title.r2r { color: #ffd93d; }
+        .category-title.other { color: #6bcb77; }
+        .category-stats span { display: inline-block; margin-left: 15px; padding: 4px 10px; background: rgba(255, 255, 255, 0.05); border-radius: 15px; font-size: 0.8em; }
+        
+        table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+        th { text-align: left; padding: 10px 12px; background: rgba(0, 0, 0, 0.3); color: #aaa; font-weight: 500; font-size: 0.8em; text-transform: uppercase; }
+        th:not(:first-child) { text-align: right; }
+        td { padding: 10px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+        td:not(:first-child) { text-align: right; font-family: 'Monaco', 'Consolas', monospace; font-size: 0.85em; }
+        tr:hover { background: rgba(255, 255, 255, 0.03); }
+        
+        .wns-severe { color: #ff4757; font-weight: 600; }
+        .wns-moderate { color: #ffa502; font-weight: 600; }
+        .wns-mild { color: #ffd93d; font-weight: 600; }
+        .delta-positive { color: #6bcb77; }
+        .delta-negative { color: #ff6b6b; }
+        
+        .progress-bar { height: 25px; background: rgba(255, 255, 255, 0.1); border-radius: 4px; overflow: hidden; display: flex; }
+        .progress-fill { height: 100%; }
+        .progress-fill.io { background: linear-gradient(90deg, #ff6b6b, #ff8e8e); }
+        .progress-fill.r2r { background: linear-gradient(90deg, #ffd93d, #ffe066); }
+        .progress-fill.other { background: linear-gradient(90deg, #6bcb77, #8ed99a); }
+        
+        .top-violations { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 15px; }
+        .violation-card { background: rgba(255, 75, 75, 0.1); border: 1px solid rgba(255, 75, 75, 0.2); border-radius: 8px; padding: 12px; }
+        .violation-rank { display: inline-block; width: 24px; height: 24px; line-height: 24px; text-align: center; background: rgba(255, 75, 75, 0.3); border-radius: 50%; font-weight: bold; font-size: 0.85em; margin-right: 8px; }
+        .violation-name { font-weight: 600; color: #ff8e8e; }
+        .violation-details { margin-top: 8px; font-size: 0.85em; color: #aaa; }
+        .violation-details div { margin: 3px 0; }
+        .violation-details span { color: #fff; font-family: monospace; }
+        
+        .permuton-box { background: rgba(0, 212, 255, 0.1); border: 1px solid rgba(0, 212, 255, 0.3); border-radius: 10px; padding: 18px; margin-top: 22px; }
+        .permuton-title { color: #00d4ff; margin-bottom: 12px; font-size: 1em; }
+        .permuton-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+        .permuton-item { background: rgba(0, 0, 0, 0.2); padding: 8px 12px; border-radius: 5px; font-family: monospace; font-size: 0.85em; }
+        .permuton-key { color: #888; }
+        .permuton-value { color: #00d4ff; }
+        
+        .footer { text-align: center; margin-top: 25px; padding-top: 18px; border-top: 1px solid rgba(255, 255, 255, 0.1); color: #666; font-size: 0.8em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Timing Violations Report</h1>
+        <p class="subtitle">Best Lineage: 75ec3049 | Run: umccmd_DSO_4Mac_40p | Pass 3 | Generated: 18 Mar 2026 03:46</p>
+        
+        <div class="summary-cards">
+            <div class="card">
+                <div class="card-title">Total TNS</div>
+                <div class="card-value red">-867.8K ps</div>
+                <div class="card-subtitle">14 path groups</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Total NVP</div>
+                <div class="card-value yellow">16,660</div>
+                <div class="card-subtitle">violating paths</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Worst WNS</div>
+                <div class="card-value red">-214.10 ps</div>
+                <div class="card-subtitle">io_to_io</div>
+            </div>
+            <div class="card">
+                <div class="card-title">IO Path TNS</div>
+                <div class="card-value red">-716.6K ps</div>
+                <div class="card-subtitle">82.6% of total</div>
+            </div>
+            <div class="card">
+                <div class="card-title">R2R Path TNS</div>
+                <div class="card-value yellow">-137.5K ps</div>
+                <div class="card-subtitle">15.8% of total</div>
+            </div>
+        </div>
+        
+        <div class="category-section">
+            <h3 style="margin-bottom: 12px; color: #aaa;">TNS Distribution by Category</h3>
+            <div class="progress-bar">
+                <div class="progress-fill io" style="width: 82.6%;"></div>
+                <div class="progress-fill r2r" style="width: 15.8%;"></div>
+                <div class="progress-fill other" style="width: 1.6%;"></div>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.8em;">
+                <span><span style="color: #ff6b6b;">&#9679;</span> IO Paths: 82.6%</span>
+                <span><span style="color: #ffd93d;">&#9679;</span> R2R Paths: 15.8%</span>
+                <span><span style="color: #6bcb77;">&#9679;</span> Other: 1.6%</span>
+            </div>
+        </div>
+        
+        <div class="category-section">
+            <h3 style="margin-bottom: 5px; color: #ff6b6b;">Top 5 Worst Violations (by WNS)</h3>
+            <div class="top-violations">
+
+                <div class="violation-card">
+                    <span class="violation-rank">1</span>
+                    <span class="violation-name">io_to_io</span>
+                    <div class="violation-details">
+                        <div>WNS: <span>-214.10 ps</span> <span class="delta-negative">(-23.21 vs baseline)</span></div>
+                        <div>TNS: <span>-31,662.53 ps</span></div>
+                        <div>NVP: <span>264 paths</span> | Levels: <span>11</span></div>
+                    </div>
+                </div>
+
+                <div class="violation-card">
+                    <span class="violation-rank">2</span>
+                    <span class="violation-name">SYN_I2R</span>
+                    <div class="violation-details">
+                        <div>WNS: <span>-152.89 ps</span> <span class="delta-negative">(-11.48 vs baseline)</span></div>
+                        <div>TNS: <span>-623,979.46 ps</span></div>
+                        <div>NVP: <span>7,587 paths</span> | Levels: <span>25</span></div>
+                    </div>
+                </div>
+
+                <div class="violation-card">
+                    <span class="violation-rank">3</span>
+                    <span class="violation-name">io_to_flop</span>
+                    <div class="violation-details">
+                        <div>WNS: <span>-152.09 ps</span> <span class="delta-negative">(-11.39 vs baseline)</span></div>
+                        <div>TNS: <span>-35,519.45 ps</span></div>
+                        <div>NVP: <span>487 paths</span> | Levels: <span>22</span></div>
+                    </div>
+                </div>
+
+                <div class="violation-card">
+                    <span class="violation-rank">4</span>
+                    <span class="violation-name">SYN_R2O</span>
+                    <div class="violation-details">
+                        <div>WNS: <span>-110.57 ps</span> <span class="delta-negative">(-9.23 vs baseline)</span></div>
+                        <div>TNS: <span>-25,445.71 ps</span></div>
+                        <div>NVP: <span>304 paths</span> | Levels: <span>15</span></div>
+                    </div>
+                </div>
+
+                <div class="violation-card">
+                    <span class="violation-rank">5</span>
+                    <span class="violation-name">umc_ARB_r2r_to</span>
+                    <div class="violation-details">
+                        <div>WNS: <span>-85.18 ps</span> <span class="delta-positive">(+35.47 vs baseline)</span></div>
+                        <div>TNS: <span>-31,256.78 ps</span></div>
+                        <div>NVP: <span>2,732 paths</span> | Levels: <span>26</span></div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <div class="category-section">
+            <div class="category-header">
+                <h3 class="category-title io">IO Paths (4 groups)</h3>
+                <div class="category-stats">
+                    <span>TNS: -716,607 ps</span>
+                    <span>NVP: 8,642</span>
+                </div>
+            </div>
+            <table>
+                <tr><th>Path Group</th><th>WNS (ps)</th><th>&#916; Baseline</th><th>TNS (ps)</th><th>&#916; Baseline</th><th>NVP</th><th>Levels</th><th>Crit Path</th></tr>
+<tr><td>io_to_io</td><td class="wns-severe">-214.10</td><td class="delta-negative">-23.21</td><td>-31,663</td><td class="delta-negative">-3,682</td><td>264</td><td>11</td><td>361.7</td></tr>
+<tr><td>SYN_I2R</td><td class="wns-severe">-152.89</td><td class="delta-negative">-11.48</td><td>-623,979</td><td class="delta-negative">-60,377</td><td>7,587</td><td>25</td><td>435.4</td></tr>
+<tr><td>io_to_flop</td><td class="wns-severe">-152.09</td><td class="delta-negative">-11.39</td><td>-35,519</td><td class="delta-negative">-4,564</td><td>487</td><td>22</td><td>415.5</td></tr>
+<tr><td>SYN_R2O</td><td class="wns-moderate">-110.57</td><td class="delta-negative">-9.23</td><td>-25,446</td><td class="delta-negative">-1,572</td><td>304</td><td>15</td><td>258.1</td></tr>
+</table></div>
+
+        <div class="category-section">
+            <div class="category-header">
+                <h3 class="category-title r2r">R2R Paths (9 groups)</h3>
+                <div class="category-stats">
+                    <span>TNS: -137,538 ps</span>
+                    <span>NVP: 7,437</span>
+                </div>
+            </div>
+            <table>
+                <tr><th>Path Group</th><th>WNS (ps)</th><th>&#916; Baseline</th><th>TNS (ps)</th><th>&#916; Baseline</th><th>NVP</th><th>Levels</th><th>Crit Path</th></tr>
+<tr><td>umc_ARB_r2r_to</td><td class="wns-moderate">-85.18</td><td class="delta-positive">+35.47</td><td>-31,257</td><td class="delta-positive">+834</td><td>2,732</td><td>26</td><td>368.8</td></tr>
+<tr><td>FEI_ADDR_r2r</td><td class="wns-moderate">-73.89</td><td class="delta-negative">-8.51</td><td>-596</td><td class="delta-negative">-50</td><td>12</td><td>21</td><td>372.7</td></tr>
+<tr><td>SYN_R2R</td><td class="wns-moderate">-72.03</td><td class="delta-negative">-14.29</td><td>-864</td><td class="delta-positive">+329</td><td>36</td><td>19</td><td>363.5</td></tr>
+<tr><td>umc_DCQARB_r2r_to</td><td class="wns-mild">-69.49</td><td class="delta-negative">-3.44</td><td>-54,951</td><td class="delta-negative">-745</td><td>2,253</td><td>31</td><td>365.9</td></tr>
+<tr><td>umc_DCQARB_r2r</td><td class="wns-mild">-66.30</td><td class="delta-negative">-19.15</td><td>-49,133</td><td class="delta-negative">-22,331</td><td>2,333</td><td>27</td><td>362.7</td></tr>
+<tr><td>FEI_r2r</td><td class="wns-mild">-56.21</td><td class="delta-negative">-3.72</td><td>-220</td><td class="delta-positive">+241</td><td>25</td><td>31</td><td>347.0</td></tr>
+<tr><td>umc_ARB_r2r_from</td><td class="wns-mild">-49.92</td><td class="delta-negative">-5.40</td><td>-204</td><td class="delta-positive">+239</td><td>17</td><td>10</td><td>187.0</td></tr>
+<tr><td>umc_cmd_r2r_from</td><td class="wns-mild">-44.67</td><td class="delta-positive">+0.87</td><td>-182</td><td class="delta-positive">+243</td><td>15</td><td>9</td><td>181.8</td></tr>
+<tr><td>SPAZ_r2r</td><td class="wns-mild">-19.67</td><td class="delta-positive">+25.39</td><td>-132</td><td class="delta-positive">+256</td><td>14</td><td>20</td><td>307.8</td></tr>
+</table></div>
+
+        <div class="category-section">
+            <div class="category-header">
+                <h3 class="category-title other">Other Paths (1 groups)</h3>
+                <div class="category-stats">
+                    <span>TNS: -13,610 ps</span>
+                    <span>NVP: 581</span>
+                </div>
+            </div>
+            <table>
+                <tr><th>Path Group</th><th>WNS (ps)</th><th>&#916; Baseline</th><th>TNS (ps)</th><th>&#916; Baseline</th><th>NVP</th><th>Levels</th><th>Crit Path</th></tr>
+<tr><td>clock_gating_default</td><td class="wns-moderate">-73.98</td><td class="delta-negative">-7.05</td><td>-13,610</td><td class="delta-negative">-186</td><td>581</td><td>29</td><td>337.4</td></tr>
+</table></div>
+
+        <div class="permuton-box">
+            <h3 class="permuton-title">Winning Permuton Combination (Lineage 75ec3049)</h3>
+            <div class="permuton-grid">
+                <div class="permuton-item"><span class="permuton-key">control_buffer=</span><span class="permuton-value">1</span></div>
+                <div class="permuton-item"><span class="permuton-key">dcq_arb=</span><span class="permuton-value">restructure</span></div>
+                <div class="permuton-item"><span class="permuton-key">crit_groups=</span><span class="permuton-value">standard</span></div>
+                <div class="permuton-item"><span class="permuton-key">timer_counter=</span><span class="permuton-value">both</span></div>
+                <div class="permuton-item"><span class="permuton-key">pgt=</span><span class="permuton-value">true</span></div>
+                <div class="permuton-item"><span class="permuton-key">arb_r2r=</span><span class="permuton-value">restructure</span></div>
+                <div class="permuton-item"><span class="permuton-key">r2r_tns_weight=</span><span class="permuton-value">low</span></div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            Generated by DSO Timing Violations Report | Baseline: umccmd_Feb23101828 | Best WNS: -85.18 ps (+35.47 ps)
+        </div>
+    </div>
+</body>
+</html>

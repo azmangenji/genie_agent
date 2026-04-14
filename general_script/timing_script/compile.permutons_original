@@ -1,0 +1,127 @@
+create_permuton \
+  -name compile.flow.high_effort_area \
+  -description true/false \
+  -stages {compile} \
+  -focus fusion \
+  -target power \
+  -type app \
+  -range {false true} \
+  -datatype categorical
+
+# UPDATED: Extended range from {0 1} to {0 1 2 3} for more aggressive timing optimization
+create_permuton \
+  -name compile.flow.high_effort_timing \
+  -description {Extended range for aggressive timing optimization} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type app \
+  -range {0 1 2 3} \
+  -datatype discrete
+
+create_permuton \
+  -name dso_enable_ALR \
+  -description {Permute options to enable advanced logic restructuring modes.  } \
+  -stages {compile} \
+  -focus general \
+  -target timing \
+  -type custom \
+  -range {area_timing timing_power} \
+  -datatype categorical \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_enable_ALR_procs.tcl \
+  -before_proc {dso_before_ALR_alt dso_enable_ALR cost} \
+  -after_proc dso_after_ALR \
+  -checkpoints {compile*final_opto* place*final_opto* clock*} \
+  -arg_values {cost medium}
+
+create_permuton \
+  -name dso_scale_margins \
+  -description {Adjust pre-existing global/customized path margins by a percentage of a main clock. Reverts back after checkpoint.} \
+  -type custom \
+  -range {-1 0} \
+  -datatype discrete \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_scale_margins_procs.tcl \
+  -before_proc {dso_scale_setup_path_margins_global {dso_scale_margins main_clock}} \
+  -after_proc dso_reset_setup_path_margins_global \
+  -checkpoints {*_opt*} \
+  -arg_values {main_clock USE_FASTEST_CLOCK}
+
+create_permuton \
+  -name place.coarse.eLpp_amt_power \
+  -type app \
+  -range {0.45 0.5 0.55 0.6 0.65} \
+  -datatype discrete
+
+create_permuton \
+  -name dso_permuton_power_fusion_7 \
+  -description non-descript \
+  -stages {clock compile route} \
+  -focus fusion \
+  -target power \
+  -type custom \
+  -range {0.2 0.4 0.95} \
+  -datatype categorical \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_power_fusion_7_procs.tcl \
+  -before_proc {dso_permuton_proc_14 dso_permuton_power_fusion_7} \
+  -after_proc dso_permuton_proc_13 \
+  -checkpoints {compile* place* clock_opt* route_opt* hyper_route_opt*}
+
+create_permuton \
+  -name dso_permuton_power_fusion_8 \
+  -description non-descript \
+  -stages {clock compile route} \
+  -focus fusion \
+  -target power \
+  -type custom \
+  -range {0.2 0.9} \
+  -datatype categorical \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_power_fusion_8_procs.tcl \
+  -before_proc {dso_permuton_proc_16 dso_permuton_power_fusion_8} \
+  -after_proc dso_permuton_proc_15 \
+  -checkpoints {compile* place* clock_opt* route_opt* hyper_route_opt*}
+
+create_permuton \
+  -name dso_permuton_biasatp \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {0.1 0.2 0.3 0.4 0.5} \
+  -datatype discrete \
+  -disable_value 0.5 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_biasatp_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_biasatp_proc dso_permuton_biasatp} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_biasatp_proc \
+  -checkpoints {compile*}
+
+create_permuton \
+  -name dso_permuton_biasts \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {0.3 0.35 0.4 0.5} \
+  -datatype discrete \
+  -disable_value 0.5 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_biasts_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_biasts_proc dso_permuton_biasts} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_biasts_proc \
+  -checkpoints {compile*}
+
+create_permuton \
+  -name dso_permuton_ramd \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {-1 0.1 0.15 0.2 0.25} \
+  -datatype discrete \
+  -disable_value -1 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_ramd_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_ramd_proc dso_permuton_ramd} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_ramd_proc \
+  -checkpoints {compile*}
+

@@ -1,0 +1,323 @@
+# ============================================================================
+# PERMUTONS V5 - R2R FOCUSED OPTIMIZATION
+# ============================================================================
+# Date: 2026-03-20
+# Goal: Maximize totalCoreTNS and totalCoreWNS improvement (R2R paths only)
+#
+# V5 Changes (2026-03-20):
+#   1. REMOVED: umccmd_io_path_optimization (IO paths don't affect totalCoreTNS/ADES)
+#   2. REMOVED: umccmd_critical_path_groups (aggressive always crashes, standard
+#      always wins - zero exploration value; v5 TCL covers standard path groups)
+#   3. REMOVED: umccmd_arb_r2r_opt (weak weight 1.3 redundant with v5 TCL weight 8;
+#      only appeared in 1 winning combo)
+#   4. REMOVED: umccmd_r2r_tns_weight (range {balanced high} misses winning 'low';
+#      'high' never appeared in any winner)
+#   5. ADDED: umccmd_dcqarb_boundary_opt, umccmd_clkgate_opt, umccmd_dcqarb_max_fanout
+#      (translate v5 TCL hardcoded settings into explorable permutons)
+#   6. FIXED: compile.flow.high_effort_timing range {0->1 2 3} (never disable)
+#   NOTE: v5 r2r_optimization.tcl applied as DSO baseline - permutons tune on top
+#
+# V4 Changes (2026-03-18):
+#   1. REMOVED: r2r_tns_weight 'low' option (caused -91K ps TNS regression)
+#   2. NEW: umccmd_io_path_optimization permuton for I2R/R2O/IO paths [REMOVED V5]
+#   3. UPDATED: critical_path_groups now includes IO path coverage
+#   4. Target: Fix -70K ps TNS regression in IO paths from 4Mac40p run
+#
+# R2R Timing Analysis (Feb23 non-DSO run):
+#   Path Group              WNS(ps)      TNS(ps)     NVP
+#   --------------------------------------------------------
+#   umc_ARB_r2r_to          -120.65     -32,090    3,484  <- TOP VIOLATOR
+#   umc_DCQARB_r2r_to        -66.05     -54,205    2,270  <- HIGHEST TNS
+#   umc_DCQARB_r2r           -47.15     -26,802    1,966
+#   FEI_ADDR_r2r             -65.38        -547       13
+#   SYN_R2R                  -57.74      -1,193       55
+#   FEI_r2r                  -52.49        -461       82
+#   --------------------------------------------------------
+#   TOTAL R2R:                         -116,554    7,929
+#
+# Analysis Summary (from 40p DSO run):
+#   - 24 lineages beat WNS baseline
+#   - Only 6 lineages beat BOTH WNS and TNS
+#   - Key patterns from balanced lineages:
+#     * timer_counter=both (4/5 balanced lineages)
+#     * crit_groups=standard (4/5 balanced lineages)
+#     * umc_id_didt=none (4/5 balanced lineages)
+#     * fanout_dup=low (3/5 balanced lineages)
+#     * control_buffer=1 or 3 (extremes, not 1.5)
+#
+# Changes from V2:
+#   1. REMOVED: dcq_arb 'balance' and 'both' options (cause outliers -3000ps)
+#   2. MODIFIED: timer_counter default bias toward 'both'
+#   3. MODIFIED: umc_id_didt reduced range (remove 'buffer' which hurts TNS)
+#   4. MODIFIED: control_buffer range adjusted (remove 1.5, keep extremes)
+#   5. NEW: Added ARB R2R path optimization (top R2R violator)
+#   6. NEW: Added TNS-focused R2R path group permuton
+# ============================================================================
+
+# ============================================================================
+# ORIGINAL PERMUTONS (from baseline) - KEPT
+# ============================================================================
+
+# ✅ KEPT: Direct timing optimization effort control
+# V5 CHANGE: Removed value '0' (disabled). Non-DSO run with value=1 achieves
+# totalCoreTNS -68K vs DSO best -137K. Never disable high_effort_timing.
+create_permuton \
+  -name compile.flow.high_effort_timing \
+  -description {Extended range for aggressive timing optimization - min value 1} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type app \
+  -range {1 2 3} \
+  -datatype discrete
+
+# ✅ KEPT: Path margin adjustment for timing pressure
+create_permuton \
+  -name dso_scale_margins \
+  -description {Adjust pre-existing global/customized path margins by a percentage of a main clock. Reverts back after checkpoint.} \
+  -type custom \
+  -range {-1 0} \
+  -datatype discrete \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_scale_margins_procs.tcl \
+  -before_proc {dso_scale_setup_path_margins_global {dso_scale_margins main_clock}} \
+  -after_proc dso_reset_setup_path_margins_global \
+  -checkpoints {*_opt*} \
+  -arg_values {main_clock USE_FASTEST_CLOCK}
+
+# ✅ KEPT: Area-timing trade-off control
+create_permuton \
+  -name dso_permuton_biasatp \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {0.1 0.2 0.3 0.4 0.5} \
+  -datatype discrete \
+  -disable_value 0.5 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_biasatp_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_biasatp_proc dso_permuton_biasatp} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_biasatp_proc \
+  -checkpoints {compile*}
+
+# ✅ KEPT: Register retiming and merging
+create_permuton \
+  -name dso_permuton_ramd \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {-1 0.1 0.15 0.2 0.25} \
+  -datatype discrete \
+  -disable_value -1 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_ramd_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_ramd_proc dso_permuton_ramd} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_ramd_proc \
+  -checkpoints {compile*}
+
+# ============================================================================
+# UMCCMD-SPECIFIC PERMUTONS V3 - BALANCED WNS+TNS (R2R FOCUS)
+# ============================================================================
+
+# ✅ Permuton 1 - High-Fanout Register Duplication
+# V3 CHANGE: Bias toward 'low' which helps TNS (3/5 balanced lineages use 'low')
+create_permuton \
+  -name umccmd_fanout_duplication \
+  -description {Duplicate high-fanout control registers - low setting helps TNS} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none low medium} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_fanout_duplication_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_fanout_dup_proc umccmd_fanout_duplication} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_fanout_dup_proc \
+  -checkpoints {compile_logic_opto}
+
+# ✅ Permuton 2 - Control Signal Buffering
+# V3 CHANGE: Use extremes (1, 3) which help TNS; removed 1.5 and 2
+create_permuton \
+  -name umccmd_control_buffering \
+  -description {Control signal buffering - extremes (1 or 3) help TNS balance} \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {1 3} \
+  -datatype discrete \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_control_buffering_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_control_buffer_proc umccmd_control_buffering} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_control_buffer_proc \
+  -checkpoints {compile* place*}
+
+# ✅ Permuton 3 - DCQ Arbiter Pipeline Optimization (R2R critical)
+# V3 CHANGE: REMOVED 'balance' and 'both' - they cause -3000ps outliers!
+# Target: umc_DCQARB_r2r paths (TNS -54,205ps + -26,802ps = -81,007ps total)
+create_permuton \
+  -name umccmd_dcq_arbiter_pipeline \
+  -description {DCQ arbiter R2R optimization - only safe values (balance/both removed)} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none restructure} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_dcq_arbiter_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_dcq_arb_proc umccmd_dcq_arbiter_pipeline} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_dcq_arb_proc \
+  -checkpoints {compile*}
+
+# ✅ Permuton 4 - Timing Counter Optimization
+# V3 CHANGE: Bias toward 'both' which helps TNS (4/5 balanced lineages use 'both')
+create_permuton \
+  -name umccmd_timing_counter_opt \
+  -description {Timing counter optimization - both setting helps TNS balance} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {both pipeline} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_timing_counter_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_timer_counter_proc umccmd_timing_counter_opt} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_timer_counter_proc \
+  -checkpoints {compile_logic_opto}
+
+# ✅ Permuton 5 - Arbiter Safe Register Optimization (R2R critical)
+# Target: ARB R2R paths (umc_ARB_r2r_to has WNS -120.65ps)
+create_permuton \
+  -name umccmd_arb_safe_reg_opt \
+  -description {Arbiter safe register R2R optimization} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {normal high ultra} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_arb_safe_reg_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_arb_safe_proc umccmd_arb_safe_reg_opt} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_arb_safe_proc \
+  -checkpoints {compile_initial_opto*}
+
+
+# ✅ Permuton 7 - Page Table Allocation Optimization
+create_permuton \
+  -name umccmd_pgt_optimization \
+  -description {Page table allocation optimization} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {false true} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_pgt_opt_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_pgt_proc umccmd_pgt_optimization} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_pgt_proc \
+  -checkpoints {compile_initial_opto*}
+
+# ✅ Permuton 8 - Control-to-Datapath Isolation
+# V3 CHANGE: Bias toward 'none' which helps TNS (3/5 balanced lineages)
+create_permuton \
+  -name umccmd_control_isolation \
+  -description {Control-datapath isolation - none setting helps TNS} \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none buffers both} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_control_isolation_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_ctrl_iso_proc umccmd_control_isolation} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_ctrl_iso_proc \
+  -checkpoints {compile* place*}
+
+# ✅ Permuton 9 - UMC_ID_DIDT Optimization
+# V3 CHANGE: Bias toward 'none' which helps TNS (4/5 balanced lineages)
+create_permuton \
+  -name umccmd_umc_id_didt_opt \
+  -description {UMC_ID_DIDT optimization - none helps TNS, retime for WNS} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none retime} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_umc_id_didt_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_umc_id_didt_proc umccmd_umc_id_didt_opt} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_umc_id_didt_proc \
+  -checkpoints {compile*}
+
+
+# ============================================================================
+# NEW PERMUTONS V5 - TRANSLATED FROM r2r_optimization.tcl v5 CHANGES
+# ============================================================================
+# These 3 permutons mirror the key NEW additions in v5 TCL so DSO can
+# explore whether each technique is beneficial and at what level.
+# ============================================================================
+
+# ✅ NEW Permuton 12 - DCQARB Safe Boundary Optimization
+# From v5 TCL: set_boundary_optimization $dcqarb_hier_cells true
+# Distinct from dcq_arbiter_pipeline=restructure (which also removes dont_touch)
+# This permuton tests the SAFE boundary opt only (no instability risk)
+# Target: DCQARB R2R paths (NVP=2339, TNS=-39K - 2nd biggest CoreTNS group)
+create_permuton \
+  -name umccmd_dcqarb_boundary_opt \
+  -description {Safe DCQARB boundary opt: none=off, arb_only=ARB only, both=ARB+DCQARB (v5 TCL)} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none arb_only both} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_dcqarb_boundary_opt_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_dcqarb_boundary_opt_proc umccmd_dcqarb_boundary_opt} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_dcqarb_boundary_opt_proc \
+  -checkpoints {compile*}
+
+# ✅ NEW Permuton 13 - Clock Gate Path Group
+# From v5 TCL: group_path -name umc_clkgate_r2r -weight 6 -range 400
+# clock_gating_default: NVP=545, TNS=-10,175ps, WNS=-59ps
+# NEVER targeted in any DSO lineage across 28Jan40p or 4Mac40p runs
+# Explores optimal weight without stealing resources from ARB/DCQARB groups
+create_permuton \
+  -name umccmd_clkgate_opt \
+  -description {Clock gate path group: none=off, low=weight4/range300, high=weight6/range400 (v5 TCL)} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none low high} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_clkgate_opt_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_clkgate_opt_proc umccmd_clkgate_opt} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_clkgate_opt_proc \
+  -checkpoints {compile*}
+
+# ✅ NEW Permuton 14 - DCQARB Max Fanout
+# From v5 TCL: set_max_fanout 30 $dcqarb_cells
+# DCQARB contains 49.8% of all registers - high-fanout control nets slow R2R paths
+# Explores optimal limit: too tight=excessive buffering, too loose=slow nets remain
+create_permuton \
+  -name umccmd_dcqarb_max_fanout \
+  -description {DCQARB max fanout: none=tool default, 20=aggressive, 30=v5 TCL, 40=moderate} \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none 20 30 40} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_dcqarb_fanout_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_dcqarb_fanout_proc umccmd_dcqarb_max_fanout} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_dcqarb_fanout_proc \
+  -checkpoints {compile* place*}
+
+# ============================================================================
+# END OF V5 PERMUTONS (R2R FOCUS ONLY)
+# ============================================================================
+# REMOVED from V4: umccmd_io_path_optimization
+# Reason: IO paths (SYN_I2R, SYN_R2O) do NOT contribute to totalCoreTNS or
+# ADES score (R2R_TNS weight=3, R2R_WNS weight=2). Targeting IO paths wastes
+# search space without improving the primary optimization metric.
+# ============================================================================

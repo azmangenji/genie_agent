@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+h1 { color: #1a5276; border-bottom: 3px solid #e74c3c; padding-bottom: 10px; }
+h2 { color: #2c3e50; margin-top: 30px; }
+table { border-collapse: collapse; width: 100%; margin: 15px 0; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+th { background: #2c3e50; color: white; padding: 12px 8px; text-align: center; font-size: 11px; }
+td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: 11px; }
+tr:nth-child(even) { background: #f9f9f9; }
+tr:hover { background: #e8f4f8; }
+.best { background: #27ae60 !important; color: white; font-weight: bold; }
+.incomplete { color: #999; font-style: italic; }
+.legend { background: #fff; padding: 15px; margin: 15px 0; border-left: 4px solid #3498db; }
+.summary { background: #e8f8f5; padding: 15px; border-radius: 5px; margin: 15px 0; }
+</style>
+</head>
+<body>
+<h1>DSO Lineage Permuton Report</h1>
+<p>Generated: 2026-02-24</p>
+
+<div class="legend">
+<strong>Permuton Legend (11 Active):</strong><br>
+<b>ctrl_buf:</b> 1, 1.5, 2, 3 | <b>dcq_arb:</b> none, restructure, balance, both | <b>crit_grp:</b> none, standard, aggressive<br>
+<b>ctrl_iso:</b> none, buffers, spatial, both | <b>umc_didt:</b> none, restructure, retime, buffer, aggressive<br>
+<b>fanout:</b> none, low, medium, high | <b>timer:</b> none, pipeline, restructure, both<br>
+<b>arb_safe:</b> normal, high, ultra | <b>pgt:</b> false, true
+</div>
+
+<h2>5p RUN - umccmd_DSO_28Jan_5p (9 lineages)</h2>
+<table>
+<tr><th>Lineage</th><th>ctrl_buf</th><th>dcq_arb</th><th>crit_grp</th><th>ctrl_iso</th><th>umc_didt</th><th>fanout</th><th>timer</th><th>arb_safe</th><th>pgt</th></tr>
+<tr><td>3026b00</td><td colspan="9" class="incomplete">(baseline/seed - no custom permutons)</td></tr>
+<tr><td>4240432</td><td>3</td><td>none</td><td>standard</td><td>none</td><td>retime</td><td>none</td><td>both</td><td>high</td><td>true</td></tr>
+<tr><td>54ae7b5</td><td>-</td><td>restructure</td><td>-</td><td>-</td><td>aggressive</td><td>-</td><td>both</td><td>ultra</td><td>-</td></tr>
+<tr><td>67d24f3</td><td colspan="9" class="incomplete">(no log yet)</td></tr>
+<tr><td>9982c34</td><td>1</td><td>restructure</td><td>none</td><td>buffers</td><td>restructure</td><td>low</td><td>none</td><td>normal</td><td>true</td></tr>
+<tr><td>d20f788</td><td colspan="9" class="incomplete">(no log yet)</td></tr>
+<tr><td>d61a6c7</td><td>1</td><td>none</td><td>standard</td><td>both</td><td>retime</td><td>low</td><td>both</td><td>-</td><td>-</td></tr>
+<tr><td>de7f6c1</td><td>1.5</td><td>balance</td><td>none</td><td>spatial</td><td>buffer</td><td>medium</td><td>pipeline</td><td>ultra</td><td>false</td></tr>
+<tr><td>e67e2a6</td><td>1.5</td><td>both</td><td>none</td><td>spatial</td><td>aggressive</td><td>none</td><td>both</td><td>-</td><td>-</td></tr>
+</table>
+
+<h2>40p RUN - umccmd_DSO_28Jan_40p (45 lineages with logs)</h2>
+
+<div class="summary">
+<strong>Best Lineage: 6f4f2511</strong> | WNS: -133.30ps (+16.05ps improvement)<br>
+Winning: ctrl_buf=2, dcq_arb=restructure, ctrl_iso=spatial, umc_didt=aggressive, arb_safe=ultra, pgt=false
+</div>
+
+<table>
+<tr><th>Lineage</th><th>ctrl_buf</th><th>dcq_arb</th><th>crit_grp</th><th>ctrl_iso</th><th>umc_didt</th><th>fanout</th><th>timer</th><th>arb_safe</th><th>pgt</th></tr>
+<tr><td>02600c10</td><td>2</td><td>both</td><td>standard</td><td>both</td><td>restructure</td><td>low</td><td>restructure</td><td>high</td><td>false</td></tr>
+<tr><td>088c7004</td><td>3</td><td>none</td><td>aggressive</td><td>none</td><td>none</td><td>medium</td><td>pipeline</td><td>high</td><td>true</td></tr>
+<tr><td>0c13990d</td><td>2</td><td>balance</td><td>aggressive</td><td>none</td><td>restructure</td><td>none</td><td>none</td><td>high</td><td>false</td></tr>
+<tr><td>11c08612</td><td>1</td><td>balance</td><td>standard</td><td>spatial</td><td>buffer</td><td>high</td><td>pipeline</td><td>high</td><td>true</td></tr>
+<tr><td>2b5fc82b</td><td>2</td><td>balance</td><td>aggressive</td><td>buffers</td><td>buffer</td><td>none</td><td>both</td><td>normal</td><td>true</td></tr>
+<tr><td>2d27e429</td><td>1.5</td><td>both</td><td>none</td><td>spatial</td><td>aggressive</td><td>none</td><td>both</td><td>ultra</td><td>true</td></tr>
+<tr><td>2f4a0a07</td><td>1.5</td><td>restructure</td><td>none</td><td>none</td><td>retime</td><td>medium</td><td>both</td><td>ultra</td><td>true</td></tr>
+<tr><td>35b0022e</td><td>1</td><td>restructure</td><td>standard</td><td>both</td><td>retime</td><td>medium</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>36210c24</td><td>1.5</td><td>balance</td><td>aggressive</td><td>spatial</td><td>retime</td><td>none</td><td>restructure</td><td>ultra</td><td>true</td></tr>
+<tr><td>3947c326</td><td>1.5</td><td>balance</td><td>none</td><td>both</td><td>restructure</td><td>high</td><td>restructure</td><td>high</td><td>false</td></tr>
+<tr><td>4af96728</td><td>2</td><td>restructure</td><td>standard</td><td>buffers</td><td>none</td><td>medium</td><td>both</td><td>ultra</td><td>false</td></tr>
+<tr><td>4ceb761f</td><td>3</td><td>balance</td><td>aggressive</td><td>spatial</td><td>none</td><td>none</td><td>both</td><td>normal</td><td>true</td></tr>
+<tr><td>521b3a16</td><td>1</td><td>balance</td><td>none</td><td>spatial</td><td>restructure</td><td>none</td><td>none</td><td>normal</td><td>false</td></tr>
+<tr><td>67271e1d</td><td>3</td><td>none</td><td>standard</td><td>spatial</td><td>retime</td><td>low</td><td>restructure</td><td>normal</td><td>true</td></tr>
+<tr><td>6a74aa0e</td><td>1.5</td><td>none</td><td>standard</td><td>buffers</td><td>restructure</td><td>medium</td><td>none</td><td>normal</td><td>false</td></tr>
+<tr><td>6ecdb506</td><td>1.5</td><td>restructure</td><td>none</td><td>buffers</td><td>buffer</td><td>low</td><td>pipeline</td><td>high</td><td>false</td></tr>
+<tr class="best"><td>6f4f2511</td><td>2</td><td>restructure</td><td>none</td><td>spatial</td><td>aggressive</td><td>medium</td><td>none</td><td>ultra</td><td>false</td></tr>
+<tr><td>7db9b027</td><td>1.5</td><td>none</td><td>standard</td><td>both</td><td>none</td><td>medium</td><td>pipeline</td><td>high</td><td>false</td></tr>
+<tr><td>7f176809</td><td>1</td><td>none</td><td>aggressive</td><td>none</td><td>restructure</td><td>high</td><td>none</td><td>high</td><td>true</td></tr>
+<tr><td>83d16f19</td><td>3</td><td>restructure</td><td>standard</td><td>buffers</td><td>none</td><td>high</td><td>both</td><td>high</td><td>true</td></tr>
+<tr><td>8c9d7522</td><td>1</td><td>restructure</td><td>none</td><td>none</td><td>none</td><td>low</td><td>none</td><td>normal</td><td>false</td></tr>
+<tr><td>96e4e313</td><td>1.5</td><td>both</td><td>aggressive</td><td>both</td><td>restructure</td><td>low</td><td>restructure</td><td>high</td><td>false</td></tr>
+<tr><td>971d6823</td><td>2</td><td>both</td><td>aggressive</td><td>buffers</td><td>buffer</td><td>none</td><td>pipeline</td><td>normal</td><td>false</td></tr>
+<tr><td>9fc30805</td><td>1.5</td><td>none</td><td>standard</td><td>buffers</td><td>none</td><td>low</td><td>both</td><td>high</td><td>true</td></tr>
+<tr><td>a879a103</td><td>1</td><td>both</td><td>standard</td><td>none</td><td>buffer</td><td>medium</td><td>none</td><td>ultra</td><td>false</td></tr>
+<tr><td>a92dc00f</td><td>1.5</td><td>balance</td><td>aggressive</td><td>spatial</td><td>retime</td><td>low</td><td>none</td><td>ultra</td><td>false</td></tr>
+<tr><td>ac456315</td><td>3</td><td>both</td><td>none</td><td>both</td><td>none</td><td>medium</td><td>both</td><td>ultra</td><td>true</td></tr>
+<tr><td>ae1cb81e</td><td>1</td><td>none</td><td>none</td><td>both</td><td>aggressive</td><td>none</td><td>none</td><td>ultra</td><td>true</td></tr>
+<tr><td>c173571c</td><td>3</td><td>none</td><td>none</td><td>buffers</td><td>buffer</td><td>none</td><td>pipeline</td><td>normal</td><td>true</td></tr>
+<tr><td>c430712c</td><td>1</td><td>restructure</td><td>standard</td><td>both</td><td>none</td><td>medium</td><td>pipeline</td><td>normal</td><td>true</td></tr>
+<tr><td>cd05072d</td><td>1.5</td><td>none</td><td>standard</td><td>buffers</td><td>retime</td><td>medium</td><td>pipeline</td><td>-</td><td>-</td></tr>
+<tr><td>cd079308</td><td>1.5</td><td>none</td><td>aggressive</td><td>none</td><td>retime</td><td>high</td><td>restructure</td><td>ultra</td><td>true</td></tr>
+<tr><td>d2906514</td><td>2</td><td>balance</td><td>none</td><td>spatial</td><td>aggressive</td><td>low</td><td>pipeline</td><td>ultra</td><td>true</td></tr>
+<tr><td>d5181a21</td><td>1</td><td>both</td><td>none</td><td>buffers</td><td>buffer</td><td>low</td><td>pipeline</td><td>normal</td><td>true</td></tr>
+<tr><td>d63cd50b</td><td>2</td><td>restructure</td><td>aggressive</td><td>spatial</td><td>aggressive</td><td>high</td><td>both</td><td>ultra</td><td>false</td></tr>
+<tr><td>d9f12217</td><td>1</td><td>balance</td><td>standard</td><td>both</td><td>aggressive</td><td>none</td><td>pipeline</td><td>normal</td><td>false</td></tr>
+<tr><td>e198eb20</td><td>2</td><td>both</td><td>standard</td><td>spatial</td><td>buffer</td><td>high</td><td>none</td><td>high</td><td>false</td></tr>
+<tr><td>e7f92a25</td><td>3</td><td>restructure</td><td>standard</td><td>buffers</td><td>retime</td><td>medium</td><td>restructure</td><td>ultra</td><td>true</td></tr>
+<tr><td>e97c4918</td><td>2</td><td>restructure</td><td>aggressive</td><td>none</td><td>retime</td><td>low</td><td>restructure</td><td>normal</td><td>true</td></tr>
+<tr><td>f2b6ab1a</td><td>3</td><td>both</td><td>none</td><td>both</td><td>aggressive</td><td>none</td><td>both</td><td>ultra</td><td>false</td></tr>
+<tr><td>f990ee0a</td><td>2</td><td>restructure</td><td>standard</td><td>none</td><td>buffer</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>faa17e1b</td><td>3</td><td>none</td><td>aggressive</td><td>buffers</td><td>restructure</td><td>high</td><td>both</td><td>ultra</td><td>false</td></tr>
+<tr><td>fb67322a</td><td>1</td><td>none</td><td>standard</td><td>both</td><td>retime</td><td>low</td><td>both</td><td>ultra</td><td>false</td></tr>
+<tr><td>ff1bd302</td><td>1</td><td>both</td><td>none</td><td>both</td><td>aggressive</td><td>medium</td><td>restructure</td><td>normal</td><td>false</td></tr>
+</table>
+
+</body>
+</html>

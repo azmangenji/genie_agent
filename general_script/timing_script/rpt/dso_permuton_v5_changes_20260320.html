@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSO Permuton V5 Changes - UMCCMD</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f4f6f9; color: #2c3e50; font-size: 14px; }
+
+  .header {
+    background: linear-gradient(135deg, #1a2a4a 0%, #2d5a8e 100%);
+    color: white; padding: 32px 40px;
+  }
+  .header h1 { font-size: 24px; font-weight: 600; margin-bottom: 6px; }
+  .header .subtitle { font-size: 14px; color: #aec6e8; }
+  .header .meta { margin-top: 16px; display: flex; gap: 32px; flex-wrap: wrap; }
+  .header .meta-item { font-size: 12px; }
+  .header .meta-item span { color: #aec6e8; display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+  /* Summary cards */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 32px; }
+  .card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .card .card-num { font-size: 36px; font-weight: 700; line-height: 1; }
+  .card .card-label { font-size: 12px; color: #7f8c8d; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .card-sub { font-size: 12px; margin-top: 8px; color: #5d6d7e; }
+  .card.removed .card-num { color: #e74c3c; }
+  .card.added .card-num { color: #27ae60; }
+  .card.total .card-num { color: #2d5a8e; }
+
+  /* Section headings */
+  .section { background: white; border-radius: 8px; padding: 28px 32px; margin-bottom: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .section-title {
+    font-size: 16px; font-weight: 600; margin-bottom: 20px;
+    padding-bottom: 12px; border-bottom: 2px solid #eaecef;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .badge.removed { background: #fdecea; color: #c0392b; }
+  .badge.added   { background: #eafaf1; color: #1e8449; }
+  .badge.context { background: #eaf0fb; color: #1a5276; }
+
+  /* Permuton blocks */
+  .permuton-block { border: 1px solid #eaecef; border-radius: 6px; margin-bottom: 20px; overflow: hidden; }
+  .permuton-block:last-child { margin-bottom: 0; }
+  .pb-header {
+    padding: 14px 20px; display: flex; align-items: center; gap: 12px;
+    border-bottom: 1px solid #eaecef;
+  }
+  .pb-header.removed { background: #fef9f9; }
+  .pb-header.added   { background: #f4fef6; }
+  .pb-name { font-family: 'Courier New', monospace; font-size: 13px; font-weight: 600; }
+  .pb-name.removed { color: #c0392b; }
+  .pb-name.added   { color: #1e8449; }
+  .pb-range { font-size: 11px; color: #7f8c8d; margin-left: auto; font-family: monospace; background: #f4f6f9; padding: 3px 8px; border-radius: 4px; }
+  .pb-body { padding: 16px 20px; }
+  .pb-body p { margin-bottom: 10px; line-height: 1.6; color: #444; }
+  .pb-body p:last-child { margin-bottom: 0; }
+
+  /* Evidence table */
+  .evidence-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
+  .evidence-table th { background: #f4f6f9; padding: 8px 12px; text-align: left; font-weight: 600; color: #5d6d7e; border: 1px solid #eaecef; }
+  .evidence-table td { padding: 8px 12px; border: 1px solid #eaecef; color: #444; vertical-align: top; }
+  .evidence-table tr:hover td { background: #fafbfc; }
+  .win  { color: #1e8449; font-weight: 600; }
+  .lose { color: #c0392b; font-weight: 600; }
+  .na   { color: #aaa; }
+
+  /* Data highlight boxes */
+  .data-box { background: #f4f6f9; border-left: 3px solid #2d5a8e; padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 12px 0; font-family: monospace; font-size: 12px; line-height: 1.7; }
+  .data-box.red   { border-color: #e74c3c; background: #fef9f9; }
+  .data-box.green { border-color: #27ae60; background: #f4fef6; }
+
+  /* Final table */
+  .final-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .final-table th { background: #1a2a4a; color: white; padding: 10px 14px; text-align: left; }
+  .final-table td { padding: 9px 14px; border-bottom: 1px solid #eaecef; vertical-align: middle; }
+  .final-table tr:hover td { background: #f8f9fa; }
+  .final-table td:nth-child(1) { font-family: monospace; font-size: 12px; }
+  .tag-keep    { background: #eafaf1; color: #1e8449; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .tag-removed { background: #fdecea; color: #c0392b; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .tag-new     { background: #e8f4fd; color: #1a5276; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .tag-builtin { background: #f4f6f9; color: #5d6d7e; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+
+  .footnote { font-size: 11px; color: #7f8c8d; margin-top: 24px; text-align: center; padding-top: 16px; border-top: 1px solid #eaecef; }
+  h3 { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #2c3e50; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>DSO Permuton V5 Changes &mdash; UMCCMD</h1>
+  <div class="subtitle">Permuton file: <code>compile.permutons_umccmd_v3_balanced</code></div>
+  <div class="meta">
+    <div class="meta-item"><span>Date</span>20 Mar 2026</div>
+    <div class="meta-item"><span>Design</span>UMCCMD (Memory Controller)</div>
+    <div class="meta-item"><span>Previous DSO</span>umccmd_DSO_4Mac_40p (v3 permutons)</div>
+    <div class="meta-item"><span>Baseline Tune</span>FxSynthesize.r2r_optimization.tcl v5</div>
+    <div class="meta-item"><span>Goal</span>Beat non-DSO totalCoreTNS -68,447 ps / WNS -93.9 ps</div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Summary cards -->
+  <div class="cards">
+    <div class="card removed">
+      <div class="card-num">3</div>
+      <div class="card-label">Permutons Removed</div>
+      <div class="card-sub">critical_path_groups &bull; arb_r2r_opt &bull; r2r_tns_weight</div>
+    </div>
+    <div class="card added">
+      <div class="card-num">3</div>
+      <div class="card-label">Permutons Added</div>
+      <div class="card-sub">dcqarb_boundary_opt &bull; clkgate_opt &bull; dcqarb_max_fanout</div>
+    </div>
+    <div class="card total">
+      <div class="card-num">15</div>
+      <div class="card-label">Total Permutons (was 18)</div>
+      <div class="card-sub">4 built-in &bull; 11 custom UMCCMD</div>
+    </div>
+  </div>
+
+  <!-- Context -->
+  <div class="section">
+    <div class="section-title">
+      <span class="badge context">Context</span>
+      Why These Changes Were Made
+    </div>
+    <p style="line-height:1.7; color:#444; margin-bottom:14px;">
+      The V5 permuton update has two goals:
+      <strong>(1)</strong> remove permutons that wasted DSO search budget with no proven winning value across 80+ completed lineages in the 28Jan40p and 4Mac40p runs, and
+      <strong>(2)</strong> add permutons that directly translate the new techniques introduced in
+      <code>r2r_optimization.tcl v5</code> into explorable dimensions &mdash; letting DSO find the optimal settings
+      for what the non-DSO tune hardcodes.
+    </p>
+    <p style="line-height:1.7; color:#444;">
+      With v5 TCL applied as the DSO baseline (including DCQARB boundary opt, clock gate path groups,
+      DCQARB max_fanout=30, and all R2R path group weight improvements), the permutons now act as
+      <strong>parameter tuners on top of a stronger starting point</strong> rather than introducing these
+      techniques from scratch. The target is to beat the non-DSO Mar16 result:
+      <strong>totalCoreWNS &minus;93.9 ps</strong> and <strong>totalCoreTNS &minus;68,447 ps</strong>.
+    </p>
+    <div class="data-box" style="margin-top:16px;">
+Non-DSO Mar16 (v3 tune):   WNS = -93.889 ps  |  totalCoreTNS = -68,447 ps  &larr; target to beat
+DSO 4Mac best (75ec3049):  WNS = -85.18 ps   |  TNS = -137,538 ps           &larr; WNS better, TNS much worse
+DSO 4Mac baseline (Feb23): WNS = -120.65 ps  |  TNS = -116,554 ps
+    </div>
+  </div>
+
+  <!-- REMOVED -->
+  <div class="section">
+    <div class="section-title">
+      <span class="badge removed">Removed</span>
+      3 Permutons Removed &mdash; No Winning Value
+    </div>
+
+    <!-- critical_path_groups -->
+    <div class="permuton-block">
+      <div class="pb-header removed">
+        <div class="pb-name removed">umccmd_critical_path_groups</div>
+        <div class="pb-range">range: {standard aggressive}</div>
+      </div>
+      <div class="pb-body">
+        <p>
+          This permuton created supplemental path groups for critical R2R startpoints.
+          Its range had two values: <code>standard</code> and <code>aggressive</code>.
+        </p>
+        <h3>Why removed:</h3>
+        <p>
+          <strong>1. <code>aggressive</code> always causes a catastrophic timing regression.</strong>
+          Lineage 40b72239 (4Mac40p) with <code>crit_groups=aggressive</code> achieved WNS &minus;181.21 ps
+          &mdash; 60 ps worse than the baseline of &minus;120.65 ps. This is the worst-performing
+          lineage in the entire 4Mac run. The aggressive mode creates too many overlapping
+          high-weight path groups, starving other violating groups of optimizer attention.
+        </p>
+        <p>
+          <strong>2. <code>standard</code> always wins within the range, providing zero exploration value.</strong>
+          When the only non-crashing option always wins, the permuton contributes nothing to DSO
+          search &mdash; it simply burns one search dimension confirming <code>standard</code> each time.
+        </p>
+        <p>
+          <strong>3. Function preserved by v5 TCL.</strong>
+          The v5 <code>r2r_optimization.tcl</code> already applies comprehensive balanced path groups
+          for all major violating groups (ARB weight=8, DCQARB weight=7, clock gating weight=6,
+          ADDR/FEI/CMD weight=5&ndash;6). Standard-mode path group coverage is already the baseline.
+        </p>
+        <table class="evidence-table">
+          <tr><th>Run</th><th>Lineage</th><th>crit_groups value</th><th>WNS (ps)</th><th>vs Baseline</th><th>Outcome</th></tr>
+          <tr><td>4Mac40p</td><td>40b72239</td><td>aggressive</td><td>&minus;181.21</td><td>&minus;60.56</td><td class="lose">WORST in run</td></tr>
+          <tr><td>4Mac40p</td><td>75ec3049 (best)</td><td>standard</td><td>&minus;85.18</td><td>+35.47</td><td class="win">WINNER</td></tr>
+          <tr><td>4Mac40p</td><td>b208c13c</td><td>standard</td><td>&minus;81.37</td><td>+39.28</td><td class="win">2nd best WNS</td></tr>
+          <tr><td>28Jan40p</td><td>31e1993a (best)</td><td>none</td><td>&minus;128.48</td><td>+20.87</td><td class="win">WINNER</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- arb_r2r_opt -->
+    <div class="permuton-block">
+      <div class="pb-header removed">
+        <div class="pb-name removed">umccmd_arb_r2r_opt</div>
+        <div class="pb-range">range: {none restructure retime}</div>
+      </div>
+      <div class="pb-body">
+        <p>
+          This permuton created ARB-targeted path groups (weight 1.2&ndash;1.3) and enabled
+          logic restructuring for ARB R2R paths to address the top R2R WNS violator.
+        </p>
+        <h3>Why removed:</h3>
+        <p>
+          <strong>1. Path group weight (1.3) is an order of magnitude weaker than v5 TCL groups (8).</strong>
+          With the v5 TCL applied as the DSO baseline, the ARB module is already targeted
+          at weight=8 (<code>umc_ARB_internal_r2r</code>) and weight=7 (<code>umc_ARB_r2r_from</code>).
+          The permuton's weight-1.3 supplemental group adds negligible pressure and creates
+          ambiguity for the optimizer about which path group to prioritize.
+        </p>
+        <p>
+          <strong>2. DCQARB filter bug was contaminating results.</strong>
+          The filter <code>full_name =~ *ARB*</code> matched DCQARB registers (since DCQARB contains
+          the substring "ARB"), silently mixing 49.8% of all design registers into what was intended
+          as an ARB-only path group. Although the bug has been fixed, the permuton's results
+          across all prior runs were unreliable for this reason.
+        </p>
+        <p>
+          <strong>3. Appeared in only one winning combination across all runs.</strong>
+          The <code>restructure</code> value appeared in 4Mac40p best lineage (75ec3049) but was absent
+          from all other top performers. The <code>retime</code> value never appeared in any winner.
+          Insufficient evidence of consistent benefit to justify a search dimension.
+        </p>
+        <table class="evidence-table">
+          <tr><th>Run</th><th>Lineage</th><th>arb_r2r value</th><th>WNS (ps)</th><th>vs Baseline</th><th>Outcome</th></tr>
+          <tr><td>4Mac40p</td><td>75ec3049 (best)</td><td>restructure</td><td>&minus;85.18</td><td>+35.47</td><td class="win">Won (1 occurrence)</td></tr>
+          <tr><td>4Mac40p</td><td>6f9a6934 (2nd)</td><td class="na">not set</td><td>&minus;89.23</td><td>+31.42</td><td class="win">No arb_r2r needed</td></tr>
+          <tr><td>28Jan40p</td><td>All winners</td><td class="na">not applicable</td><td>&mdash;</td><td>&mdash;</td><td class="na">Permuton not in run</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- r2r_tns_weight -->
+    <div class="permuton-block">
+      <div class="pb-header removed">
+        <div class="pb-name removed">umccmd_r2r_tns_weight</div>
+        <div class="pb-range">range: {balanced high}</div>
+      </div>
+      <div class="pb-body">
+        <p>
+          This permuton tried to balance R2R WNS vs TNS by applying different path group weight
+          schemes. Introduced in V3 to address the TNS regression seen in the 4Mac40p run.
+        </p>
+        <h3>Why removed:</h3>
+        <p>
+          <strong>1. The winning value <code>low</code> was removed from the range in V4 and never restored.</strong>
+          The 4Mac40p winning lineage (75ec3049, WNS &minus;85.18 ps) used <code>r2r_tns_weight=low</code>.
+          V4 removed <code>low</code> due to TNS regression concerns, leaving only
+          <code>{balanced high}</code> &mdash; but <strong><code>high</code> has never appeared in any
+          winning lineage across either DSO run</strong>. The current range explores values with no winning history.
+        </p>
+        <p>
+          <strong>2. <code>balanced</code> appeared in one winner but contributed nothing unique.</strong>
+          The 4Mac Mar11 leader (b208c13c) used <code>r2r_tns_weight=balanced</code>, but this lineage
+          was superseded by later lineages with better results that did not use this permuton.
+          The balanced path group scheme it creates is already covered by v5 TCL's comprehensive
+          multi-group setup.
+        </p>
+        <p>
+          <strong>3. TNS vs WNS balance is now handled by ADES metric weights.</strong>
+          The ADES metric already penalizes TNS regression (R2R_TNS weight=3, R2R_WNS weight=2).
+          DSO learns from ADES feedback. An explicit permuton attempting to re-balance what ADES
+          already handles creates conflicting optimization signals.
+        </p>
+        <table class="evidence-table">
+          <tr><th>Run</th><th>Lineage</th><th>r2r_tns_weight value</th><th>WNS (ps)</th><th>TNS (ps)</th><th>Outcome</th></tr>
+          <tr><td>4Mac40p</td><td>75ec3049 (best WNS)</td><td>low &mdash; <em>not in V4/V5 range</em></td><td>&minus;85.18</td><td>&minus;137,538</td><td class="win">Best WNS but TNS regressed</td></tr>
+          <tr><td>4Mac40p</td><td>b208c13c</td><td>balanced</td><td>&minus;81.37</td><td>&minus;144,717</td><td class="na">Superseded, TNS regressed</td></tr>
+          <tr><td>4Mac40p</td><td>4f15ed32</td><td>high</td><td>&minus;128.68</td><td>&minus;108,860</td><td class="lose">Worse than baseline</td></tr>
+        </table>
+        <div class="data-box red" style="margin-top:12px;">
+VERDICT: Range {balanced high} does not explore the winning region.
+         'high' actively hurts WNS. Permuton has no useful search contribution.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADDED -->
+  <div class="section">
+    <div class="section-title">
+      <span class="badge added">Added</span>
+      3 Permutons Added &mdash; Translate v5 TCL into Explorable Dimensions
+    </div>
+    <p style="line-height:1.7; color:#444; margin-bottom:20px;">
+      These permutons correspond directly to the three main new techniques introduced in
+      <code>r2r_optimization.tcl v5</code>. Since v5 TCL applies them with fixed values,
+      DSO can now determine whether those fixed values are optimal or whether a different
+      level performs better on each lineage.
+    </p>
+
+    <!-- dcqarb_boundary_opt -->
+    <div class="permuton-block">
+      <div class="pb-header added">
+        <div class="pb-name added">umccmd_dcqarb_boundary_opt</div>
+        <div class="pb-range">range: {none arb_only both}</div>
+      </div>
+      <div class="pb-body">
+        <p>
+          <strong>v5 TCL origin:</strong> Added <code>set_boundary_optimization true</code> for both
+          ARB hierarchical cells and DCQARB hierarchical cells. This allows the optimizer to fix
+          cross-hierarchy R2R paths without requiring logic restructuring or
+          <code>dont_touch=false</code> removal (which caused instability in v2).
+        </p>
+        <h3>Why added:</h3>
+        <p>
+          <strong>1. DCQARB is the 2nd largest totalCoreTNS contributor</strong> with NVP=2,339,
+          TNS=&minus;39,091 ps and WNS=&minus;62 ps. Boundary optimization allows the optimizer to
+          treat DCQARB as a transparent boundary during timing fixing &mdash; critical for cross-hierarchy
+          paths that previously could not be optimized.
+        </p>
+        <p>
+          <strong>2. v5 TCL hardcodes <code>both</code> (ARB + DCQARB).</strong>
+          This permuton lets DSO verify that <code>both</code> is indeed optimal, or discover
+          whether <code>arb_only</code> is sufficient without the additional DCQARB boundary overhead.
+          The <code>none</code> option provides a control baseline to measure the gain from v5 TCL's approach.
+        </p>
+        <p>
+          <strong>3. Distinct from <code>umccmd_dcq_arbiter_pipeline=restructure</code></strong>,
+          which also applies boundary opt but additionally removes <code>dont_touch</code> and
+          restructures DCQARB logic (aggressive, known instability risk). This permuton is the
+          safe-only boundary opt path.
+        </p>
+        <div class="data-box green">
+v5 TCL target (hardcoded):    set_boundary_optimization $dcqarb_hier_cells true
+Permuton exploration:
+  none     &rarr; no boundary opt (control baseline)
+  arb_only &rarr; ARB only (v3 behavior, confirmed safe)
+  both     &rarr; ARB + DCQARB (v5 TCL value, safe, no dont_touch removal)
+        </div>
+      </div>
+    </div>
+
+    <!-- clkgate_opt -->
+    <div class="permuton-block">
+      <div class="pb-header added">
+        <div class="pb-name added">umccmd_clkgate_opt</div>
+        <div class="pb-range">range: {none low high}</div>
+      </div>
+      <div class="pb-body">
+        <p>
+          <strong>v5 TCL origin:</strong> Added <code>group_path -name umc_clkgate_r2r -weight 6
+          -critical_range 400 -to $clkgate_cells</code> targeting the
+          <code>clock_gating_default</code> path group.
+        </p>
+        <h3>Why added:</h3>
+        <p>
+          <strong>1. Clock gating paths were never targeted in any DSO lineage across both prior runs.</strong>
+          The <code>clock_gating_default</code> group has NVP=545, TNS=&minus;10,175 ps,
+          and WNS=&minus;59 ps &mdash; the 3rd largest contributor to totalCoreTNS. Despite this,
+          zero DSO lineages in 28Jan40p or 4Mac40p explicitly targeted this group.
+          This represents untapped TNS reduction potential.
+        </p>
+        <p>
+          <strong>2. The optimal weight is unknown.</strong>
+          v5 TCL hardcodes weight=6. Too high a weight pulls optimizer attention away from the
+          dominant ARB (weight=8) and DCQARB (weight=7) groups. Too low adds no pressure.
+          DSO can find the balance: <code>low</code> (weight=4, conservative) vs
+          <code>high</code> (weight=6, v5 TCL value) vs <code>none</code> (let tool handle via
+          default clock_gating_default group).
+        </p>
+        <div class="data-box green">
+clock_gating_default (Mar16 run):  NVP=545  TNS=-10,175 ps  WNS=-59 ps
+Never targeted in 28Jan40p (43 lineages) or 4Mac40p (41 lineages) = 84 lineages of missed opportunity
+
+Permuton exploration:
+  none  &rarr; tool default clock_gating_default handling
+  low   &rarr; weight=4, critical_range=300 (conservative)
+  high  &rarr; weight=6, critical_range=400 (v5 TCL value)
+        </div>
+      </div>
+    </div>
+
+    <!-- dcqarb_max_fanout -->
+    <div class="permuton-block">
+      <div class="pb-header added">
+        <div class="pb-name added">umccmd_dcqarb_max_fanout</div>
+        <div class="pb-range">range: {none 20 30 40}</div>
+      </div>
+      <div class="pb-body">
+        <p>
+          <strong>v5 TCL origin:</strong> Added <code>set_max_fanout 30 $dcqarb_cells</code>
+          to reduce delays on high-fanout control nets within DCQARB.
+        </p>
+        <h3>Why added:</h3>
+        <p>
+          <strong>1. DCQARB contains 49.8% of all design registers.</strong>
+          High-fanout control nets spanning this large block contribute directly to R2R path delays.
+          Forcing the tool to buffer nets beyond a fanout limit is a direct lever on R2R timing.
+        </p>
+        <p>
+          <strong>2. The optimal fanout limit is design-state dependent and unknown.</strong>
+          v5 TCL hardcodes 30, but this is an estimate. A tighter limit (20) forces more aggressive
+          buffering and may improve WNS at the cost of area and potential congestion.
+          A looser limit (40) reduces buffering overhead and may improve TNS by freeing
+          routing resources for critical paths. DSO can determine which value produces the
+          best ADES score across lineages.
+        </p>
+        <p>
+          <strong>3. Applies at both compile and place checkpoints</strong> since fanout-driven
+          buffering affects both logic optimization (compile) and physical placement (place),
+          giving DSO two opportunities to tune the effect.
+        </p>
+        <div class="data-box green">
+v5 TCL target (hardcoded):    set_max_fanout 30 $dcqarb_cells
+
+Permuton exploration:
+  none  &rarr; tool default (no constraint, typically 100+)
+  20    &rarr; aggressive buffering (fewer slow high-fanout nets, more area)
+  30    &rarr; v5 TCL value (moderate)
+  40    &rarr; relaxed (less buffering overhead, better congestion)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Final permuton list -->
+  <div class="section">
+    <div class="section-title">Final Permuton List (15 total)</div>
+    <table class="final-table">
+      <tr>
+        <th>#</th><th>Permuton Name</th><th>Range</th><th>Status</th><th>Winning Evidence</th>
+      </tr>
+      <tr><td>1</td><td>compile.flow.high_effort_timing</td><td>{1 2 3}</td><td><span class="tag-builtin">Built-in</span></td><td>Core timing effort control</td></tr>
+      <tr><td>2</td><td>dso_scale_margins</td><td>{-1 0}</td><td><span class="tag-builtin">Built-in</span></td><td>Path margin exploration</td></tr>
+      <tr><td>3</td><td>dso_permuton_biasatp</td><td>{0.1&ndash;0.5}</td><td><span class="tag-builtin">Built-in</span></td><td>Area-timing trade-off</td></tr>
+      <tr><td>4</td><td>dso_permuton_ramd</td><td>{-1 0.1&ndash;0.25}</td><td><span class="tag-builtin">Built-in</span></td><td>Register retiming/merging</td></tr>
+      <tr><td>5</td><td>umccmd_fanout_duplication</td><td>{none low medium}</td><td><span class="tag-keep">Keep</span></td><td><code>medium</code> in 28Jan best1 + best2</td></tr>
+      <tr><td>6</td><td>umccmd_control_buffering</td><td>{1 3}</td><td><span class="tag-keep">Keep</span></td><td><code>1</code> in 28Jan best2 + 4Mac best</td></tr>
+      <tr><td>7</td><td>umccmd_dcq_arbiter_pipeline</td><td>{none restructure}</td><td><span class="tag-keep">Keep</span></td><td><code>restructure</code> in 3 of 4 top winners</td></tr>
+      <tr><td>8</td><td>umccmd_timing_counter_opt</td><td>{both pipeline}</td><td><span class="tag-keep">Keep</span></td><td><code>both</code> in 28Jan best2 + 4Mac best</td></tr>
+      <tr><td>9</td><td>umccmd_arb_safe_reg_opt</td><td>{normal high ultra}</td><td><span class="tag-keep">Keep</span></td><td><code>ultra</code> in 28Jan best1 + 4Mac Mar11</td></tr>
+      <tr><td>10</td><td>umccmd_pgt_optimization</td><td>{false true}</td><td><span class="tag-keep">Keep</span></td><td><code>true</code> in 4Mac best, <code>false</code> in 28Jan</td></tr>
+      <tr><td>11</td><td>umccmd_control_isolation</td><td>{none buffers both}</td><td><span class="tag-keep">Keep</span></td><td><code>buffers</code> in 28Jan best1 + 4Mac Mar11</td></tr>
+      <tr><td>12</td><td>umccmd_umc_id_didt_opt</td><td>{none retime}</td><td><span class="tag-keep">Keep</span></td><td><code>none</code> in 28Jan best2, <code>retime</code> in 4Mac Mar11</td></tr>
+      <tr><td>&mdash;</td><td>umccmd_critical_path_groups</td><td><s>{standard aggressive}</s></td><td><span class="tag-removed">Removed</span></td><td>aggressive crashes (&minus;60 ps), standard always wins = no exploration</td></tr>
+      <tr><td>&mdash;</td><td>umccmd_arb_r2r_opt</td><td><s>{none restructure retime}</s></td><td><span class="tag-removed">Removed</span></td><td>1 win only, weight 1.3 redundant with v5 TCL weight 8</td></tr>
+      <tr><td>&mdash;</td><td>umccmd_r2r_tns_weight</td><td><s>{balanced high}</s></td><td><span class="tag-removed">Removed</span></td><td>winning value 'low' not in range, 'high' never won</td></tr>
+      <tr><td>13</td><td>umccmd_dcqarb_boundary_opt</td><td>{none arb_only both}</td><td><span class="tag-new">New V5</span></td><td>From v5 TCL: DCQARB boundary opt (NVP=2339, TNS=&minus;39K)</td></tr>
+      <tr><td>14</td><td>umccmd_clkgate_opt</td><td>{none low high}</td><td><span class="tag-new">New V5</span></td><td>From v5 TCL: clock gate paths (NVP=545, TNS=&minus;10K, never targeted)</td></tr>
+      <tr><td>15</td><td>umccmd_dcqarb_max_fanout</td><td>{none 20 30 40}</td><td><span class="tag-new">New V5</span></td><td>From v5 TCL: DCQARB max_fanout=30 (optimal value unknown)</td></tr>
+    </table>
+  </div>
+
+  <div class="footnote">
+    Generated 20 Mar 2026 &bull; UMCCMD DSO Permuton V5 &bull;
+    Permuton file: <code>compile.permutons_umccmd_v3_balanced</code> &bull;
+    Proc files: <code>dso_timing_enhancement/procs/</code>
+  </div>
+
+</div>
+</body>
+</html>

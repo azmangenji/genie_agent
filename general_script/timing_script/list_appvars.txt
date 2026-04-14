@@ -1,0 +1,408 @@
+
+===============================================================================
+SEARCHING FOR FC APP_OPTIONS
+===============================================================================
+
+=== 1. TIMING EFFORT OPTIONS ===
+****************************************
+Report : app_option
+Design : umccmd
+Version: V-2023.12-SP5-6
+Date   : Wed Mar  4 03:12:58 2026
+****************************************
+Name                                                         Type                    Value                User-value             User-default           System-default             Scope      Status     Source
+------------------------------------------------------------ ----------------------- -------------------- ---------------------- ---------------------- -------------------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+ccd.fmax_optimization_effort                                 enum                    low                  --                     --                     low                        block      normal     --
+ccd.hold_control_effort                                      enum                    high                 high                   high                   low                        global     normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4389
+ccd.targeted_ccd_wns_optimization_effort                     enum                    high                 --                     --                     high                       global     normal     --
+ccd.timing_effort                                            enum                    medium               --                     --                     medium                     block      normal     --
+clock_opt.hold.effort                                        enum                    --                   --                     --                     --                         block      obsolete   --
+clock_opt.place.congestion_effort                            enum                    high                 high                   --                     medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2750
+clock_opt.place.effort                                       enum                    medium               --                     --                     medium                     block      normal     --
+compile.early_place.effort                                   enum                    medium               --                     --                     medium                     block      normal     --
+compile.final_place.effort                                   enum                    high                 high                   --                     medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2659
+compile.flow.enable_high_effort_constant_propagation         bool                    true                 --                     --                     true                       block      normal     --
+compile.flow.high_effort_area                                bool                    true                 true                   --                     false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4389
+compile.flow.high_effort_timing                              integer                 1                    1                      --                     0                          block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:69
+compile.flow.skew_macros_effort                              enum                    medium               --                     --                     medium                     block      normal     --
+compile.initial_place.buffering_aware_placement_effort       enum                    high                 high                   --                     medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2722
+compile.initial_place.effort                                 enum                    high                 --                     --                     high                       block      normal     --
+compile.seqmap.register_replication_placement_effort         enum                    low                  --                     --                     low                        block      normal     --
+cts.buffering.reduce_clock_level_effort                      enum                    off                  --                     --                     off                        block      normal     --
+cts.compile.power_opt_wirelength_effort                      enum                    low                  --                     --                     low                        block      normal     --
+cts.multisource.htree_pin_connection_effort_level            enum                    high                 --                     --                     high                       block      normal     --
+dft.tp_set_cluster_effort                                    string                  medium               --                     --                     medium                     block      normal     --
+dpx.clock_opt.distribution_effort_level                      enum                    ultra                --                     --                     ultra                      global     normal     --
+dpx.place_opt.distribution_effort_level                      enum                    ultra                --                     --                     ultra                      global     normal     --
+dpx.route_opt.distribution_effort_level                      enum                    ultra                --                     --                     ultra                      global     normal     --
+extract.rde_effort_level                                     string                  medium               medium                 --                     medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2477
+flow.common.effort                                           string                  34159-NONSMSCTS-PPA-v4 -|- 34159-NONSMSCTS-PPA-v4 34159-NONSMSCTS-PPA-v4 -1                         global     normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:496
+multibit.debanking.effort                                    enum                    low                  --                     --                     low                        block      normal     --
+opt.area.effort                                              enum                    high                 high                   --                     low                        block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2657
+opt.buffering.high_fanout_synthesis_delay_effort             enum                    medium               --                     --                     medium                     block      normal     --
+opt.common.buffer_area_effort                                enum                    ultra                ultra                  --                     low                        block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2721
+opt.common.hold_effort                                       enum                    high                 --                     --                     high                       block      normal     --
+opt.common.power_integrity_effort                            enum                    low                  --                     --                     low                        block      normal     --
+opt.power.effort                                             enum                    low                  --                     --                     low                        block      deprecated --
+opt.timing.effort                                            enum                    low                  --                     --                     low                        block      normal     --
+pin_check.route.effort                                       enum                    medium               --                     --                     medium                     global     normal     --
+place.coarse.cong_restruct_effort                            enum                    medium               --                     --                     medium                     block      normal     --
+place.coarse.congestion_analysis_effort                      enum                    high                 --                     --                     high                       block      deprecated --
+place.coarse.enhanced_low_power_effort                       enum                    none                 none                   --                     low                        block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:484
+place.coarse.perturbation_effort                             enum                    default              --                     --                     default                    block      normal     --
+place.legalize.stream_effort                                 enum                    low                  --                     --                     low                        block      normal     --
+place.legalize.stream_effort_limit                           double                  10                   --                     --                     10                         block      normal     --
+place_opt.final_place.effort                                 enum                    high                 high                   --                     medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2658
+place_opt.initial_place.effort                               enum                    high                 --                     --                     high                       block      normal     --
+place_opt.place.congestion_effort                            enum                    high                 high                   --                     medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2723
+plan.auto_group.generate_stats_effort_level                  enum                    low                  --                     --                     low                        block      normal     --
+plan.macro.legalize_effort                                   enum                    high                 --                     --                     high                       block      normal     --
+plan.macro.ml_stdcell_congestion_effort                      string                  low                  --                     --                     low                        global     normal     --
+power.propagation_effort                                     enum                    medium               --                     --                     medium                     block      normal     --
+refine_opt.hold.effort                                       enum                    none                 --                     --                     none                       block      deprecated --
+refine_opt.place.congestion_effort                           enum                    medium               --                     --                     medium                     block      deprecated --
+refine_opt.place.effort                                      enum                    medium               --                     --                     medium                     block      deprecated --
+route.common.concurrent_redundant_via_effort_level           enum                    low                  --                     --                     low                        block      normal     --
+route.common.eco_route_concurrent_redundant_via_effort_level enum                    low                  --                     --                     low                        block      normal     --
+route.common.rc_driven_setup_effort_level                    enum                    high                 high                   --                     medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2578
+route.common.route_soft_rule_effort_level                    enum                    medium               --                     --                     medium                     block      normal     --
+route.common.routing_rule_effort_level                       list_of string          --                   --                     --                     --                         block      normal     --
+route.common.soft_rule_weight_to_effort_level_map            list_of {string string} {low low} {medium medium} {high high} -|- --                     --                     {low low} {medium medium} {high high} -|- block      normal     --
+route.detail.drc_convergence_effort_level                    enum                    medium               --                     --                     medium                     block      normal     --
+route.detail.fat_metal_forbidden_pitch_effort_level          enum                    off                  --                     --                     off                        block      normal     --
+route.detail.min_max_layer_effort_level                      enum                    high                 --                     --                     high                       block      normal     --
+route.detail.optimize_tie_off_effort_level                   enum                    low                  --                     --                     low                        block      normal     --
+route.detail.optimize_wire_via_effort_level                  enum                    high                 high                   --                     low                        block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:477
+route.detail.repair_shorts_over_macros_effort_level          enum                    off                  --                     --                     off                        block      normal     --
+route.detail.topology_eco_effort_level                       enum                    off                  off                    --                     off                        block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2631
+route.detail.use_wide_wire_effort_level                      enum                    off                  --                     --                     off                        block      normal     --
+route.global.advance_node_timing_driven_effort               enum                    high                 --                     --                     high                       block      normal     --
+route.global.effort_level                                    enum                    high                 high                   --                     medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2614
+route.global.force_full_effort                               bool                    false                --                     --                     false                      block      normal     --
+route.global.timing_driven_effort_level                      enum                    high                 --                     --                     high                       block      normal     --
+rtl_opt.estimation.placement_congestion_effort               enum                    medium               --                     --                     medium                     block      normal     --
+time.rc_receiver_modeling_effort                             enum                    high                 --                     --                     high                       block      normal     --
+------------------------------------------------------------ ----------------------- -------------------- ---------------------- ---------------------- -------------------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+
+There are additional internal differences with no available TBC source.
+
+Files with Synopsys Patches
+----------------------------------------------------------------------------------------------------
+/tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd
+
+=== 2. RETIMING OPTIONS ===
+****************************************
+Report : app_option
+Design : umccmd
+Version: V-2023.12-SP5-6
+Date   : Wed Mar  4 03:12:58 2026
+****************************************
+Name                                      Type       Value      User-value   User-default System-default Scope      Status     Source
+----------------------------------------- ---------- ---------- ------------ ------------ -------------- ---------- ---------- ----------
+compile.retiming.optimization_priority    enum       auto       --           --           auto           block      normal     --
+compile.retiming.simu_mismatch_prevention bool       false      --           --           false          block      normal     --
+----------------------------------------- ---------- ---------- ------------ ------------ -------------- ---------- ---------- ----------
+
+There are additional internal differences.
+
+=== 3. REPLICATION OPTIONS ===
+****************************************
+Report : app_option
+Design : umccmd
+Version: V-2023.12-SP5-6
+Date   : Wed Mar  4 03:12:58 2026
+****************************************
+Name                                                             Type       Value                User-value   User-default System-default             Scope      Status     Source
+---------------------------------------------------------------- ---------- -------------------- ------------ ------------ -------------------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+compile.seqmap.register_replication_insert_copies_in_scan_chains bool       true                 --           --           true                       block      normal     --
+compile.seqmap.register_replication_max_fanout_constraint_mode   enum       strict               --           --           strict                     block      normal     --
+compile.seqmap.register_replication_naming_style                 string     %s_dup%d             %s_dup%d     --           %s_rep%d                   block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:89
+compile.seqmap.register_replication_placement_effort             enum       low                  --           --           low                        block      normal     --
+compile.seqmap.register_replication_placement_location           string     center_of_loads_and_drivers -|- --           --           center_of_loads_and_drivers -|- block      normal     --
+compile.seqmap.register_replication_simu_mismatch_prevention     bool       false                --           --           false                      block      normal     --
+compile.seqmap.replicate_merged_registers                        bool       true                 --           --           true                       block      normal     --
+compile.seqmap.replicate_registers_without_asynchronous_logic    bool       true                 --           --           true                       block      normal     --
+compile.seqmap.replicate_size_only_registers                     bool       false                --           --           false                      block      normal     --
+hdlin.verilog.v2005_replication_semantics                        bool       true                 --           --           true                       global     normal     --
+---------------------------------------------------------------- ---------- -------------------- ------------ ------------ -------------------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+
+There are additional internal differences.
+
+=== 4. TNS OPTIONS ===
+****************************************
+Report : app_option
+Design : umccmd
+Version: V-2023.12-SP5-6
+Date   : Wed Mar  4 03:12:58 2026
+****************************************
+Name                                               Type       Value      User-value   User-default System-default Scope      Status     Source
+-------------------------------------------------- ---------- ---------- ------------ ------------ -------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+ccd.enable_multi_vector_ccd_tns_register_sizing    bool       false      --           --           false          block      normal     --
+multibit.banking.enable_tns_degradation_estimation bool       true       true         --           false          block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4389
+place.coarse.tns_driven_placement                  bool       true       true         --           false          block      deprecated /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:67
+route_opt.flow.enable_multi_vector_ccd_pba_tns     bool       false      --           --           false          block      normal     --
+-------------------------------------------------- ---------- ---------- ------------ ------------ -------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+
+There are additional internal differences.
+
+Files with Synopsys Patches
+----------------------------------------------------------------------------------------------------
+/tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd
+
+=== 5. BUFFER OPTIONS ===
+****************************************
+Report : app_option
+Design : umccmd
+Version: V-2023.12-SP5-6
+Date   : Wed Mar  4 03:12:58 2026
+****************************************
+Name                                                      Type               Value      User-value   User-default System-default Scope      Status     Source
+--------------------------------------------------------- ------------------ ---------- ------------ ------------ -------------- ---------- ---------- -------------------------------------------------------------------------
+ccd.post_route_buffer_removal                             bool               false      --           --           false          block      normal     --
+compile.auto_floorplan.buffering_aware_timing_driven      bool               false      --           --           false          block      normal     --
+compile.initial_place.buffering_aware                     bool               true       --           --           true           global     normal     --
+compile.initial_place.buffering_aware_placement_effort    enum               high       high         --           medium         block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2722
+cts.buffering.reduce_clock_level_effort                   enum               off        --           --           off            block      normal     --
+cts.compile.global_route_aware_buffering                  bool               false      --           --           false          block      normal     --
+cts.multisource.enable_levelized_buffering                bool               false      --           --           false          block      normal     --
+dft.scan.force_buffers_at_logical_chain_endpoints         bool               false      --           --           false          block      normal     --
+eco.add_buffer_on_route.advanced_detect_layer             bool               false      --           --           false          global     normal     --
+eco.add_buffer_on_route.min_distance_buffer_to_load       float              -1         --           --           -1             block      normal     --
+eco.remove_buffer.keep_rtl_net                            bool               false      --           --           false          block      normal     --
+file.merge.disable_merge_buffer_refill                    bool               true       --           --           true           block      normal     --
+hdlin.elaborate.optimize_buffers                          bool               false      false        false        true           global     normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:234
+mpn.buffer_top_level_constant_port_nets                   bool               true       --           --           true           block      normal     --
+mpn.buffer_unloaded_constant_port_nets                    bool               false      false        --           true           block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:1321
+mpn.buffer_unloaded_multiple_port_nets                    bool               true       --           --           true           block      normal     --
+mv.upf.no_buffering_after_retention_clamp_cell            bool               false      --           --           false          block      normal     --
+opt.buffering.check_for_skinny_blockages                  bool               true       --           --           true           block      normal     --
+opt.buffering.enable_advanced_buffering                   bool               true       --           --           true           block      deprecated --
+opt.buffering.enable_delay_tree_rebuffering_depth         integer            0          --           --           0              block      normal     --
+opt.buffering.enable_flow_rebuffering                     integer            0          --           --           0              block      normal     --
+opt.buffering.enable_hierarchy_mapping                    bool               false      --           --           false          block      normal     --
+opt.buffering.enable_ldrc_tree_rebuffering_depth          integer            0          --           --           0              block      normal     --
+opt.buffering.enable_mv_rebuffering                       bool               false      --           --           false          block      normal     --
+opt.buffering.enable_rebuffering                          bool               false      --           --           false          block      normal     --
+opt.buffering.exclusive_hard_bound_buffering_mode         integer            2          --           --           2              block      normal     --
+opt.buffering.filter_end_cap_cells                        bool               false      --           --           false          block      normal     --
+opt.buffering.filter_filler_cells                         bool               false      --           --           false          block      normal     --
+opt.buffering.filter_physical_only_lib_cells              bool               false      --           --           false          block      normal     --
+opt.buffering.filter_well_tap_cells                       bool               false      --           --           false          block      normal     --
+opt.buffering.hard_bound_buffering_mode                   integer            0          --           --           0              block      normal     --
+opt.buffering.high_fanout_synthesis_cost                  string             composite  --           --           composite      block      normal     --
+opt.buffering.high_fanout_synthesis_delay_effort          enum               medium     --           --           medium         block      normal     --
+opt.buffering.improved_ootb_topology_generation           bool               false      --           --           false          block      normal     --
+opt.buffering.min_skinny_blockage_size                    float              0          --           --           0              block      normal     --
+opt.buffering.skinny_blockage_scope                       enum               small      --           --           small          block      normal     --
+opt.buffering.two_pass_hfs                                bool               false      --           --           false          block      normal     --
+opt.buffering.vr_dualrail_cost                            float              0          --           --           0              block      normal     --
+opt.common.buffer_area_effort                             enum               ultra      ultra        --           low            block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2721
+opt.common.buffering_for_advanced_technology              bool               false      --           --           false          block      normal     --
+opt.common.drc_mode_buffering                             enum               auto       --           --           auto           block      normal     --
+place.legalize.allow_tiecells_on_buffer_only_blockages    bool               true       --           --           true           block      normal     --
+place_opt.initial_place.buffering_aware                   bool               true       --           --           true           block      normal     --
+plan.budget.hold_buffer_margin                            float              0.01       --           --           0.01           block      normal     --
+plan.estimate_timing.abstract_add_feedthrough_buffer      bool               true       --           --           true           block      normal     --
+plan.estimate_timing.abstract_feedthrough_buffer_side     string             --         --           --           --             block      normal     --
+plan.estimate_timing.abstract_feedthrough_user_buffer     string             --         --           --           --             block      normal     --
+plan.macro.auto_buffer_channels                           bool               false      --           --           false          block      normal     --
+plan.macro.buffer_channel_height                          typed_value_length 0m         --           --           0m             block      normal     --
+plan.macro.buffer_channel_width                           typed_value_length 0m         --           --           0m             block      normal     --
+plan.macro.buffer_rule_name                               string             --         --           --           --             block      normal     --
+plan.macro.immediately_buffer_ios                         bool               false      --           --           false          block      normal     --
+plan.macro.max_buffer_stack_height                        typed_value_length 0m         --           --           0m             block      normal     --
+plan.macro.max_buffer_stack_width                         typed_value_length 0m         --           --           0m             block      normal     --
+plan.pins.align_to_buffer_on_feedthrough                  bool               false      --           --           false          block      normal     --
+plan.pins.buffer_cell_module_name                         string             --         --           --           --             block      normal     --
+plan.shadow.exclude_non_shadow_buffers                    bool               false      --           --           false          block      normal     --
+route.global.avoid_blocked_unbufferable_macro_area_in_opt bool               false      --           --           false          block      normal     --
+route.global.enable_buffer_aware                          bool               false      --           --           false          block      normal     --
+route.global.max_buffer_distance                          integer            0          --           --           0              block      normal     --
+route_opt.flow.enable_ldrc_driver_side_buffer_filters     bool               false      --           --           false          block      normal     --
+time.ungroup_allow_new_buffer                             bool               false      --           --           false          global     normal     --
+--------------------------------------------------------- ------------------ ---------- ------------ ------------ -------------- ---------- ---------- -------------------------------------------------------------------------
+
+There are additional internal differences with no available TBC source.
+
+=== 6. RESTRUCTURE OPTIONS ===
+****************************************
+Report : app_option
+Design : umccmd
+Version: V-2023.12-SP5-6
+Date   : Wed Mar  4 03:12:58 2026
+****************************************
+Name                                                       Type       Value      User-value   User-default System-default Scope      Status     Source
+---------------------------------------------------------- ---------- ---------- ------------ ------------ -------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+opt.common.advanced_logic_restructuring_mode               enum       none       --           --           none           block      normal     --
+opt.common.advanced_logic_restructuring_wirelength_costing enum       high       high         --           high           block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:75
+---------------------------------------------------------- ---------- ---------- ------------ ------------ -------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+
+There are additional internal differences.
+
+Files with Synopsys Patches
+----------------------------------------------------------------------------------------------------
+/tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd
+
+=== 7. ALL COMPILE OPTIONS ===
+****************************************
+Report : app_option
+Design : umccmd
+Version: V-2023.12-SP5-6
+Date   : Wed Mar  4 03:12:58 2026
+****************************************
+Name                                                                           Type           Value                User-value   User-default System-default             Scope      Status     Source
+------------------------------------------------------------------------------ -------------- -------------------- ------------ ------------ -------------------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+compile.auto_floorplan.buffering_aware_timing_driven                           bool           false                --           --           false                      block      normal     --
+compile.auto_floorplan.congestion                                              bool           false                --           --           false                      block      normal     --
+compile.auto_floorplan.fix_macro_violation                                     enum           auto                 --           --           auto                       block      normal     --
+compile.auto_floorplan.initialize                                              enum           false                false        --           auto                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2935
+compile.auto_floorplan.keep_bounds                                             enum           auto                 --           --           auto                       block      normal     --
+compile.auto_floorplan.keep_placement_blockages                                enum           auto                 --           --           auto                       block      normal     --
+compile.auto_floorplan.optimize_small_design                                   bool           false                --           --           false                      global     normal     --
+compile.auto_floorplan.place_hard_macros                                       enum           none                 none         --           unplaced                   block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2963
+compile.auto_floorplan.place_hard_macros_enhanced                              enum           false                --           --           false                      block      normal     --
+compile.auto_floorplan.place_ios                                               enum           unfixed              unfixed      --           unplaced                   block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2978
+compile.auto_floorplan.place_pins                                              enum           unfixed              unfixed      --           unplaced                   block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2978
+compile.auto_floorplan.shape_voltage_areas                                     enum           none                 none         --           unshaped                   block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2939
+compile.auto_floorplan.small_design_threshold                                  unsigned       2000                 --           --           2000                       global     normal     --
+compile.auto_floorplan.timing_driven                                           bool           false                --           --           false                      block      normal     --
+compile.check.site_def                                                         integer        1                    --           --           1                          block      normal     --
+compile.check.site_def_verbose                                                 bool           false                --           --           false                      block      normal     --
+compile.clockgate.cg_cell_naming_style                                         string         %r                   --           --           %r                         block      normal     --
+compile.clockgate.clock_gate_name_prefix                                       string         clk_gate             clk_gate     --           snps_clock_gate            block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:3988
+compile.clockgate.enable_activity_driven_level_expansion                       bool           true                 --           --           true                       block      normal     --
+compile.clockgate.enable_dft_wrapper_cell_support                              bool           false                --           --           false                      block      normal     --
+compile.clockgate.enable_level_expansion                                       bool           false                --           --           false                      block      deprecated --
+compile.clockgate.fanin_sequential                                             bool           false                false        --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:507
+compile.clockgate.fanin_sequential_name_prefix                                 string         snps_seq_clock_gate_fi -|- --           --           snps_seq_clock_gate_fi     block      normal     --
+compile.clockgate.fanout_sequential_name_prefix                                string         snps_seq_clock_gate_fo -|- --           --           snps_seq_clock_gate_fo     block      normal     --
+compile.clockgate.inherit_timing_exceptions                                    bool           false                --           --           false                      block      normal     --
+compile.clockgate.max_level_allow_ungating                                     bool           false                --           --           false                      block      deprecated --
+compile.clockgate.max_number_of_levels                                         unsigned       0                    --           --           0                          block      deprecated --
+compile.clockgate.physically_aware                                             bool           false                --           --           false                      block      deprecated --
+compile.clockgate.physically_aware_estimate_timing                             bool           true                 --           --           true                       block      normal     --
+compile.clockgate.self_gate_name_prefix                                        string         snps_self_gate       --           --           snps_self_gate             block      normal     --
+compile.clockgate.self_gating                                                  bool           false                --           --           false                      block      normal     --
+compile.clockgate.sequential_delay_register_name_prefix                        string         snps_seqcg_delay_reg --           --           snps_seqcg_delay_reg       block      normal     --
+compile.clockgate.substring_list_for_dft_wrapper_dont_rename_icgs              list_of string --                   --           --           --                         block      normal     --
+compile.clockgate.use_clock_latency                                            bool           true                 --           --           true                       block      normal     --
+compile.clockgate.use_enhanced_clock_gate_naming_style                         bool           false                --           --           false                      block      normal     --
+compile.datapath.module_name_prefix                                            string         --                   --           --           --                         block      normal     --
+compile.datapath.physically_aware                                              bool           false                false        --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2662
+compile.datapath.ungroup                                                       bool           true                 --           --           true                       block      normal     --
+compile.early_place.effort                                                     enum           medium               --           --           medium                     block      normal     --
+compile.final_place.effort                                                     enum           high                 high         --           medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2659
+compile.flow.allow_inverter_on_clock                                           bool           true                 --           --           true                       block      normal     --
+compile.flow.areaResynthesis                                                   bool           true                 true         --           false                      block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/TileBuilder/supra/templates/icc2_shell/icc2_bytecode/wave14.tbc:725
+compile.flow.autoungroup                                                       bool           false                false        --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2789
+compile.flow.boundary_optimization                                             bool           true                 --           --           true                       block      normal     --
+compile.flow.clock_aware_placement                                             bool           false                --           --           false                      block      normal     --
+compile.flow.conservative_constant_propagation                                 bool           false                --           --           false                      block      normal     --
+compile.flow.constant_and_unloaded_propagation_prevention_with_no_boundary_opt unsigned       3                    --           --           3                          block      normal     --
+compile.flow.constant_and_unloaded_propagation_with_no_boundary_opt            bool           true                 --           --           true                       block      normal     --
+compile.flow.enable_ccd                                                        bool           false                false        --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4082
+compile.flow.enable_checkpoint_compression                                     bool           false                --           --           false                      global     normal     --
+compile.flow.enable_complex_register_mapping                                   bool           false                --           --           false                      block      normal     --
+compile.flow.enable_dpa_ccd_timing                                             bool           false                --           --           false                      block      normal     --
+compile.flow.enable_dpa_ccd_timing_with_delay_potential                        bool           false                --           --           false                      block      normal     --
+compile.flow.enable_dps                                                        bool           false                --           --           false                      block      normal     --
+compile.flow.enable_hierarchical_checkpoints                                   bool           false                --           --           false                      block      normal     --
+compile.flow.enable_high_effort_constant_propagation                           bool           true                 --           --           true                       block      normal     --
+compile.flow.enable_incremental_multibit_banking                               bool           false                --           --           false                      block      normal     --
+compile.flow.enable_irap                                                       bool           false                --           --           false                      block      normal     --
+compile.flow.enable_multibit                                                   bool           true                 true         --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4125
+compile.flow.enable_multibit_debanking                                         bool           true                 true         --           true                       block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:134
+compile.flow.enable_multibit_pm_cells                                          bool           --                   --           --           --                         block      obsolete   --
+compile.flow.enable_multibit_rewiring                                          bool           false                --           --           false                      block      normal     --
+compile.flow.enable_multisource_clock_trees                                    bool           false                --           --           false                      block      normal     --
+compile.flow.enable_mv_merge_clone                                             bool           false                --           --           false                      block      -?-        --
+compile.flow.enable_physical_multibit_banking                                  bool           false                false        --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4497
+compile.flow.enable_power                                                      bool           false                false        --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2754
+compile.flow.enable_rtl_multibit_banking                                       bool           true                 true         --           true                       block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:135
+compile.flow.enable_rtl_multibit_debanking                                     bool           true                 true         --           true                       block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:132
+compile.flow.enable_second_pass_multibit_banking                               bool           false                --           --           false                      block      normal     --
+compile.flow.enable_toggle_aware_rtl_multibit_reordering                       bool           false                --           --           false                      block      normal     --
+compile.flow.enable_unloaded_dt_cell_fanin_cleanup                             bool           false                --           --           false                      block      normal     --
+compile.flow.enable_via_ladder_insertion                                       bool           false                --           --           false                      block      deprecated --
+compile.flow.enhanced_delay_opto_for_pg                                        integer        1                    1            --           0                          block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2701
+compile.flow.high_effort_area                                                  bool           true                 true         --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4389
+compile.flow.high_effort_timing                                                integer        1                    1            --           0                          block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:69
+compile.flow.hold_area_budgeting                                               enum           false                --           --           false                      block      normal     --
+compile.flow.layer_aware_optimization                                          bool           true                 true         --           true                       block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:114
+compile.flow.legalize_unmapped_fixed                                           bool           false                --           --           false                      block      normal     --
+compile.flow.merge_clock_gates                                                 bool           false                --           --           false                      block      normal     --
+compile.flow.optimize_icgs                                                     bool           false                --           --           false                      block      normal     --
+compile.flow.optimize_icgs_critical_range                                      float          0.75                 --           --           0.75                       block      normal     --
+compile.flow.optimize_icgs_use_timing_driven_splitting                         bool           true                 --           --           true                       block      normal     --
+compile.flow.optimize_layers                                                   bool           false                --           --           false                      block      deprecated --
+compile.flow.optimize_layers_critical_range                                    float          0.0001               --           --           0.0001                     block      deprecated --
+compile.flow.optimize_layers_overlap_bins                                      bool           false                --           --           false                      block      deprecated --
+compile.flow.optimize_ndr                                                      bool           false                --           --           false                      block      normal     --
+compile.flow.optimize_ndr_critical_range                                       float          0.05                 --           --           0.05                       block      normal     --
+compile.flow.optimize_ndr_max_nets                                             integer        2000                 --           --           2000                       block      normal     --
+compile.flow.print_messages_for_redundant_registers                            bool           false                --           --           false                      block      normal     --
+compile.flow.propagate_constants_through_dont_touch_cells                      bool           true                 true         --           false                      block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:129
+compile.flow.propagate_constants_through_registers                             bool           true                 true         --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2669
+compile.flow.propagate_constants_through_size_only_cells                       bool           false                false        --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4377
+compile.flow.runtime_flow_snap_after_placement                                 bool           true                 --           --           true                       block      -?-        --
+compile.flow.skew_macros_effort                                                enum           medium               --           --           medium                     block      normal     --
+compile.flow.tie_all_unused_hier_inputs_to_constants                           bool           true                 true         --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2674
+compile.flow.tie_unused_hier_inputs_to_constants                               bool           false                --           --           false                      block      normal     --
+compile.flow.trial_clock_tree                                                  string         false                --           --           false                      block      normal     --
+compile.flow.user_instance_name_prefix                                         string         --                   --           --           --                         block      normal     --
+compile.het.dtdp_congestion                                                    bool           true                 true         --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2663
+compile.initial_drc.global_route_based                                         enum           false                --           --           false                      block      normal     --
+compile.initial_place.buffering_aware                                          bool           true                 --           --           true                       global     normal     --
+compile.initial_place.buffering_aware_placement_effort                         enum           high                 high         --           medium                     block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2722
+compile.initial_place.effort                                                   enum           high                 --           --           high                       block      normal     --
+compile.log.tbc_report                                                         bool           true                 --           --           true                       block      -?-        --
+compile.log.timestamp                                                          enum           elapsed_time         --           --           elapsed_time               global     normal     --
+compile.multibit.prefer_multibit_libcells_with_singlebit_equivalent            bool           false                false        --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:4128
+compile.optimization.enable_hierarchical_inverter                              bool           false                false        --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2682
+compile.optimization.infer_mux_reencode_supports                               bool           false                --           --           false                      block      normal     --
+compile.physical.save_and_restore_ndr_auto_mode                                bool           true                 --           --           true                       block      normal     --
+compile.physical.save_and_restore_ndr_during_ungroup                           bool           false                --           --           false                      block      normal     --
+compile.retiming.optimization_priority                                         enum           auto                 --           --           auto                       block      normal     --
+compile.retiming.simu_mismatch_prevention                                      bool           false                --           --           false                      block      normal     --
+compile.seqmap.allow_async_set_reset_priority_inversion_if_unmapped            bool           true                 --           --           true                       block      normal     --
+compile.seqmap.allow_output_inversion_if_unmapped                              bool           false                false        --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2692
+compile.seqmap.allow_tieoffs_for_latches                                       bool           true                 --           --           true                       block      normal     --
+compile.seqmap.allow_tieoffs_for_registers                                     bool           true                 --           --           true                       block      normal     --
+compile.seqmap.disable_async_logic_push_out_for_latches                        bool           false                --           --           false                      block      normal     --
+compile.seqmap.disable_qn_usage                                                bool           false                --           --           false                      block      normal     --
+compile.seqmap.dw_sync_support                                                 bool           true                 --           --           true                       block      normal     --
+compile.seqmap.enable_output_inversion                                         bool           false                false        --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2687
+compile.seqmap.enable_register_merging                                         bool           false                false        --           true                       block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2678
+compile.seqmap.enable_register_merging_across_bus                              bool           true                 --           --           true                       block      normal     --
+compile.seqmap.exact_map                                                       bool           false                --           --           false                      block      normal     --
+compile.seqmap.gating_async_set_reset                                          bool           true                 --           --           true                       block      normal     --
+compile.seqmap.honor_sync_set_reset                                            bool           false                false        --           false                      block      normal     /tmp/abinbaba/TileBuilder/FxSynthesize/2186838/cmds/FxSynthesize.cmd:2695
+compile.seqmap.identify_shift_registers                                        bool           false                false        --           true                       block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:115
+compile.seqmap.ignore_const_values_on_scan_pins_during_constant_propagation    bool           false                --           --           false                      block      normal     --
+compile.seqmap.max_shift_register_length                                       integer        -1                   --           --           -1                         block      normal     --
+compile.seqmap.min_shift_register_length                                       integer        2                    --           --           2                          block      normal     --
+compile.seqmap.no_inv_push_for_user_size_only                                  bool           true                 --           --           true                       block      normal     --
+compile.seqmap.prefer_registers_with_multibit_equivalent                       bool           false                --           --           false                      block      normal     --
+compile.seqmap.preserve_rtl_clock_phase_strictly                               bool           false                --           --           false                      block      normal     --
+compile.seqmap.preserve_rtl_clock_phase_strictly_for_retention                 bool           false                --           --           false                      block      normal     --
+compile.seqmap.print_cross_probing_info_for_removed_registers                  bool           false                --           --           false                      block      normal     --
+compile.seqmap.register_replication_insert_copies_in_scan_chains               bool           true                 --           --           true                       block      normal     --
+compile.seqmap.register_replication_max_fanout_constraint_mode                 enum           strict               --           --           strict                     block      normal     --
+compile.seqmap.register_replication_naming_style                               string         %s_dup%d             %s_dup%d     --           %s_rep%d                   block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:89
+compile.seqmap.register_replication_placement_effort                           enum           low                  --           --           low                        block      normal     --
+compile.seqmap.register_replication_placement_location                         string         center_of_loads_and_drivers -|- --           --           center_of_loads_and_drivers -|- block      normal     --
+compile.seqmap.register_replication_simu_mismatch_prevention                   bool           false                --           --           false                      block      normal     --
+compile.seqmap.remove_constant_registers                                       bool           true                 true         --           true                       block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:81
+compile.seqmap.remove_unloaded_registers                                       bool           true                 true         --           true                       block      normal     /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/umccmd_Feb23101828/tune/FxSynthesize/FxSynthesize.pre_opt.tcl:84
+compile.seqmap.replicate_merged_registers                                      bool           true                 --           --           true                       block      normal     --
+compile.seqmap.replicate_registers_without_asynchronous_logic                  bool           true                 --           --           true                       block      normal     --
+compile.seqmap.replicate_size_only_registers                                   bool           false                --           --           false                      block      normal     --
+compile.seqmap.scan                                                            bool           true                 --           --           true                       block      normal     --
+compile.seqmap.swap_ignoring_user_size_only                                    bool           true                 --           --           true                       block      normal     --
+------------------------------------------------------------------------------ -------------- -------------------- ------------ ------------ -------------------------- ---------- ---------- ----------------------------------------------------------------------------------------------------
+
+There are additional internal differences with no available TBC source.
+
+===============================================================================
+END OF SEARCH
+===============================================================================

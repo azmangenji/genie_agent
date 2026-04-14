@@ -1,0 +1,339 @@
+# ============================================================================
+# PERMUTONS V2 - WITH CORRECTED CHECKPOINTS
+# ============================================================================
+# Changes from V1:
+#   - Updated checkpoints from {compile*final_opto*} to working patterns
+#   - compile*final_opto* does NOT match any checkpoint in FxSynthesize flow
+#   - Available checkpoints: compile_initial_map, compile_logic_opto,
+#     compile_initial_place*, compile_initial_drc*, compile_initial_opto*
+# ============================================================================
+
+# ============================================================================
+# ORIGINAL PERMUTONS (from baseline)
+# ============================================================================
+
+# COMMENTED OUT: Power-focused, not timing
+# Reason: Goal is WNS improvement, not area/power reduction
+#create_permuton \
+#  -name compile.flow.high_effort_area \
+#  -description true/false \
+#  -stages {compile} \
+#  -focus fusion \
+#  -target power \
+#  -type app \
+#  -range {false true} \
+#  -datatype categorical
+
+# ✅ KEPT: Direct timing optimization effort control
+# Impact: Controls overall timing optimization aggressiveness (0=low, 3=ultra)
+# UPDATED: Extended range from {0 1} to {0 1 2 3} for more aggressive timing optimization
+create_permuton \
+  -name compile.flow.high_effort_timing \
+  -description {Extended range for aggressive timing optimization} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type app \
+  -range {0 1 2 3} \
+  -datatype discrete
+
+# COMMENTED OUT: Overlaps with high_effort_timing
+# Reason: Advanced Logic Restructuring is enabled by high timing effort levels
+# ALR is redundant when high_effort_timing is already aggressive
+#create_permuton \
+#  -name dso_enable_ALR \
+#  -description {Permute options to enable advanced logic restructuring modes.  } \
+#  -stages {compile} \
+#  -focus general \
+#  -target timing \
+#  -type custom \
+#  -range {area_timing timing_power} \
+#  -datatype categorical \
+#  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_enable_ALR_procs.tcl \
+#  -before_proc {dso_before_ALR_alt dso_enable_ALR cost} \
+#  -after_proc dso_after_ALR \
+#  -checkpoints {compile*final_opto* place*final_opto* clock*} \
+#  -arg_values {cost medium}
+
+# ✅ KEPT: Path margin adjustment for timing pressure
+# Impact: Tightens timing margins to force tool to work harder on critical paths
+create_permuton \
+  -name dso_scale_margins \
+  -description {Adjust pre-existing global/customized path margins by a percentage of a main clock. Reverts back after checkpoint.} \
+  -type custom \
+  -range {-1 0} \
+  -datatype discrete \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_scale_margins_procs.tcl \
+  -before_proc {dso_scale_setup_path_margins_global {dso_scale_margins main_clock}} \
+  -after_proc dso_reset_setup_path_margins_global \
+  -checkpoints {*_opt*} \
+  -arg_values {main_clock USE_FASTEST_CLOCK}
+
+# COMMENTED OUT: Power-focused placement
+# Reason: Focus on timing-driven placement, not power-aware placement
+#create_permuton \
+#  -name place.coarse.eLpp_amt_power \
+#  -type app \
+#  -range {0.45 0.5 0.55 0.6 0.65} \
+#  -datatype discrete
+
+# COMMENTED OUT: Power fusion optimization
+# Reason: Power-focused, not timing critical
+#create_permuton \
+#  -name dso_permuton_power_fusion_7 \
+#  -description non-descript \
+#  -stages {clock compile route} \
+#  -focus fusion \
+#  -target power \
+#  -type custom \
+#  -range {0.2 0.4 0.95} \
+#  -datatype categorical \
+#  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_power_fusion_7_procs.tcl \
+#  -before_proc {dso_permuton_proc_14 dso_permuton_power_fusion_7} \
+#  -after_proc dso_permuton_proc_13 \
+#  -checkpoints {compile* place* clock_opt* route_opt* hyper_route_opt*}
+
+# COMMENTED OUT: Power fusion optimization
+# Reason: Similar to power_fusion_7, power-focused not timing
+#create_permuton \
+#  -name dso_permuton_power_fusion_8 \
+#  -description non-descript \
+#  -stages {clock compile route} \
+#  -focus fusion \
+#  -target power \
+#  -type custom \
+#  -range {0.2 0.9} \
+#  -datatype categorical \
+#  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_power_fusion_8_procs.tcl \
+#  -before_proc {dso_permuton_proc_16 dso_permuton_power_fusion_8} \
+#  -after_proc dso_permuton_proc_15 \
+#  -checkpoints {compile* place* clock_opt* route_opt* hyper_route_opt*}
+
+# ✅ KEPT: Area-timing trade-off control
+# Impact: Critical for timing - allows area growth for timing improvement
+create_permuton \
+  -name dso_permuton_biasatp \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {0.1 0.2 0.3 0.4 0.5} \
+  -datatype discrete \
+  -disable_value 0.5 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_biasatp_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_biasatp_proc dso_permuton_biasatp} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_biasatp_proc \
+  -checkpoints {compile*}
+
+# COMMENTED OUT: Overlaps with biasatp
+# Reason: Both control area-timing trade-off; biasatp is more direct
+# biasts controls slack threshold for area recovery (similar function)
+#create_permuton \
+#  -name dso_permuton_biasts \
+#  -description {Compile fusion opto. } \
+#  -stages {compile place} \
+#  -focus fusion \
+#  -target timing \
+#  -type custom \
+#  -range {0.3 0.35 0.4 0.5} \
+#  -datatype discrete \
+#  -disable_value 0.5 \
+#  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_biasts_procs.tcl \
+#  -before_proc {::DSO::PERMUTONS::dso_before_permuton_biasts_proc dso_permuton_biasts} \
+#  -after_proc ::DSO::PERMUTONS::dso_after_permuton_biasts_proc \
+#  -checkpoints {compile*}
+
+# ✅ KEPT: Register retiming and merging (ADDED BACK)
+# Impact: Powerful for pipeline-heavy designs, enables register movement through logic
+# Reason: Register retiming can help timing counters and control pipelines in umccmd
+create_permuton \
+  -name dso_permuton_ramd \
+  -description {Compile fusion opto. } \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {-1 0.1 0.15 0.2 0.25} \
+  -datatype discrete \
+  -disable_value -1 \
+  -procedure_file $::env(FLOW_DIR)/supra/templates/dso_shell/dso_permutons/power_timing/procs/compile/dso_permuton_ramd_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::dso_before_permuton_ramd_proc dso_permuton_ramd} \
+  -after_proc ::DSO::PERMUTONS::dso_after_permuton_ramd_proc \
+  -checkpoints {compile*}
+
+# ============================================================================
+# UMCCMD-SPECIFIC PERMUTONS (V2 - CORRECTED CHECKPOINTS)
+# Target: Memory Controller Timing Issues
+# Focus: High-fanout control signals, DCQ arbiter, timing counters
+# ============================================================================
+#
+# Problem Analysis:
+#   - MrDimmEn_reg: 665 failing paths (18.5% of all failures)
+#   - AutoRefReqPlr_reg: 309 failing paths (8.6%)
+#   - IdleBWCfg_reg: 184 failing paths (5.1%)
+#   - DCQ Arbiter complex logic: 1000+ violations
+#   - Timing counter depth (TwtrCtr, WrWrCtr, RdRdCtr): 170+ violations
+# ============================================================================
+
+# ✅ KEPT: Permuton 1 - High-Fanout Register Duplication
+# Impact: 32.2% of all failures (1,158 paths: MrDimmEn 665 + AutoRefReqPlr 309 + IdleBWCfg 184)
+# Reason: BIGGEST single bottleneck, proven register duplication technique
+# V2 CHANGE: checkpoint compile*final_opto* -> compile_logic_opto (structural change, early stage)
+create_permuton \
+  -name umccmd_fanout_duplication \
+  -description {Duplicate high-fanout control registers (MrDimmEn, AutoRefReqPlr, IdleBWCfg) to reduce fanout and improve timing} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none low medium high} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_fanout_duplication_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_fanout_dup_proc umccmd_fanout_duplication} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_fanout_dup_proc \
+  -checkpoints {compile_logic_opto}
+
+# ✅ ENABLED: Permuton 2 - Control Signal Buffering
+# Impact: ~32% (same paths as fanout_duplication)
+# Reason: Complements fanout_duplication with buffering approach
+# NO CHANGE: Already using {compile* place*} which works
+create_permuton \
+  -name umccmd_control_buffering \
+  -description {Aggressive buffering on high-fanout control signals to reduce delay. Higher values = more buffers} \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {1.0 1.5 2.0 3.0} \
+  -datatype discrete \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_control_buffering_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_control_buffer_proc umccmd_control_buffering} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_control_buffer_proc \
+  -checkpoints {compile* place*}
+
+# ✅ KEPT: Permuton 3 - DCQ Arbiter Pipeline Optimization
+# Impact: 28% of failures (~1,000 paths in DCQARB, DCQARB1)
+# Reason: SECOND HIGHEST impact, unique arbiter logic bottleneck
+# V2 CHANGE: checkpoint compile*final_opto* -> compile* (active throughout compile)
+create_permuton \
+  -name umccmd_dcq_arbiter_pipeline \
+  -description {Optimize DCQ arbiter pipeline: restructure enables deeper restructuring, balance redistributes logic} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none restructure balance both} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_dcq_arbiter_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_dcq_arb_proc umccmd_dcq_arbiter_pipeline} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_dcq_arb_proc \
+  -checkpoints {compile*}
+
+# ✅ KEPT: Permuton 4 - Timing Counter Optimization
+# Impact: 4.7% of failures (170 paths: TwtrCtr, WrWrCtr, RdRdCtr)
+# Reason: Specific counter bottleneck, independent from fanout/arbiter issues
+# V2 CHANGE: checkpoint compile*final_opto* -> compile_logic_opto (structural change, early stage)
+create_permuton \
+  -name umccmd_timing_counter_opt \
+  -description {Optimize timing counter logic (TwtrCtr, WrWrCtr, RdRdCtr): pipeline adds stages, restructure changes logic} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none pipeline restructure both} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_timing_counter_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_timer_counter_proc umccmd_timing_counter_opt} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_timer_counter_proc \
+  -checkpoints {compile_logic_opto}
+
+# ✅ ENABLED: Permuton 5 - Arbiter Safe Register Optimization
+# Impact: 3.5% (124 paths to ArbSafeRegPc/Ph/Pm)
+# Reason: Fine-grained control for arbiter safe registers
+# V2 CHANGE: checkpoint compile*final_opto* -> compile_initial_opto* (optimization effort during opto)
+create_permuton \
+  -name umccmd_arb_safe_reg_opt \
+  -description {Optimize arbiter safe register paths: increase effort on critical paths to these registers} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {normal high ultra} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_arb_safe_reg_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_arb_safe_proc umccmd_arb_safe_reg_opt} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_arb_safe_proc \
+  -checkpoints {compile_initial_opto*}
+
+# ✅ ENABLED: Permuton 6 - Critical Path Group Targeting
+# Impact: ~32% (same paths as fanout_duplication - MrDimmEn, AutoRefReqPlr)
+# Reason: Group and prioritize critical startpoints for focused optimization
+# V2 CHANGE: checkpoint compile*final_opto* -> compile_initial_map (path grouping must be early)
+create_permuton \
+  -name umccmd_critical_path_groups \
+  -description {Group and prioritize paths by critical startpoints for focused optimization} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none standard aggressive} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_critical_groups_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_crit_groups_proc umccmd_critical_path_groups} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_crit_groups_proc \
+  -checkpoints {compile_initial_map}
+
+# ✅ ENABLED: Permuton 7 - Page Table Allocation Optimization
+# Impact: 2.6% (93 paths to PGT logic)
+# Reason: Target PgtAlloc and PgtDeAlloc paths for timing improvement
+# V2 CHANGE: checkpoint compile*final_opto* -> compile_initial_opto* (optimization phase)
+create_permuton \
+  -name umccmd_pgt_optimization \
+  -description {Optimize page table allocation logic (PGT): target PgtAlloc and PgtDeAlloc paths} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {false true} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_pgt_opt_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_pgt_proc umccmd_pgt_optimization} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_pgt_proc \
+  -checkpoints {compile_initial_opto*}
+
+# ✅ ENABLED: Permuton 8 - Control-to-Datapath Isolation
+# Impact: ~32% (same high-fanout signals as fanout_duplication)
+# Reason: Isolate control logic from datapath for timing improvement
+# NO CHANGE: Already using {compile* place*} which works
+create_permuton \
+  -name umccmd_control_isolation \
+  -description {Isolate control logic from datapath using buffers and spatial separation} \
+  -stages {compile place} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none buffers spatial both} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_control_isolation_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_ctrl_iso_proc umccmd_control_isolation} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_ctrl_iso_proc \
+  -checkpoints {compile* place*}
+
+# ✅ NEW: Permuton 9 - UMC_ID_DIDT Optimization
+# Impact: 24% of failures (~1,447 paths from UMC_ID_DIDT startpoints)
+# Reason: LARGEST unaddressed gap - replaces AutoRefReq (only 9 paths)
+# V2 CHANGE: checkpoint compile*final_opto* -> compile* (active throughout compile)
+create_permuton \
+  -name umccmd_umc_id_didt_opt \
+  -description {Optimize UMC_ID_DIDT paths: restructure/retime/buffer for timing improvement} \
+  -stages {compile} \
+  -focus fusion \
+  -target timing \
+  -type custom \
+  -range {none restructure retime buffer aggressive} \
+  -datatype categorical \
+  -procedure_file /proj/rtg_oss_er_feint2/abinbaba/ROSENHORN_DSO_v2/main/pd/tiles/dso_timing_enhancement/procs/umccmd_umc_id_didt_procs.tcl \
+  -before_proc {::DSO::PERMUTONS::umccmd_before_umc_id_didt_proc umccmd_umc_id_didt_opt} \
+  -after_proc ::DSO::PERMUTONS::umccmd_after_umc_id_didt_proc \
+  -checkpoints {compile*}

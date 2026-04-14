@@ -1,0 +1,498 @@
+# LINEAGE_PERMUTONS.txt
+# Generated: 2026-03-29 19:54
+# Extracted from FxSynthesize log files (DSO-6124 messages)
+#======================================================================
+
+#======================================================================
+# RUN: umccmd_DSO_4Mac_40p (umccmd_DSO_4Mac_40p)
+#======================================================================
+
+--- lineage_0456794b ---
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: medium
+  pgt: true
+  dcqarb_boundary_opt: arb_only
+  clkgate_opt: none
+
+--- lineage_05a5b646 ---
+  control_buffer: 1
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: ultra
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_06a16b36 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  pgt: false
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_06e4cd3b ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: true
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 20
+
+--- lineage_08c2a037 ---
+  control_buffer: 3
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: high
+  pgt: true
+  dcqarb_boundary_opt: none
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_107d913e ---
+  dcq_arb: none
+  ctrl_iso: buffers
+  fanout_dup: none
+  timer_counter: pipeline
+  pgt: false
+  dcqarb_boundary_opt: both
+  dcqarb_fanout: 30
+
+--- lineage_16ccc100 ---
+  (no permutons found - baseline/seed lineage)
+
+--- lineage_1906bd2f ---
+  control_buffer: 1
+  umc_id_didt: none
+  timer_counter: pipeline
+  arb_safe: ultra
+
+--- lineage_2e4a0635 ---
+  control_buffer: 1
+  dcq_arb: none
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: normal
+  pgt: false
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_39fd9223 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: false
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_3bca7639 ---
+  control_buffer: 1
+  dcq_arb: none
+  timer_counter: pipeline
+  arb_safe: normal
+  dcqarb_boundary_opt: both
+  dcqarb_fanout: 20
+
+--- lineage_4096c632 ---
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: none
+
+--- lineage_5064a915 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: both
+  arb_safe: high
+  pgt: false
+  dcqarb_boundary_opt: none
+  clkgate_opt: high
+
+--- lineage_5a25403f ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: normal
+  pgt: true
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 20
+
+--- lineage_5a5bb742 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+  dcqarb_boundary_opt: arb_only
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_5e780231 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: false
+  dcqarb_boundary_opt: none
+  clkgate_opt: none
+  dcqarb_fanout: none
+
+--- lineage_5f5be628 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: true
+  dcqarb_boundary_opt: arb_only
+  clkgate_opt: none
+  dcqarb_fanout: 20
+
+--- lineage_674aa333 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: retime
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: true
+  dcqarb_boundary_opt: none
+  clkgate_opt: none
+  dcqarb_fanout: 40
+
+--- lineage_6a4a014d ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: normal
+  pgt: true
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 20
+
+--- lineage_6d363349 ---
+  control_buffer: 1
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: ultra
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+
+--- lineage_739d644f ---
+  ctrl_iso: none
+  fanout_dup: none
+  timer_counter: pipeline
+  pgt: false
+  clkgate_opt: none
+  dcqarb_fanout: 20
+
+--- lineage_7db9870f ---
+  control_buffer: 3
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: ultra
+  pgt: true
+  dcqarb_boundary_opt: arb_only
+  clkgate_opt: high
+
+--- lineage_82eb8a08 ---
+  control_buffer: 3
+  dcq_arb: restructure
+  ctrl_iso: both
+  umc_id_didt: retime
+  fanout_dup: none
+  timer_counter: both
+  arb_safe: high
+  pgt: true
+  dcqarb_boundary_opt: both
+  clkgate_opt: high
+
+--- lineage_85c7d940 ---
+  umc_id_didt: none
+  timer_counter: pipeline
+  clkgate_opt: none
+
+--- lineage_8f124629 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  ctrl_iso: none
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: normal
+  pgt: true
+  dcqarb_boundary_opt: none
+  clkgate_opt: low
+
+--- lineage_93e5f841 ---
+  control_buffer: 1
+  dcq_arb: none
+  fanout_dup: none
+  timer_counter: pipeline
+  pgt: false
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+
+--- lineage_96f28138 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: false
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+
+--- lineage_9c8f5b03 ---
+  control_buffer: 3
+  dcq_arb: none
+  ctrl_iso: both
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: both
+  arb_safe: high
+  pgt: false
+  dcqarb_boundary_opt: none
+  clkgate_opt: high
+
+--- lineage_9e95f645 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: normal
+  pgt: false
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_9ee27444 ---
+  timer_counter: pipeline
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_a03f8930 ---
+  umc_id_didt: none
+  timer_counter: pipeline
+  pgt: false
+
+--- lineage_a2dc003c ---
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  timer_counter: pipeline
+  arb_safe: normal
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+
+--- lineage_aeb2fe16 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: normal
+  pgt: false
+  dcqarb_boundary_opt: both
+  clkgate_opt: high
+
+--- lineage_af09ef34 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: normal
+  pgt: false
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 20
+
+--- lineage_af80dc43 ---
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: low
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+
+--- lineage_b39c9205 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  ctrl_iso: both
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: ultra
+  pgt: true
+  dcqarb_boundary_opt: arb_only
+  clkgate_opt: high
+
+--- lineage_c2b08e4e ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_c38f4111 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: both
+  umc_id_didt: retime
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: true
+  dcqarb_boundary_opt: none
+  clkgate_opt: none
+  dcqarb_fanout: 40
+
+--- lineage_cfc7c619 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: high
+  pgt: true
+  dcqarb_boundary_opt: none
+  clkgate_opt: low
+
+--- lineage_d17f414a ---
+  ctrl_iso: buffers
+  fanout_dup: none
+
+--- lineage_d3a8d94c ---
+  control_buffer: 1
+  dcq_arb: restructure
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: false
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_d786ee48 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+  dcqarb_boundary_opt: arb_only
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_da2a330d ---
+  control_buffer: 3
+  dcq_arb: restructure
+  ctrl_iso: both
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: ultra
+  pgt: true
+  dcqarb_boundary_opt: none
+  clkgate_opt: high
+
+--- lineage_e63eb547 ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: none
+  arb_safe: ultra
+  pgt: false
+  dcqarb_boundary_opt: arb_only
+  clkgate_opt: none
+  dcqarb_fanout: 30
+
+--- lineage_ef09f93a ---
+  control_buffer: 1
+  ctrl_iso: none
+  umc_id_didt: retime
+  fanout_dup: medium
+  dcqarb_boundary_opt: arb_only
+  clkgate_opt: none
+
+--- lineage_fc7e4a3d ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: pipeline
+  arb_safe: normal
+  pgt: true
+  dcqarb_boundary_opt: both
+  clkgate_opt: none
+  dcqarb_fanout: 20
+
+--- lineage_ffff8a2b ---
+  control_buffer: 1
+  dcq_arb: none
+  ctrl_iso: buffers
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: normal
+  pgt: false
+  dcqarb_boundary_opt: none
+  clkgate_opt: low
+

@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>DSO Outlier Analysis</title>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 20px; margin: 0; min-height: 100vh; }
+  .container { max-width: 1400px; margin: 0 auto; background: #fff; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); overflow: hidden; }
+  .header { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: #fff; padding: 30px; text-align: center; }
+  .header h1 { margin: 0; font-size: 32px; }
+  .header .subtitle { margin-top: 10px; font-size: 14px; opacity: 0.9; }
+  .content { padding: 30px; }
+  .cards { display: flex; gap: 15px; margin-bottom: 30px; flex-wrap: wrap; }
+  .card { flex: 1; min-width: 180px; padding: 20px; border-radius: 10px; color: #fff; text-align: center; }
+  .card.red { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); }
+  .card.orange { background: linear-gradient(135deg, #e67e22 0%, #d35400 100%); }
+  .card.green { background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%); }
+  .card.blue { background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); }
+  .card-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  .card-value { font-size: 28px; font-weight: bold; margin: 8px 0; }
+  .card-sub { font-size: 11px; opacity: 0.8; }
+  .section { margin-bottom: 30px; }
+  .section-title { font-size: 20px; font-weight: 600; color: #2c3e50; margin-bottom: 15px; padding-left: 15px; border-left: 4px solid #e74c3c; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #2c3e50; color: #fff; padding: 12px; text-align: left; font-size: 11px; text-transform: uppercase; }
+  td { padding: 10px 12px; border-bottom: 1px solid #ecf0f1; }
+  tr:hover { background: #f8f9fa; }
+  .tag { display: inline-block; padding: 4px 10px; border-radius: 15px; font-size: 10px; font-weight: bold; }
+  .tag-danger { background: #e74c3c; color: #fff; }
+  .tag-warning { background: #f39c12; color: #fff; }
+  .tag-success { background: #27ae60; color: #fff; }
+  .tag-safe { background: #3498db; color: #fff; }
+  .critical-box { background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); border-left: 4px solid #e74c3c; padding: 20px; border-radius: 0 8px 8px 0; margin: 20px 0; }
+  .critical-box h4 { margin: 0 0 10px 0; color: #b71c1c; }
+  .success-box { background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-left: 4px solid #27ae60; padding: 20px; border-radius: 0 8px 8px 0; margin: 20px 0; }
+  .success-box h4 { margin: 0 0 10px 0; color: #1b5e20; }
+  .perm { font-family: monospace; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+  .perm-bad { background: #ffeaea; border: 1px solid #e74c3c; color: #c0392b; }
+  .perm-good { background: #eafff0; border: 1px solid #27ae60; color: #1e8449; }
+  .heatmap td { text-align: center; color: #fff; font-weight: bold; }
+  .heat-danger { background: #e74c3c; }
+  .heat-warning { background: #f39c12; }
+  .heat-safe { background: #27ae60; }
+  .heat-na { background: #bdc3c7; color: #7f8c8d; }
+  .footer { text-align: center; padding: 20px; background: #f8f9fa; color: #7f8c8d; font-size: 12px; }
+  .code-box { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; font-family: 'Consolas', monospace; font-size: 12px; overflow-x: auto; margin: 15px 0; }
+  .code-box .comment { color: #6a9955; }
+  .code-box .keyword { color: #569cd6; }
+  .code-box .string { color: #ce9178; }
+  .code-box .var { color: #9cdcfe; }
+  .code-box .bad { color: #f44747; background: #3c1f1f; padding: 2px 4px; }
+  .code-box .good { color: #4ec9b0; }
+  .tech-box { background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-left: 4px solid #1976d2; padding: 20px; border-radius: 0 8px 8px 0; margin: 20px 0; }
+  .tech-box h4 { margin: 0 0 15px 0; color: #0d47a1; }
+  .fix-box { background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-left: 4px solid #ff9800; padding: 20px; border-radius: 0 8px 8px 0; margin: 20px 0; }
+  .fix-box h4 { margin: 0 0 10px 0; color: #e65100; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+  <h1>DSO Outlier & Failure Analysis</h1>
+  <div class="subtitle">Identifying Permuton Combinations That Break Timing | 26 Feb 2026</div>
+</div>
+
+<div class="content">
+
+<!-- Summary Cards -->
+<div class="cards">
+  <div class="card red">
+    <div class="card-title">Root Cause</div>
+    <div class="card-value">dcq_arb</div>
+    <div class="card-sub">balance / both</div>
+  </div>
+  <div class="card orange">
+    <div class="card-title">Outliers</div>
+    <div class="card-value">18</div>
+    <div class="card-sub">WNS > -3000ps</div>
+  </div>
+  <div class="card blue">
+    <div class="card-title">Worse</div>
+    <div class="card-value">7</div>
+    <div class="card-sub">WNS worse than baseline</div>
+  </div>
+  <div class="card green">
+    <div class="card-title">Safe Values</div>
+    <div class="card-value">2</div>
+    <div class="card-sub">restructure / none</div>
+  </div>
+</div>
+
+<!-- Critical Finding -->
+<div class="critical-box">
+  <h4>CRITICAL: dcq_arb='balance' and 'both' Break Timing Completely</h4>
+  <p style="margin: 10px 0; color: #721c24;">
+    <strong>100% of outliers</strong> (18 lineages with WNS > -3000ps) use <span class="perm perm-bad">dcq_arb=balance</span> or <span class="perm perm-bad">dcq_arb=both</span><br>
+    <strong>0% of successful lineages</strong> use these values.<br><br>
+    <strong>Action Required:</strong> Remove 'balance' and 'both' from dcq_arb permuton search space.
+  </p>
+</div>
+
+<!-- Root Cause Technical Analysis -->
+<div class="tech-box">
+  <h4>Technical Root Cause: Why 'balance' and 'both' Break Timing</h4>
+  <p style="margin: 0 0 15px 0; color: #0d47a1;">
+    Analysis of <code>umccmd_dcq_arbiter_procs.tcl</code> reveals the fundamental issue:
+  </p>
+
+  <div class="code-box">
+<span class="keyword">if</span> {<span class="var">$do_balance</span>} {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># Create path groups for balanced optimization with weight</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="bad">group_path -name dcqarb_group -through $dcqarb_cells -weight 2.0</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment"># ^^^^^^^ THIS IS THE PROBLEM ^^^^^^^</span><br>
+}
+  </div>
+
+  <table style="margin: 15px 0;">
+    <tr>
+      <th style="width: 15%;">Issue</th>
+      <th>Explanation</th>
+    </tr>
+    <tr>
+      <td><strong><code>-through</code></strong></td>
+      <td>Captures <strong>ALL paths</strong> that pass through DCQ arbiter cells. DCQARB is a central arbiter with thousands of paths flowing through it.</td>
+    </tr>
+    <tr>
+      <td><strong>Path Explosion</strong></td>
+      <td>Creates a <strong>massive path group</strong> with potentially millions of timing paths, overwhelming the optimizer.</td>
+    </tr>
+    <tr>
+      <td><strong><code>weight 2.0</code></strong></td>
+      <td>Forces the tool to prioritize ALL these paths with 2x weight, causing resource starvation for other timing paths.</td>
+    </tr>
+    <tr>
+      <td><strong>Result</strong></td>
+      <td>Optimizer cannot converge &rarr; <span style="color: #e74c3c; font-weight: bold;">WNS collapses to -3000+ ps</span></td>
+    </tr>
+  </table>
+
+  <table style="margin: 15px 0;">
+    <tr>
+      <th>Mode</th>
+      <th>TCL Command</th>
+      <th>Why it Works/Fails</th>
+    </tr>
+    <tr>
+      <td><span class="perm perm-good">restructure</span></td>
+      <td><code>set_boundary_optimization</code></td>
+      <td style="color: #27ae60;">Allows restructuring without path weighting - Safe</td>
+    </tr>
+    <tr>
+      <td><span class="perm perm-good">none</span></td>
+      <td>No changes</td>
+      <td style="color: #27ae60;">Baseline behavior - Safe</td>
+    </tr>
+    <tr style="background: #ffeaea;">
+      <td><span class="perm perm-bad">balance</span></td>
+      <td><code>group_path -through ... -weight 2.0</code></td>
+      <td style="color: #e74c3c;">Path explosion via -through - BROKEN</td>
+    </tr>
+    <tr style="background: #ffeaea;">
+      <td><span class="perm perm-bad">both</span></td>
+      <td>restructure + balance</td>
+      <td style="color: #e74c3c;">Includes balance problem - BROKEN</td>
+    </tr>
+  </table>
+</div>
+
+<!-- Proposed Fix -->
+<div class="fix-box">
+  <h4>Proposed Fix</h4>
+  <p style="margin: 0 0 10px 0; color: #e65100;">Change <code>-through</code> to <code>-to</code> in the balance mode:</p>
+  <div class="code-box">
+<span class="comment"># BEFORE (broken):</span><br>
+<span class="bad">group_path -name dcqarb_group -through $dcqarb_cells -weight 2.0</span><br>
+<br>
+<span class="comment"># AFTER (fixed):</span><br>
+<span class="good">group_path -name dcqarb_group -to $dcqarb_cells -weight 2.0</span>
+  </div>
+  <p style="margin: 10px 0 0 0; font-size: 12px; color: #e65100;">
+    <strong>Alternative:</strong> Remove 'balance' and 'both' options entirely from the permuton search space.
+  </p>
+</div>
+
+<!-- dcq_arb Impact Table -->
+<div class="section">
+  <div class="section-title">dcq_arb Value Distribution by Outcome</div>
+  <table>
+    <tr>
+      <th>dcq_arb Value</th>
+      <th>Better than Baseline (14)</th>
+      <th>Worse than Baseline (7)</th>
+      <th>Outliers (18)</th>
+      <th>Status</th>
+    </tr>
+    <tr>
+      <td><span class="perm perm-good">restructure</span></td>
+      <td style="color: #27ae60; font-weight: bold;">7 (50%)</td>
+      <td>3 (43%)</td>
+      <td style="color: #27ae60; font-weight: bold;">0 (0%)</td>
+      <td><span class="tag tag-success">SAFE - BEST</span></td>
+    </tr>
+    <tr>
+      <td><span class="perm perm-good">none</span></td>
+      <td style="color: #27ae60; font-weight: bold;">7 (50%)</td>
+      <td>4 (57%)</td>
+      <td style="color: #27ae60; font-weight: bold;">0 (0%)</td>
+      <td><span class="tag tag-safe">SAFE</span></td>
+    </tr>
+    <tr style="background: #ffeaea;">
+      <td><span class="perm perm-bad">balance</span></td>
+      <td>0 (0%)</td>
+      <td>0 (0%)</td>
+      <td style="color: #e74c3c; font-weight: bold;">9 (53%)</td>
+      <td><span class="tag tag-danger">AVOID</span></td>
+    </tr>
+    <tr style="background: #ffeaea;">
+      <td><span class="perm perm-bad">both</span></td>
+      <td>0 (0%)</td>
+      <td>0 (0%)</td>
+      <td style="color: #e74c3c; font-weight: bold;">8 (47%)</td>
+      <td><span class="tag tag-danger">AVOID</span></td>
+    </tr>
+  </table>
+</div>
+
+<!-- Outlier Lineages -->
+<div class="section">
+  <div class="section-title">Outlier Lineages (WNS > -3000ps)</div>
+  <table>
+    <tr>
+      <th>Lineage</th>
+      <th>WNS (ps)</th>
+      <th>TNS (ps)</th>
+      <th>dcq_arb</th>
+      <th>Other Key Permutons</th>
+    </tr>
+    <tr><td>02600c10</td><td>-3215</td><td>-8.2M</td><td><span class="perm perm-bad">both</span></td><td>ctrl_iso=both, umc_id_didt=restructure</td></tr>
+    <tr><td>0c13990d</td><td>-3206</td><td>-8.5M</td><td><span class="perm perm-bad">balance</span></td><td>crit_groups=aggressive, ctrl_iso=none</td></tr>
+    <tr><td>11c08612</td><td>-3234</td><td>-8.0M</td><td><span class="perm perm-bad">balance</span></td><td>fanout_dup=high, ctrl_iso=spatial</td></tr>
+    <tr><td>2d27e429</td><td>-3228</td><td>-8.9M</td><td><span class="perm perm-bad">both</span></td><td>umc_id_didt=aggressive, arb_safe=ultra</td></tr>
+    <tr><td>36210c24</td><td>-3257</td><td>-8.5M</td><td><span class="perm perm-bad">balance</span></td><td>crit_groups=aggressive, arb_safe=ultra</td></tr>
+    <tr><td>3947c326</td><td>-3230</td><td>-8.1M</td><td><span class="perm perm-bad">balance</span></td><td>fanout_dup=high, ctrl_iso=both</td></tr>
+    <tr><td>4ceb761f</td><td>-3227</td><td>-8.2M</td><td><span class="perm perm-bad">balance</span></td><td>crit_groups=aggressive, ctrl_iso=spatial</td></tr>
+    <tr><td>521b3a16</td><td>-3221</td><td>-9.0M</td><td><span class="perm perm-bad">balance</span></td><td>crit_groups=none, arb_safe=normal</td></tr>
+    <tr><td>971d6823</td><td>-3237</td><td>-8.0M</td><td><span class="perm perm-bad">both</span></td><td>crit_groups=aggressive, ctrl_iso=buffers</td></tr>
+    <tr><td>a879a103</td><td>-3207</td><td>-8.6M</td><td><span class="perm perm-bad">both</span></td><td>crit_groups=standard, ctrl_iso=none</td></tr>
+    <tr><td>a92dc00f</td><td>-3277</td><td>-8.3M</td><td><span class="perm perm-bad">balance</span></td><td>crit_groups=aggressive, arb_safe=ultra</td></tr>
+    <tr><td>ac456315</td><td>-3234</td><td>-8.1M</td><td><span class="perm perm-bad">both</span></td><td>crit_groups=none, ctrl_iso=both</td></tr>
+    <tr><td>d2906514</td><td>-3271</td><td>-8.3M</td><td><span class="perm perm-bad">balance</span></td><td>umc_id_didt=aggressive, arb_safe=ultra</td></tr>
+    <tr><td>d5181a21</td><td>-3261</td><td>-8.3M</td><td><span class="perm perm-bad">both</span></td><td>crit_groups=none, ctrl_iso=buffers</td></tr>
+    <tr><td>d9f12217</td><td>-3213</td><td>-7.9M</td><td><span class="perm perm-bad">balance</span></td><td>crit_groups=standard, arb_safe=normal</td></tr>
+    <tr><td>e198eb20</td><td>-3274</td><td>-8.0M</td><td><span class="perm perm-bad">both</span></td><td>crit_groups=standard, ctrl_iso=spatial</td></tr>
+    <tr><td>ff1bd302</td><td>-3209</td><td>-8.2M</td><td><span class="perm perm-bad">both</span></td><td>crit_groups=none, arb_safe=normal</td></tr>
+    <tr><td>de7f6c1 (5p)</td><td>-3250</td><td>-8.7M</td><td><span class="perm perm-bad">balance</span></td><td>crit_groups=none, fanout_dup=medium</td></tr>
+  </table>
+</div>
+
+<!-- Worse Lineages -->
+<div class="section">
+  <div class="section-title">Worse Than Baseline Lineages (7)</div>
+  <table>
+    <tr>
+      <th>Lineage</th>
+      <th>WNS (ps)</th>
+      <th>WNS Diff</th>
+      <th>dcq_arb</th>
+      <th>umc_id_didt</th>
+      <th>arb_safe</th>
+    </tr>
+    <tr><td>e7f92a25</td><td>-151.16</td><td style="color:#e74c3c;">-1.81</td><td><span class="perm">restructure</span></td><td>retime</td><td>ultra</td></tr>
+    <tr><td>7f176809</td><td>-156.30</td><td style="color:#e74c3c;">-6.95</td><td><span class="perm">none</span></td><td>restructure</td><td>high</td></tr>
+    <tr><td>e97c4918</td><td>-158.97</td><td style="color:#e74c3c;">-9.62</td><td><span class="perm">restructure</span></td><td>retime</td><td><span class="perm perm-bad">normal</span></td></tr>
+    <tr><td>9fc30805</td><td>-165.55</td><td style="color:#e74c3c;">-16.20</td><td><span class="perm">none</span></td><td><span class="perm perm-bad">none</span></td><td>high</td></tr>
+    <tr><td>c173571c</td><td>-167.92</td><td style="color:#e74c3c;">-18.57</td><td><span class="perm">none</span></td><td>buffer</td><td><span class="perm perm-bad">normal</span></td></tr>
+    <tr><td>ae1cb81e</td><td>-168.64</td><td style="color:#e74c3c;">-19.29</td><td><span class="perm">none</span></td><td>aggressive</td><td>ultra</td></tr>
+    <tr><td>8c9d7522</td><td>-170.12</td><td style="color:#e74c3c;">-20.77</td><td><span class="perm">restructure</span></td><td><span class="perm perm-bad">none</span></td><td><span class="perm perm-bad">normal</span></td></tr>
+  </table>
+  <p style="font-size: 12px; color: #666; margin-top: 10px;">
+    <strong>Pattern:</strong> Worse lineages often have <span class="perm perm-bad">umc_id_didt=none</span> or <span class="perm perm-bad">arb_safe=normal</span>
+  </p>
+</div>
+
+<!-- Recommendations -->
+<div class="success-box">
+  <h4>Recommended Permuton Configuration</h4>
+  <table style="margin: 10px 0; background: transparent;">
+    <tr style="background: transparent;">
+      <td style="border: none; width: 120px; color: #1b5e20;"><strong>dcq_arb</strong></td>
+      <td style="border: none;"><span class="perm perm-good">restructure</span> (best) or <span class="perm perm-good">none</span> (safe)</td>
+    </tr>
+    <tr style="background: transparent;">
+      <td style="border: none; color: #1b5e20;"><strong>umc_id_didt</strong></td>
+      <td style="border: none;"><span class="perm perm-good">aggressive</span> or <span class="perm perm-good">retime</span></td>
+    </tr>
+    <tr style="background: transparent;">
+      <td style="border: none; color: #1b5e20;"><strong>arb_safe</strong></td>
+      <td style="border: none;"><span class="perm perm-good">ultra</span> (best) or <span class="perm perm-good">high</span></td>
+    </tr>
+    <tr style="background: transparent;">
+      <td style="border: none; color: #1b5e20;"><strong>timer_counter</strong></td>
+      <td style="border: none;"><span class="perm perm-good">both</span></td>
+    </tr>
+  </table>
+</div>
+
+<!-- Permuton Heatmap -->
+<div class="section">
+  <div class="section-title">Permuton Safety Heatmap</div>
+  <table class="heatmap">
+    <tr>
+      <th>Permuton</th>
+      <th>Value 1</th>
+      <th>Value 2</th>
+      <th>Value 3</th>
+      <th>Value 4</th>
+    </tr>
+    <tr>
+      <td><strong>dcq_arb</strong></td>
+      <td class="heat-safe">none<br><small>Safe</small></td>
+      <td class="heat-safe">restructure<br><small>Best</small></td>
+      <td class="heat-danger">balance<br><small>BROKEN</small></td>
+      <td class="heat-danger">both<br><small>BROKEN</small></td>
+    </tr>
+    <tr>
+      <td><strong>umc_id_didt</strong></td>
+      <td class="heat-warning">none<br><small>Weak</small></td>
+      <td class="heat-safe">restructure<br><small>OK</small></td>
+      <td class="heat-safe">retime<br><small>Good</small></td>
+      <td class="heat-safe">aggressive<br><small>Best</small></td>
+    </tr>
+    <tr>
+      <td><strong>arb_safe</strong></td>
+      <td class="heat-warning">normal<br><small>Weak</small></td>
+      <td class="heat-safe">high<br><small>Good</small></td>
+      <td class="heat-safe">ultra<br><small>Best</small></td>
+      <td class="heat-na">-</td>
+    </tr>
+  </table>
+</div>
+
+</div>
+
+<div class="footer">
+  Generated by DSO Outlier Analysis | 26 Feb 2026 | UMCCMD DSO Optimization
+</div>
+
+</div>
+</body>
+</html>

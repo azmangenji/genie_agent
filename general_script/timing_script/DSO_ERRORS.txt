@@ -1,0 +1,197 @@
+################################################################################
+# DSO Error Reference Guide
+# Updated: 2026-02-20
+################################################################################
+
+================================================================================
+QUICK REFERENCE TABLE
+================================================================================
+
+ERROR CODE | MESSAGE                                                    | ROOT CAUSE                                                      | FIX
+-----------+------------------------------------------------------------+-----------------------------------------------------------------+------------------------------------------------------------
+DSO-6804   | Failure in flow change during 'before' evaluation -        | 1) Proc signature used {permuton_name permuton_value}           | 1) Change to {args} + parse_proc_arguments +
+           | wrong # args                                               |    instead of {args}                                            |    define_proc_attributes
+           |                                                            | 2) Underlying CMD-012 error in permuton proc                    | 2) Fix CMD-012 (see below)
+-----------+------------------------------------------------------------+-----------------------------------------------------------------+------------------------------------------------------------
+CMD-012    | extra positional option '_selXXXXXX'                       | 1) set_boundary_optimization on leaf cells                      | 1) Filter to hierarchical cells only
+           |                                                            | 2) set_max_area with large cell collection                      | 2) Remove set_max_area or use at design level
+-----------+------------------------------------------------------------+-----------------------------------------------------------------+------------------------------------------------------------
+CMD-010    | unknown option '-optimization'                             | set_boundary_optimization $cells -optimization all wrong syntax | Change to set_boundary_optimization $cells all
+-----------+------------------------------------------------------------+-----------------------------------------------------------------+------------------------------------------------------------
+BO-2004    | You are using option "false/true" which will be aliased    | Deprecated true/false options for set_boundary_optimization     | Use all, auto, or none instead
+           | to auto/all                                                |                                                                 |
+-----------+------------------------------------------------------------+-----------------------------------------------------------------+------------------------------------------------------------
+MSG-2117   | Boundary optimization restrictions can not be set on       | Trying to set boundary optimization on leaf cells               | Filter collection to hierarchical cells only
+           | leaf cells                                                 |                                                                 |
+-----------+------------------------------------------------------------+-----------------------------------------------------------------+------------------------------------------------------------
+CMD-005    | Unknown command error                                      | Invalid TCL command syntax                                      | Fix TCL command syntax
+
+
+================================================================================
+DETAILED ERROR ANALYSIS - CMD-012
+================================================================================
+
+SYMPTOM:
+  Error: extra positional option '_sel1015576' (CMD-012)
+  Error: Failure in flow change during 'before' evaluation - (DSO-6804)
+
+ROOT CAUSES IDENTIFIED:
+
+  1. set_max_area 0 $cells
+     - This command is DESIGN-LEVEL, not cell-level
+     - When passed a large cell collection, FC expands all cell names
+     - Command line becomes too long, causing CMD-012
+     - SOLUTION: Remove or use at design level only
+
+  2. set_boundary_optimization $cells all
+     - This command only works on HIERARCHICAL cells, not leaf cells
+     - When collection contains leaf cells, causes MSG-2117 warning
+     - Then CMD-012 when collection expansion fails
+     - SOLUTION: Filter to hierarchical cells only
+
+AFFECTED PERMUTON VALUES (umccmd_dcq_arbiter_pipeline):
+  - "restructure" -> FAILS (triggers set_max_area)
+  - "both"        -> FAILS (triggers set_max_area)
+  - "none"        -> OK (returns early, skips problematic code)
+  - "balance"     -> OK (do_restructure=false, skips set_max_area)
+
+AFFECTED FILES (set_boundary_optimization):
+  - procs/umccmd_dcq_arbiter_procs.tcl
+  - procs/umccmd_timing_counter_procs.tcl
+  - procs/umccmd_arb_safe_reg_procs.tcl
+  - procs/umccmd_pgt_opt_procs.tcl
+  - procs/umcdat_aes_pipeline_procs.tcl
+  - procs/umcdat_key_retime_procs.tcl
+  - procs/umcdat_xts_pipeline_procs.tcl
+  - procs/umcdat_ecc_read_procs.tcl
+  - procs/umcdat_deep_pipeline_procs.tcl
+  - procs/umcdat_beq_tx_procs.tcl
+  - procs/umcdat_rddatpipe_procs.tcl
+
+AFFECTED FILES (set_max_area):
+  - procs/umccmd_dcq_arbiter_procs.tcl
+  - procs/umcdat_ecc_read_procs.tcl
+
+
+================================================================================
+FIX PATTERNS
+================================================================================
+
+FIX 1: set_boundary_optimization - filter to hierarchical cells only
+
+  BEFORE:
+    set_boundary_optimization $cells all
+
+  AFTER:
+    # Filter hierarchical cells only for set_boundary_optimization
+    # (leaf cells cannot have boundary optimization set - causes CMD-012)
+    set hier_cells [filter_collection $cells "is_hierarchical == true"]
+    if {[sizeof_collection $hier_cells] > 0} {
+        set_boundary_optimization $hier_cells all
+        puts "  Applied boundary optimization to [sizeof_collection $hier_cells] hierarchical cells"
+    }
+
+FIX 2: set_max_area - remove or use at design level
+
+  BEFORE:
+    set_max_area 0 $cells
+
+  AFTER:
+    # Note: set_max_area removed - causes CMD-012 with large cell collections
+    # Area constraints should be set at design level if needed
+    # Use: set_max_area 0  (without cell argument) at design level
+
+
+================================================================================
+RUN STATISTICS (2026-02-20)
+================================================================================
+
+40p Run (umccmd_DSO_28Jan_40p):
+  - Total lineages: 42
+  - Failed lineages: 19
+  - OK lineages: 23
+  - Error type: CMD-012 (152 occurrences across failed lineages)
+
+  Failed lineages (all have dcq_arb = restructure or both):
+    lineage_03d75807: dcq_arb=restructure
+    lineage_1e50c115: dcq_arb=both
+    lineage_20ac1825: dcq_arb=restructure
+    lineage_30752918: dcq_arb=restructure
+    lineage_4b98b410: dcq_arb=both
+    lineage_7633e706: dcq_arb=restructure
+    lineage_79b45503: dcq_arb=both
+    lineage_7f1c3a02: dcq_arb=both
+    lineage_997b9d19: dcq_arb=restructure
+    lineage_9ddc1e13: dcq_arb=both
+    lineage_b46c9223: dcq_arb=both
+    lineage_b514b30a: dcq_arb=restructure
+    lineage_b9ba4521: dcq_arb=both
+    lineage_c1874320: dcq_arb=both
+    lineage_c8c15f29: dcq_arb=both
+    lineage_cf5efd1a: dcq_arb=both
+    lineage_e79e8b28: dcq_arb=restructure
+    lineage_ee196322: dcq_arb=restructure
+    lineage_f9360c0b: dcq_arb=restructure
+
+  OK lineages (all have dcq_arb = none or balance):
+    lineage_02d06009: dcq_arb=none
+    lineage_1078ab1e: dcq_arb=none
+    lineage_1a072508: dcq_arb=none
+    lineage_4325030d: dcq_arb=balance
+    lineage_59c7041d: dcq_arb=none
+    lineage_6163d414: dcq_arb=balance
+    lineage_670d9105: dcq_arb=none
+    lineage_67c0851b: dcq_arb=none
+    lineage_71c8fa0f: dcq_arb=balance
+    lineage_765b4401: dcq_arb=balance
+    lineage_7ce7bf24: dcq_arb=balance
+    lineage_817aff27: dcq_arb=none
+    lineage_84b46c17: dcq_arb=balance
+    lineage_c20f6412: dcq_arb=balance
+    lineage_dda9ab1f: dcq_arb=balance
+    lineage_df89ce26: dcq_arb=balance
+    lineage_e534d104: dcq_arb=none
+    lineage_f2b1c41c: dcq_arb=none
+    lineage_fc50dc0e: dcq_arb=none
+    lineage_fcdd6416: dcq_arb=balance
+
+5p Run (umccmd_DSO_28Jan_5p):
+  - Total lineages: 7
+  - Failed lineages: 3
+  - OK lineages: 4
+  - Error type: CMD-012 (24 occurrences across failed lineages)
+
+  Failed lineages:
+    lineage_42d4e05: dcq_arb=restructure
+    lineage_a6f4326: dcq_arb=both
+    lineage_ec29194: dcq_arb=restructure
+
+
+================================================================================
+MONITORING SCRIPTS
+================================================================================
+
+Location:
+  scripts/dso_error_monitor.sh   - Background monitor (sends email on new errors)
+  scripts/dso_error_check.sh     - One-time check
+  scripts/dso_error_check.csh    - C-shell version
+
+Log files:
+  /tmp/dso_monitor_40p.log
+  /tmp/dso_monitor_5p.log
+
+Usage:
+  # Start background monitor (checks every 10 minutes)
+  nohup scripts/dso_error_monitor.sh <dso_run_dir> 10 > /tmp/dso_monitor.log 2>&1 &
+
+  # One-time check
+  scripts/dso_error_check.sh <dso_run_dir>
+
+  # Check running monitors
+  ps aux | grep dso_error_monitor
+
+  # Kill monitors
+  kill <pid>
+
+
+================================================================================

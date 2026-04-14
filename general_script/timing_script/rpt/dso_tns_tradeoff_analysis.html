@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>DSO TNS Tradeoff Analysis</title>
+<style>
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    padding: 20px;
+    margin: 0;
+    min-height: 100vh;
+  }
+  .container {
+    max-width: 1400px;
+    margin: 0 auto;
+    background-color: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+    overflow: hidden;
+  }
+  .header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #ffffff;
+    padding: 30px;
+    text-align: center;
+  }
+  .header h1 {
+    margin: 0;
+    font-size: 32px;
+    font-weight: 600;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+  }
+  .header .subtitle {
+    margin-top: 10px;
+    font-size: 16px;
+    opacity: 0.9;
+  }
+  .content {
+    padding: 30px;
+  }
+  .summary-cards {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 30px;
+    flex-wrap: wrap;
+  }
+  .card {
+    flex: 1;
+    min-width: 200px;
+    padding: 20px;
+    border-radius: 10px;
+    color: #ffffff;
+    text-align: center;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    transition: transform 0.3s ease;
+  }
+  .card:hover {
+    transform: translateY(-5px);
+  }
+  .card.purple { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+  .card.red { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+  .card.green { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+  .card.orange { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
+  .card.blue { background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%); color: #333; }
+  .card-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    opacity: 0.9;
+  }
+  .card-value {
+    font-size: 28px;
+    font-weight: bold;
+    margin: 10px 0;
+  }
+  .card-subtitle {
+    font-size: 11px;
+    opacity: 0.8;
+  }
+  .section {
+    margin-bottom: 30px;
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 15px;
+  }
+  .section-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 15px;
+    font-size: 20px;
+  }
+  .section-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #2c3e50;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+    font-size: 13px;
+  }
+  th {
+    background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+    color: #ffffff;
+    padding: 14px 12px;
+    text-align: left;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+  }
+  td {
+    padding: 12px;
+    border-bottom: 1px solid #ecf0f1;
+  }
+  tr:hover {
+    background-color: #f8f9fa;
+  }
+  .best-row {
+    background: linear-gradient(90deg, #d4edda 0%, #ffffff 100%) !important;
+  }
+  .worst-row {
+    background: linear-gradient(90deg, #f8d7da 0%, #ffffff 100%) !important;
+  }
+  .balanced-row {
+    background: linear-gradient(90deg, #cce5ff 0%, #ffffff 100%) !important;
+  }
+  .positive { color: #27ae60; font-weight: bold; }
+  .negative { color: #e74c3c; font-weight: bold; }
+  .neutral { color: #7f8c8d; }
+  .tag {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: bold;
+    text-transform: uppercase;
+  }
+  .tag-best { background-color: #27ae60; color: white; }
+  .tag-good { background-color: #3498db; color: white; }
+  .tag-bad { background-color: #e74c3c; color: white; }
+  .tag-balanced { background-color: #9b59b6; color: white; }
+  .impact-high {
+    background: linear-gradient(90deg, #e74c3c 0%, #c0392b 100%);
+    color: white;
+    padding: 4px 10px;
+    border-radius: 15px;
+    font-size: 10px;
+    font-weight: bold;
+  }
+  .impact-medium {
+    background: linear-gradient(90deg, #f39c12 0%, #d68910 100%);
+    color: white;
+    padding: 4px 10px;
+    border-radius: 15px;
+    font-size: 10px;
+    font-weight: bold;
+  }
+  .impact-low {
+    background: linear-gradient(90deg, #27ae60 0%, #1e8449 100%);
+    color: white;
+    padding: 4px 10px;
+    border-radius: 15px;
+    font-size: 10px;
+    font-weight: bold;
+  }
+  .permuton-code {
+    font-family: 'Monaco', 'Consolas', monospace;
+    background-color: #f4f4f4;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    border: 1px solid #ddd;
+  }
+  .permuton-bad {
+    background-color: #ffeaea;
+    border-color: #e74c3c;
+    color: #c0392b;
+  }
+  .permuton-good {
+    background-color: #eafff0;
+    border-color: #27ae60;
+    color: #1e8449;
+  }
+  .insight-box {
+    background: linear-gradient(135deg, #fff9e6 0%, #fff3cd 100%);
+    border-left: 4px solid #f39c12;
+    padding: 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 20px 0;
+  }
+  .insight-box h4 {
+    margin: 0 0 10px 0;
+    color: #856404;
+  }
+  .insight-box ul {
+    margin: 0;
+    padding-left: 20px;
+    color: #856404;
+  }
+  .recommendation-box {
+    background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+    border-left: 4px solid #27ae60;
+    padding: 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 20px 0;
+  }
+  .recommendation-box h4 {
+    margin: 0 0 10px 0;
+    color: #1b5e20;
+  }
+  .warning-box {
+    background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+    border-left: 4px solid #e74c3c;
+    padding: 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 20px 0;
+  }
+  .warning-box h4 {
+    margin: 0 0 10px 0;
+    color: #b71c1c;
+  }
+  .combo-table {
+    margin-top: 15px;
+  }
+  .combo-table td {
+    vertical-align: top;
+  }
+  .vs-divider {
+    text-align: center;
+    font-size: 24px;
+    font-weight: bold;
+    color: #bdc3c7;
+    padding: 20px;
+  }
+  .footer {
+    text-align: center;
+    padding: 20px;
+    background-color: #f8f9fa;
+    color: #7f8c8d;
+    font-size: 12px;
+    border-top: 1px solid #ecf0f1;
+  }
+  .heatmap {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 20px 0;
+  }
+  .heatmap-cell {
+    padding: 15px;
+    border-radius: 8px;
+    text-align: center;
+  }
+  .heatmap-cell.severe { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white; }
+  .heatmap-cell.moderate { background: linear-gradient(135deg, #f39c12 0%, #d68910 100%); color: white; }
+  .heatmap-cell.mild { background: linear-gradient(135deg, #f1c40f 0%, #d4ac0d 100%); color: #333; }
+  .heatmap-cell.safe { background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%); color: white; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="header">
+  <h1>DSO TNS Tradeoff Analysis</h1>
+  <div class="subtitle">Understanding WNS vs TNS Optimization Tradeoffs | UMCCMD DSO Runs</div>
+  <div class="subtitle" style="margin-top: 5px; font-size: 13px;">Generated: 25 Feb 2026</div>
+</div>
+
+<div class="content">
+
+<!-- Summary Cards -->
+<div class="summary-cards">
+  <div class="card purple">
+    <div class="card-title">Primary Culprit</div>
+    <div class="card-value">umc_id_didt</div>
+    <div class="card-subtitle">aggressive mode</div>
+  </div>
+  <div class="card red">
+    <div class="card-title">Worst TNS Impact</div>
+    <div class="card-value">-171K ps</div>
+    <div class="card-subtitle">lineage 2f4a0a07</div>
+  </div>
+  <div class="card green">
+    <div class="card-title">Best Balanced</div>
+    <div class="card-value">fb67322a</div>
+    <div class="card-subtitle">WNS +11.62 | TNS +25.4K</div>
+  </div>
+  <div class="card orange">
+    <div class="card-title">Key Finding</div>
+    <div class="card-value">4 Permutons</div>
+    <div class="card-subtitle">cause TNS degradation</div>
+  </div>
+</div>
+
+<!-- Permuton Impact Analysis -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon" style="background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white;">!</div>
+    <div class="section-title">Permutons Causing TNS Degradation</div>
+  </div>
+
+  <table>
+    <tr>
+      <th style="width: 15%;">Permuton</th>
+      <th style="width: 18%;">TNS-Degrading Values</th>
+      <th style="width: 18%;">TNS-Preserving Values</th>
+      <th style="width: 10%;">Impact</th>
+      <th>Explanation</th>
+    </tr>
+    <tr>
+      <td><strong>umc_id_didt</strong></td>
+      <td><span class="permuton-code permuton-bad">aggressive</span></td>
+      <td>
+        <span class="permuton-code permuton-good">retime</span>
+        <span class="permuton-code permuton-good">none</span>
+        <span class="permuton-code permuton-good">buffer</span>
+      </td>
+      <td><span class="impact-high">HIGH</span></td>
+      <td>Aggressive mode creates path groups with 2.5x weight, focusing all optimization effort on UMC_ID_DIDT paths at the expense of other timing paths</td>
+    </tr>
+    <tr>
+      <td><strong>crit_groups</strong></td>
+      <td><span class="permuton-code permuton-bad">none</span></td>
+      <td>
+        <span class="permuton-code permuton-good">standard</span>
+        <span class="permuton-code permuton-good">aggressive</span>
+      </td>
+      <td><span class="impact-high">HIGH</span></td>
+      <td>No critical path grouping causes greedy WNS-focused optimization, ignoring TNS balance across the design</td>
+    </tr>
+    <tr>
+      <td><strong>fanout_dup</strong></td>
+      <td>
+        <span class="permuton-code permuton-bad">medium</span>
+        <span class="permuton-code permuton-bad">high</span>
+      </td>
+      <td>
+        <span class="permuton-code permuton-good">low</span>
+        <span class="permuton-code permuton-good">none</span>
+      </td>
+      <td><span class="impact-medium">MEDIUM</span></td>
+      <td>Higher fanout duplication creates more register copies and endpoints, introducing additional timing violations</td>
+    </tr>
+    <tr>
+      <td><strong>timer_counter</strong></td>
+      <td><span class="permuton-code permuton-bad">none</span></td>
+      <td>
+        <span class="permuton-code permuton-good">both</span>
+        <span class="permuton-code permuton-good">pipeline</span>
+      </td>
+      <td><span class="impact-medium">MEDIUM</span></td>
+      <td>Disabling timer counter optimization focuses all effort on critical path, neglecting counter timing paths</td>
+    </tr>
+  </table>
+</div>
+
+<!-- Toxic Combinations -->
+<div class="warning-box">
+  <h4>Toxic Permuton Combinations (Avoid These)</h4>
+  <table style="margin: 0; background: transparent;">
+    <tr>
+      <td style="width: 50%; border: none; padding: 10px;">
+        <strong>Combination #1:</strong><br>
+        <span class="permuton-code permuton-bad">umc_id_didt=aggressive</span> +
+        <span class="permuton-code permuton-bad">crit_groups=none</span><br>
+        <span style="font-size: 12px; color: #721c24;">Result: TNS degrades by -54K to -171K ps</span>
+      </td>
+      <td style="width: 50%; border: none; padding: 10px;">
+        <strong>Combination #2:</strong><br>
+        <span class="permuton-code permuton-bad">fanout_dup=medium</span> +
+        <span class="permuton-code permuton-bad">timer_counter=none</span><br>
+        <span style="font-size: 12px; color: #721c24;">Result: TNS degrades by -46K to -86K ps</span>
+      </td>
+    </tr>
+  </table>
+</div>
+
+<!-- Lineage Comparison -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon" style="background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); color: white;">&#9776;</div>
+    <div class="section-title">Lineage Comparison: WNS vs TNS Performance</div>
+  </div>
+
+  <table>
+    <tr>
+      <th>Lineage</th>
+      <th>WNS (ps)</th>
+      <th>WNS Imp.</th>
+      <th>TNS (ps)</th>
+      <th>TNS Imp.</th>
+      <th>umc_id_didt</th>
+      <th>crit_groups</th>
+      <th>fanout_dup</th>
+      <th>timer_counter</th>
+      <th>Status</th>
+    </tr>
+    <tr class="worst-row">
+      <td><strong>6f4f2511</strong></td>
+      <td>-133.30</td>
+      <td class="positive">+16.05</td>
+      <td>-606,685</td>
+      <td class="negative">-54,393</td>
+      <td><span class="permuton-code permuton-bad">aggressive</span></td>
+      <td><span class="permuton-code permuton-bad">none</span></td>
+      <td><span class="permuton-code permuton-bad">medium</span></td>
+      <td><span class="permuton-code permuton-bad">none</span></td>
+      <td><span class="tag tag-bad">Best WNS / Bad TNS</span></td>
+    </tr>
+    <tr class="worst-row">
+      <td><strong>6ecdb506</strong></td>
+      <td>-135.86</td>
+      <td class="positive">+13.49</td>
+      <td>-598,998</td>
+      <td class="negative">-46,706</td>
+      <td><span class="permuton-code">buffer</span></td>
+      <td><span class="permuton-code permuton-bad">none</span></td>
+      <td><span class="permuton-code permuton-good">low</span></td>
+      <td><span class="permuton-code permuton-good">pipeline</span></td>
+      <td><span class="tag tag-bad">Good WNS / Bad TNS</span></td>
+    </tr>
+    <tr class="best-row">
+      <td><strong>54ae7b5</strong> (5p)</td>
+      <td>-134.79</td>
+      <td class="positive">+14.56</td>
+      <td>-534,090</td>
+      <td class="positive">+18,201</td>
+      <td><span class="permuton-code permuton-bad">aggressive</span></td>
+      <td><span class="permuton-code">(default)</span></td>
+      <td><span class="permuton-code">(default)</span></td>
+      <td><span class="permuton-code permuton-good">both</span></td>
+      <td><span class="tag tag-best">Best Overall</span></td>
+    </tr>
+    <tr class="balanced-row">
+      <td><strong>fb67322a</strong></td>
+      <td>-137.73</td>
+      <td class="positive">+11.62</td>
+      <td>-526,864</td>
+      <td class="positive">+25,427</td>
+      <td><span class="permuton-code permuton-good">retime</span></td>
+      <td><span class="permuton-code permuton-good">standard</span></td>
+      <td><span class="permuton-code permuton-good">low</span></td>
+      <td><span class="permuton-code permuton-good">both</span></td>
+      <td><span class="tag tag-balanced">Best Balanced</span></td>
+    </tr>
+    <tr class="balanced-row">
+      <td><strong>088c7004</strong></td>
+      <td>-145.42</td>
+      <td class="positive">+3.93</td>
+      <td>-551,159</td>
+      <td class="positive">+1,132</td>
+      <td><span class="permuton-code permuton-good">none</span></td>
+      <td><span class="permuton-code permuton-good">aggressive</span></td>
+      <td><span class="permuton-code permuton-bad">medium</span></td>
+      <td><span class="permuton-code permuton-good">pipeline</span></td>
+      <td><span class="tag tag-good">Safe Choice</span></td>
+    </tr>
+    <tr>
+      <td><strong>67271e1d</strong></td>
+      <td>-138.52</td>
+      <td class="positive">+10.83</td>
+      <td>-678,112</td>
+      <td class="negative">-125,820</td>
+      <td><span class="permuton-code permuton-good">retime</span></td>
+      <td><span class="permuton-code permuton-good">standard</span></td>
+      <td><span class="permuton-code permuton-good">low</span></td>
+      <td><span class="permuton-code">restructure</span></td>
+      <td><span class="tag tag-bad">Anomaly</span></td>
+    </tr>
+    <tr style="background-color: #f5f5f5;">
+      <td><strong>Baseline</strong></td>
+      <td>-149.35</td>
+      <td class="neutral">0</td>
+      <td>-552,291</td>
+      <td class="neutral">0</td>
+      <td colspan="4" style="text-align: center; color: #7f8c8d;">N/A (Non-DSO Run)</td>
+      <td><span class="tag" style="background: #7f8c8d; color: white;">Baseline</span></td>
+    </tr>
+  </table>
+</div>
+
+<!-- Key Insight -->
+<div class="insight-box">
+  <h4>Key Insight: Why 54ae7b5 Works Despite Using aggressive</h4>
+  <ul>
+    <li><strong>Focused Approach:</strong> Only 4 permutons were active (dcq_arb, umc_id_didt, timer_counter, arb_safe)</li>
+    <li><strong>Default Buffers:</strong> crit_groups and fanout_dup used defaults, avoiding the toxic combination</li>
+    <li><strong>Counter Balance:</strong> timer_counter=both helps distribute optimization effort</li>
+    <li><strong>Lesson:</strong> aggressive umc_id_didt alone is OK; combining it with crit_groups=none + fanout_dup=medium causes TNS degradation</li>
+  </ul>
+</div>
+
+<!-- Heatmap -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon" style="background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%); color: white;">&#9632;</div>
+    <div class="section-title">TNS Impact Heatmap by Permuton Value</div>
+  </div>
+
+  <table>
+    <tr>
+      <th>Permuton</th>
+      <th style="text-align: center;">Value 1</th>
+      <th style="text-align: center;">Value 2</th>
+      <th style="text-align: center;">Value 3</th>
+      <th style="text-align: center;">Value 4</th>
+    </tr>
+    <tr>
+      <td><strong>umc_id_didt</strong></td>
+      <td style="background: #27ae60; color: white; text-align: center;"><strong>none</strong><br><small>Safe</small></td>
+      <td style="background: #f1c40f; color: #333; text-align: center;"><strong>restructure</strong><br><small>Mild</small></td>
+      <td style="background: #f39c12; color: white; text-align: center;"><strong>retime/buffer</strong><br><small>Moderate</small></td>
+      <td style="background: #e74c3c; color: white; text-align: center;"><strong>aggressive</strong><br><small>Risky*</small></td>
+    </tr>
+    <tr>
+      <td><strong>crit_groups</strong></td>
+      <td style="background: #e74c3c; color: white; text-align: center;"><strong>none</strong><br><small>Severe</small></td>
+      <td style="background: #27ae60; color: white; text-align: center;"><strong>standard</strong><br><small>Safe</small></td>
+      <td style="background: #27ae60; color: white; text-align: center;"><strong>aggressive</strong><br><small>Safe</small></td>
+      <td style="background: #ecf0f1; color: #7f8c8d; text-align: center;">-</td>
+    </tr>
+    <tr>
+      <td><strong>fanout_dup</strong></td>
+      <td style="background: #27ae60; color: white; text-align: center;"><strong>none</strong><br><small>Safe</small></td>
+      <td style="background: #27ae60; color: white; text-align: center;"><strong>low</strong><br><small>Safe</small></td>
+      <td style="background: #f39c12; color: white; text-align: center;"><strong>medium</strong><br><small>Moderate</small></td>
+      <td style="background: #e74c3c; color: white; text-align: center;"><strong>high</strong><br><small>Severe</small></td>
+    </tr>
+    <tr>
+      <td><strong>timer_counter</strong></td>
+      <td style="background: #f39c12; color: white; text-align: center;"><strong>none</strong><br><small>Moderate</small></td>
+      <td style="background: #27ae60; color: white; text-align: center;"><strong>pipeline</strong><br><small>Safe</small></td>
+      <td style="background: #f1c40f; color: #333; text-align: center;"><strong>restructure</strong><br><small>Mild</small></td>
+      <td style="background: #27ae60; color: white; text-align: center;"><strong>both</strong><br><small>Safe</small></td>
+    </tr>
+  </table>
+  <p style="font-size: 11px; color: #7f8c8d; margin-top: 10px;">* aggressive umc_id_didt is safe when used alone with default crit_groups and fanout_dup</p>
+</div>
+
+<!-- Recommendations -->
+<div class="recommendation-box">
+  <h4>Recommended Permuton Combinations for Balanced WNS + TNS</h4>
+  <table style="margin: 10px 0; background: transparent;">
+    <tr style="background: transparent;">
+      <td style="border: none; padding: 5px;"><strong>Option A (Aggressive WNS, Preserve TNS):</strong></td>
+      <td style="border: none; padding: 5px;">
+        <span class="permuton-code permuton-good">umc_id_didt=aggressive</span>
+        <span class="permuton-code permuton-good">crit_groups=standard</span>
+        <span class="permuton-code permuton-good">fanout_dup=low</span>
+        <span class="permuton-code permuton-good">timer_counter=both</span>
+      </td>
+    </tr>
+    <tr style="background: transparent;">
+      <td style="border: none; padding: 5px;"><strong>Option B (Balanced):</strong></td>
+      <td style="border: none; padding: 5px;">
+        <span class="permuton-code permuton-good">umc_id_didt=retime</span>
+        <span class="permuton-code permuton-good">crit_groups=standard</span>
+        <span class="permuton-code permuton-good">fanout_dup=low</span>
+        <span class="permuton-code permuton-good">timer_counter=both</span>
+      </td>
+    </tr>
+    <tr style="background: transparent;">
+      <td style="border: none; padding: 5px;"><strong>Option C (Conservative):</strong></td>
+      <td style="border: none; padding: 5px;">
+        <span class="permuton-code permuton-good">umc_id_didt=none</span>
+        <span class="permuton-code permuton-good">crit_groups=aggressive</span>
+        <span class="permuton-code permuton-good">fanout_dup=none</span>
+        <span class="permuton-code permuton-good">timer_counter=pipeline</span>
+      </td>
+    </tr>
+  </table>
+</div>
+
+<!-- Summary Stats -->
+<div class="section">
+  <div class="section-header">
+    <div class="section-icon" style="background: linear-gradient(135deg, #1abc9c 0%, #16a085 100%); color: white;">&#10003;</div>
+    <div class="section-title">Summary Statistics</div>
+  </div>
+
+  <table>
+    <tr>
+      <th>Metric</th>
+      <th>5p Run</th>
+      <th>40p Run</th>
+      <th>Observation</th>
+    </tr>
+    <tr>
+      <td>Total Lineages Completed</td>
+      <td>5 / 10</td>
+      <td>32 / 65</td>
+      <td>~50% completion</td>
+    </tr>
+    <tr>
+      <td>Lineages with WNS + TNS Improvement</td>
+      <td>3 (60%)</td>
+      <td>2 (6%)</td>
+      <td>5p has better TNS preservation rate</td>
+    </tr>
+    <tr>
+      <td>Best WNS Improvement</td>
+      <td>+14.56 ps</td>
+      <td>+16.05 ps</td>
+      <td>40p slightly better WNS</td>
+    </tr>
+    <tr>
+      <td>Best TNS Improvement</td>
+      <td>+18,201 ps</td>
+      <td>+25,427 ps</td>
+      <td>40p has wider TNS spread</td>
+    </tr>
+    <tr>
+      <td>Worst TNS Degradation</td>
+      <td>-42,730 ps</td>
+      <td>-174,162 ps</td>
+      <td>40p more aggressive = more risk</td>
+    </tr>
+  </table>
+</div>
+
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  Generated by DSO TNS Tradeoff Analysis | 25 Feb 2026 | UMCCMD DSO Optimization Study
+</div>
+
+</div>
+</body>
+</html>

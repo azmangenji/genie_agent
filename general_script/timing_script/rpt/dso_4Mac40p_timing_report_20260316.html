@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>DSO Timing Report</title></head>
+<body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px; margin: 0;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width: 1200px; margin: 0 auto; background-color: #ffffff; border: 1px solid #dddddd;">
+<tr><td style="padding: 30px;">
+
+<!-- Header -->
+<table width="100%" cellpadding="0" cellspacing="0">
+<tr><td style="background-color: #2c3e50; color: #ffffff; padding: 20px; text-align: center; font-size: 24px; font-weight: bold;">
+DSO.ai Pass_3 Timing Results - umccmd_DSO_4Mac_40p
+</td></tr>
+<tr><td style="text-align: center; padding: 10px; color: #666666;">Generated: 16 Mar 2026 01:40</td></tr>
+</table>
+
+<!-- Baseline -->
+<table width="100%" cellpadding="15" cellspacing="0" style="margin: 20px 0;">
+<tr><td style="background-color: #8e44ad; color: #ffffff; text-align: center; font-size: 16px; border-radius: 5px;">
+<strong>BASELINE (umccmd_Feb23101828):</strong><br>
+WNS = <span style="font-size: 24px; font-weight: bold;">-120.65 ps</span> &nbsp;|&nbsp;
+TNS = <span style="font-size: 24px; font-weight: bold;">-116553.9 ps</span>
+</td></tr>
+</table>
+
+<!-- Summary Cards -->
+<table width="100%" cellpadding="0" cellspacing="10" style="margin: 20px 0;">
+<tr>
+<td width="20%" style="background-color: #3498db; color: #ffffff; text-align: center; padding: 15px; border-radius: 5px;">
+<div style="font-size: 12px;">Best WNS</div>
+<div style="font-size: 22px; font-weight: bold; margin: 5px 0;">-85.18ps</div>
+<div style="font-size: 11px;">+35.47ps</div>
+</td>
+<td width="20%" style="background-color: #16a085; color: #ffffff; text-align: center; padding: 15px; border-radius: 5px;">
+<div style="font-size: 12px;">Best TNS</div>
+<div style="font-size: 18px; font-weight: bold; margin: 5px 0;">-137538.40000000002ps</div>
+<div style="font-size: 11px;">+-20984.50000000002ps</div>
+</td>
+<td width="20%" style="background-color: #27ae60; color: #ffffff; text-align: center; padding: 15px; border-radius: 5px;">
+<div style="font-size: 12px;">Better than Baseline</div>
+<div style="font-size: 22px; font-weight: bold; margin: 5px 0;">8/10</div>
+<div style="font-size: 11px;">lineages</div>
+</td>
+<td width="20%" style="background-color: #e67e22; color: #ffffff; text-align: center; padding: 15px; border-radius: 5px;">
+<div style="font-size: 12px;">Progress</div>
+<div style="font-size: 22px; font-weight: bold; margin: 5px 0;">10/16</div>
+<div style="font-size: 11px;">pass_3 complete</div>
+</td>
+<td width="20%" style="background-color: #9b59b6; color: #ffffff; text-align: center; padding: 15px; border-radius: 5px;">
+<div style="font-size: 12px;">Best Lineage</div>
+<div style="font-size: 16px; font-weight: bold; margin: 5px 0;">75ec3049</div>
+</td>
+</tr>
+</table>
+
+<!-- Better than Baseline -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 30px;">
+<tr><td style="background-color: #27ae60; color: #ffffff; padding: 12px 15px; font-size: 18px; font-weight: bold;">
+Better than Baseline (8 lineages)
+</td></tr>
+</table>
+<table width="100%" cellpadding="10" cellspacing="0" border="1" style="border-collapse: collapse; margin-bottom: 20px; border-color: #cccccc;">
+<tr style="background-color: #34495e; color: #ffffff;">
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">Lineage</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">WNS (ps)</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">WNS Imp.</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">TNS (ps)</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">TNS Imp.</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">Key Permutons</th>
+</tr>
+<tr style="background-color: #d5f4e6;">
+<td style="padding: 10px; border: 1px solid #cccccc;"><strong>75ec3049</strong> <span style="background-color: #27ae60; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px;">BEST</span></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-85.18</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;"><strong>+35.47ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-137538.40</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;"><strong>-20984.50ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">control_buffer=1, dcq_arb=restructure, crit_groups=standard, timer_counter=both, pgt=true, arb_r2r=restructure, r2r_tns_weight=low</td>
+</tr>
+<tr style="background-color: #f9f9f9;">
+<td style="padding: 10px; border: 1px solid #cccccc;"><strong>7fb1d410</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-89.56</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;"><strong>+31.09ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-154193.00</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;"><strong>-37639.10ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">control_buffer=3, dcq_arb=restructure, crit_groups=standard, ctrl_iso=buffers, umc_id_didt=none, fanout_dup=medium, timer_counter=both, arb_safe=normal, pgt=false, arb_r2r=restructure, r2r_tns_weight=high</td>
+</tr>
+<tr style="background-color: #ffffff;">
+<td style="padding: 10px; border: 1px solid #cccccc;"><strong>3337d84a</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-91.09</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;"><strong>+29.56ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-168189.80</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;"><strong>-51635.90ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">control_buffer=1, dcq_arb=none, crit_groups=standard, ctrl_iso=buffers, umc_id_didt=retime, fanout_dup=medium, timer_counter=both, arb_safe=ultra, pgt=true, arb_r2r=retime, r2r_tns_weight=high</td>
+</tr>
+<tr style="background-color: #f9f9f9;">
+<td style="padding: 10px; border: 1px solid #cccccc;"><strong>0dda163a</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-91.22</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;"><strong>+29.43ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-204785.50</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;"><strong>-88231.60ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">crit_groups=standard, ctrl_iso=none, umc_id_didt=retime, fanout_dup=none, pgt=true, arb_r2r=none</td>
+</tr>
+<tr style="background-color: #ffffff;">
+<td style="padding: 10px; border: 1px solid #cccccc;"><strong>2fbc364d</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-101.65</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;"><strong>+19.00ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-290042.60</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;"><strong>-173488.70ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">ctrl_iso=buffers, timer_counter=pipeline, pgt=true, arb_r2r=none, r2r_tns_weight=balanced</td>
+</tr>
+<tr style="background-color: #f9f9f9;">
+<td style="padding: 10px; border: 1px solid #cccccc;"><strong>e7387c3e</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-102.4</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;"><strong>+18.25ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-219796.80</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;"><strong>-103242.90ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">umc_id_didt=retime</td>
+</tr>
+<tr style="background-color: #ffffff;">
+<td style="padding: 10px; border: 1px solid #cccccc;"><strong>a31dfa11</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-103.02</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;"><strong>+17.63ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-133690.20</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;"><strong>-17136.30ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">control_buffer=1, dcq_arb=none, crit_groups=standard, ctrl_iso=buffers, umc_id_didt=retime, fanout_dup=low, timer_counter=both, arb_safe=normal, pgt=true, arb_r2r=retime, r2r_tns_weight=balanced</td>
+</tr>
+<tr style="background-color: #f9f9f9;">
+<td style="padding: 10px; border: 1px solid #cccccc;"><strong>379d850c</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-112.3</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;"><strong>+8.35ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-290831.30</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;"><strong>-174277.40ps</strong></td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">control_buffer=1, dcq_arb=restructure, crit_groups=aggressive, ctrl_iso=buffers, umc_id_didt=none, fanout_dup=low, timer_counter=both, arb_safe=high, pgt=false, arb_r2r=restructure, r2r_tns_weight=high</td>
+</tr>
+</table>
+
+<!-- Worse than Baseline -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 30px;">
+<tr><td style="background-color: #e74c3c; color: #ffffff; padding: 12px 15px; font-size: 18px; font-weight: bold;">
+Worse than Baseline (2 lineages)
+</td></tr>
+</table>
+<table width="100%" cellpadding="10" cellspacing="0" border="1" style="border-collapse: collapse; margin-bottom: 20px; border-color: #cccccc;">
+<tr style="background-color: #34495e; color: #ffffff;">
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">Lineage</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">WNS (ps)</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">WNS Diff</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">TNS (ps)</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">TNS Diff</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">Key Permutons</th>
+</tr>
+<tr style="background-color: #fdeaea;">
+<td style="padding: 10px; border: 1px solid #cccccc;">4f15ed32</td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-128.68</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;">-8.03ps</td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-108859.80</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #27ae60;">+7694.10ps</td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;">arb_safe=normal, r2r_tns_weight=high</td>
+</tr>
+<tr style="background-color: #fdeaea;">
+<td style="padding: 10px; border: 1px solid #cccccc;">73638400</td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-144.7</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;">-24.05ps</td>
+<td style="padding: 10px; border: 1px solid #cccccc;">-120948.80</td>
+<td style="padding: 10px; border: 1px solid #cccccc; color: #e74c3c;">-4394.90ps</td>
+<td style="padding: 10px; border: 1px solid #cccccc; font-family: monospace; font-size: 11px;"></td>
+</tr>
+</table>
+
+<!-- Outliers -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 30px;">
+<tr><td style="background-color: #f39c12; color: #ffffff; padding: 12px 15px; font-size: 18px; font-weight: bold;">
+Timing Outliers (0 lineages)
+</td></tr>
+</table>
+<table width="100%" cellpadding="10" cellspacing="0" border="1" style="border-collapse: collapse; margin-bottom: 20px; border-color: #cccccc;">
+<tr style="background-color: #34495e; color: #ffffff;">
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">Lineage</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">WNS (ps)</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">TNS (ps)</th>
+<th style="padding: 12px; text-align: left; border: 1px solid #2c3e50;">Key Permutons</th>
+</tr>
+</table>
+
+<!-- Winner Box -->
+<table width="100%" cellpadding="20" cellspacing="0" style="margin: 30px 0; background-color: #1abc9c; border-radius: 5px;">
+<tr><td style="color: #ffffff;">
+<div style="font-size: 20px; font-weight: bold; margin-bottom: 15px;">Winning Permuton Combination (75ec3049)</div>
+<table width="100%" cellpadding="8" cellspacing="0" border="1" style="border-collapse: collapse; border-color: rgba(255,255,255,0.3);">
+<tr>
+<th style="padding: 10px; text-align: left; border: 1px solid rgba(255,255,255,0.3); color: #ffffff; background-color: rgba(0,0,0,0.1);">Permuton</th>
+<th style="padding: 10px; text-align: left; border: 1px solid rgba(255,255,255,0.3); color: #ffffff; background-color: rgba(0,0,0,0.1);">Value</th>
+</tr>
+<tr>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;">control_buffer=1</td>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;"><strong></strong></td>
+</tr>
+<tr>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;">dcq_arb=restructure</td>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;"><strong></strong></td>
+</tr>
+<tr>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;">crit_groups=standard</td>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;"><strong></strong></td>
+</tr>
+<tr>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;">timer_counter=both</td>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;"><strong></strong></td>
+</tr>
+<tr>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;">pgt=true</td>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;"><strong></strong></td>
+</tr>
+<tr>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;">arb_r2r=restructure</td>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;"><strong></strong></td>
+</tr>
+<tr>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;">r2r_tns_weight=low</td>
+<td style="padding: 8px; border: 1px solid rgba(255,255,255,0.3); color: #ffffff;"><strong></strong></td>
+</tr>
+</table>
+<div style="margin-top: 15px;">
+<strong>WNS:</strong> -85.18 ps (+35.47 ps) &nbsp;|&nbsp;
+<strong>TNS:</strong> -137538.40000000002 ps (+-20984.50000000002 ps)
+</div>
+</td></tr>
+</table>
+
+<!-- Footer -->
+<table width="100%" cellpadding="15" cellspacing="0" style="margin-top: 20px;">
+<tr><td style="text-align: center; color: #999999; font-size: 12px; border-top: 1px solid #eeeeee;">
+Generated by DSO Timing Report Script | 16 Mar 2026 01:40
+</td></tr>
+</table>
+
+</td></tr>
+</table>
+</body>
+</html>

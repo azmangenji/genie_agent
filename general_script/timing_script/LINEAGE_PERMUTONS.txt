@@ -1,0 +1,453 @@
+# LINEAGE_PERMUTONS.txt
+# Generated: 2026-03-01 22:05
+# Extracted from FxSynthesize log files (DSO-6124 messages)
+#======================================================================
+
+#======================================================================
+# RUN: umccmd_DSO_28Jan_40p (umccmd_DSO_28Jan_40p)
+#======================================================================
+
+--- lineage_046ac446 ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: none
+  arb_safe: normal
+  pgt: false
+
+--- lineage_08449435 ---
+  control_buffer: 1.5
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+
+--- lineage_088c7004 ---
+  control_buffer: 3
+  dcq_arb: none
+  crit_groups: aggressive
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: true
+
+--- lineage_0b76dd4a ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: normal
+  pgt: false
+
+--- lineage_0b827132 ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: both
+  umc_id_didt: aggressive
+  fanout_dup: none
+  timer_counter: restructure
+  arb_safe: ultra
+  pgt: true
+
+--- lineage_2113aa3f ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: none
+  arb_safe: normal
+  pgt: false
+
+--- lineage_23e01b41 ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: buffers
+  umc_id_didt: buffer
+  fanout_dup: none
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+
+--- lineage_2b5fc82b ---
+  control_buffer: 2
+  dcq_arb: balance
+  crit_groups: aggressive
+  ctrl_iso: buffers
+  umc_id_didt: buffer
+  fanout_dup: none
+  timer_counter: both
+  arb_safe: normal
+  pgt: true
+
+--- lineage_2b69674c ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: high
+  timer_counter: both
+  arb_safe: high
+  pgt: true
+
+--- lineage_31b18738 ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: ultra
+  pgt: true
+
+--- lineage_31e1993a ---
+  control_buffer: 1.5
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: buffers
+  umc_id_didt: buffer
+  fanout_dup: medium
+  timer_counter: none
+  arb_safe: ultra
+  pgt: false
+
+--- lineage_35b0022e ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: both
+  umc_id_didt: retime
+  fanout_dup: medium
+  arb_safe: ultra
+  pgt: true
+
+--- lineage_3e2e5a48 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: ultra
+  pgt: false
+
+--- lineage_4d2eb000 ---
+  (no permutons found - baseline/seed lineage)
+
+--- lineage_4d76a82f ---
+  dcq_arb: restructure
+  crit_groups: standard
+  umc_id_didt: none
+  timer_counter: both
+  pgt: false
+
+--- lineage_5a6f3739 ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: ultra
+  pgt: true
+
+--- lineage_5bc6364b ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: both
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: normal
+  pgt: false
+
+--- lineage_6021843c ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: high
+  timer_counter: both
+  arb_safe: high
+  pgt: false
+
+--- lineage_6cd5ef3d ---
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: buffers
+  fanout_dup: medium
+  timer_counter: none
+  arb_safe: normal
+
+--- lineage_6ecdb506 ---
+  control_buffer: 1.5
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: buffers
+  umc_id_didt: buffer
+  fanout_dup: low
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+
+--- lineage_703eab40 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: high
+  pgt: false
+
+--- lineage_719dd634 ---
+  control_buffer: 2
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+
+--- lineage_84329842 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+
+--- lineage_8c9d7522 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: none
+  arb_safe: normal
+  pgt: false
+
+--- lineage_9384574e ---
+  control_buffer: 1
+  dcq_arb: none
+  crit_groups: standard
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: normal
+  pgt: false
+
+--- lineage_96e4e313 ---
+  control_buffer: 1.5
+  dcq_arb: both
+  crit_groups: aggressive
+  ctrl_iso: both
+  umc_id_didt: restructure
+  fanout_dup: low
+  timer_counter: restructure
+  arb_safe: high
+  pgt: false
+
+--- lineage_9ff06849 ---
+  control_buffer: 3
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: normal
+  pgt: false
+
+--- lineage_aa05f03b ---
+  control_buffer: 2
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: high
+  pgt: false
+
+--- lineage_b6e7ce30 ---
+  control_buffer: 2
+  umc_id_didt: none
+  fanout_dup: medium
+
+--- lineage_b83ee831 ---
+  control_buffer: 1.5
+  dcq_arb: none
+  ctrl_iso: spatial
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+
+--- lineage_c19fbd44 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: both
+  umc_id_didt: retime
+  fanout_dup: low
+  timer_counter: none
+  arb_safe: ultra
+  pgt: false
+
+--- lineage_c430712c ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: both
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: normal
+  pgt: true
+
+--- lineage_cd05072d ---
+  control_buffer: 1.5
+  dcq_arb: none
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: pipeline
+  arb_safe: ultra
+  pgt: false
+
+--- lineage_d2fa9636 ---
+  control_buffer: 1.5
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: buffer
+  fanout_dup: low
+  timer_counter: pipeline
+  arb_safe: high
+  pgt: false
+
+--- lineage_d696974d ---
+  control_buffer: 2
+  dcq_arb: none
+  crit_groups: standard
+  ctrl_iso: both
+  umc_id_didt: retime
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: ultra
+  pgt: false
+
+--- lineage_eb39cb43 ---
+  control_buffer: 1
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: normal
+  pgt: false
+
+--- lineage_f2b6ab1a ---
+  control_buffer: 3
+  dcq_arb: both
+  crit_groups: none
+  ctrl_iso: both
+  umc_id_didt: aggressive
+  fanout_dup: none
+  timer_counter: both
+  arb_safe: ultra
+  pgt: false
+
+--- lineage_f7634a37 ---
+  control_buffer: 1.5
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: buffers
+  umc_id_didt: buffer
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: high
+  pgt: false
+
+--- lineage_f97dc34f ---
+  control_buffer: 1
+  dcq_arb: none
+  crit_groups: standard
+  ctrl_iso: buffers
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: both
+  arb_safe: ultra
+  pgt: false
+
+--- lineage_f990ee0a ---
+  control_buffer: 2
+  dcq_arb: restructure
+  crit_groups: standard
+  ctrl_iso: none
+  umc_id_didt: buffer
+
+--- lineage_fb67322a ---
+  control_buffer: 1
+  dcq_arb: none
+  crit_groups: standard
+  ctrl_iso: both
+  umc_id_didt: retime
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: ultra
+  pgt: false
+
+--- lineage_fd241333 ---
+  control_buffer: 1.5
+  dcq_arb: restructure
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: medium
+  timer_counter: restructure
+  pgt: true
+
+--- lineage_fe6ee445 ---
+  control_buffer: 1.5
+  dcq_arb: restructure
+  crit_groups: none
+  ctrl_iso: none
+  umc_id_didt: none
+  fanout_dup: low
+  timer_counter: both
+  arb_safe: normal
+  pgt: false
+
