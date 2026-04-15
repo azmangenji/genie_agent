@@ -3611,8 +3611,13 @@ hr {{
         clean_body = '\n'.join(clean_body_lines)
 
         if use_html:
-            # Convert spec format to HTML
-            html_body = self.spec_to_html(clean_body)
+            stripped = clean_body.strip()
+            if stripped.startswith('<!DOCTYPE') or stripped.lower().startswith('<html'):
+                # Already a complete HTML document — use directly, do not process through spec_to_html
+                html_body = clean_body
+            else:
+                # Convert spec format to HTML
+                html_body = self.spec_to_html(clean_body)
             content_type = "text/html"
             email_body = html_body
         else:

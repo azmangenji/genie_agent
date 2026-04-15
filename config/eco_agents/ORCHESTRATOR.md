@@ -383,12 +383,50 @@ Write `data/<TAG>_eco_report.html` (and per-round `data/<TAG>_eco_report_round<N
 7. **Fix Loop History** (if multiple rounds) — round-by-round: failure mode, strategy tried, result
 8. **Final Status** — PASS / MANUAL FIX NEEDED with specific guidance
 
-**HTML style:** Use the same color scheme as analyze_agents reports:
-- Green `#28a745` for PASS / APPLIED / INSERTED
-- Red `#dc3545` for FAIL / SKIPPED / VERIFY_FAILED
-- Orange `#fd7e14` for warnings / AMBIGUOUS
-- Blue `#007bff` for informational headers
-- Dark background `#1e1e1e` with light text for code blocks
+**HTML style — MUST be email-safe (Outlook/Exchange compatible):**
+
+Use ONLY these CSS properties — no `display:flex`, no `box-shadow`, no `rgba()`, no `border-radius` on layout elements. AMD email is Outlook which uses the Word rendering engine and ignores modern CSS.
+
+Use this exact CSS template in `<head>`:
+
+```html
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; color: #333; }
+h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+h2 { color: #34495e; border-bottom: 1px solid #bdc3c7; padding-bottom: 6px; }
+h3 { color: #555; margin-top: 16px; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; background: white; }
+th { background: #3498db; color: white; padding: 8px 12px; text-align: left; }
+td { padding: 7px 12px; border-bottom: 1px solid #eee; }
+tr:hover { background: #f0f7ff; }
+.pass  { color: #27ae60; font-weight: bold; }
+.fail  { color: #e74c3c; font-weight: bold; }
+.warn  { color: #e67e22; font-weight: bold; }
+.info  { color: #2980b9; }
+.applied  { color: #27ae60; font-weight: bold; }
+.skipped  { color: #e74c3c; font-weight: bold; }
+.box   { background: white; border: 1px solid #ddd; padding: 15px; margin: 10px 0; }
+.alert { background: #fef3cd; border: 1px solid #ffc107; padding: 12px; margin: 10px 0; }
+.error { background: #f8d7da; border: 1px solid #f5c6cb; padding: 12px; margin: 10px 0; }
+.success { background: #d4edda; border: 1px solid #c3e6cb; padding: 12px; margin: 10px 0; }
+code { background: #f4f4f4; padding: 2px 5px; font-family: monospace; }
+pre  { background: #f4f4f4; padding: 10px; font-family: monospace; font-size: 12px; }
+</style>
+```
+
+**Color scheme:**
+- Green `#27ae60` for PASS / APPLIED / INSERTED
+- Red `#e74c3c` for FAIL / SKIPPED / VERIFY_FAILED
+- Orange `#e67e22` for warnings / AMBIGUOUS / MANUAL_FIX
+- Blue `#2980b9` for informational text
+
+**Layout rules:**
+- Use `<div class="box">` for card-like sections (border, no shadow)
+- Use `<div class="alert">` for warnings, `<div class="error">` for failures, `<div class="success">` for pass
+- Use `<table>` for ALL multi-column layouts including summary grids — never flex or grid
+- Status words: wrap in `<span class="pass">PASS</span>`, `<span class="fail">FAIL</span>`, `<span class="warn">WARNING</span>`
+- Code/signals: wrap in `<code>signal_name</code>`
+- RTL diffs: use `<pre>` blocks
 
 ---
 

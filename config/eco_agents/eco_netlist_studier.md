@@ -72,6 +72,20 @@ Impl Net - .../<INST_A>/<INST_B>/<cell_X>/ZN   → SKIP  ((-) polarity)
 
 **Result: collect cell_X/I, cell_Y/A2, cell_Z/A4 — study ALL THREE.**
 
+### MANDATORY: Count qualifying cells BEFORE studying any of them
+
+After applying all 4 filters, write down the complete qualifying list first:
+
+```
+Qualifying cells for <net> in <Stage>:
+  1. <cell_X> / pin=I
+  2. <cell_Y> / pin=A2
+  3. <cell_Z> / pin=A4
+Total: 3
+```
+
+**Do NOT start studying the PreEco netlist until this list is complete.** This list is your checklist — your output JSON for this stage MUST contain exactly this many entries. A `confirmed: true` on cell 1 does NOT mean you are done — continue to cell 2, then cell 3.
+
 ### Extracting cell name and pin from impl line:
 ```
 i:/FMWORK_IMPL_<TILE>/<TILE>/<INST_A>/<INST_B>/<cell_name>/<pin> (+)
@@ -132,7 +146,18 @@ Check that the pin identified by find_equivalent_nets has old_net connected:
 - If confirmed: `"confirmed": true`
 - If not found or mismatched: `"confirmed": false` with explanation
 
-### 5. Clean up temp file (after processing all cells for that stage)
+### 5. Verify output count before moving to next stage
+
+Before cleaning up, count your output entries for this stage and compare to your qualifying list:
+
+```
+Qualifying list had: N cells
+Output JSON has:     N entries  ← must match
+```
+
+If the counts do not match — you missed a cell. Go back and process the remaining ones.
+
+### 6. Clean up temp file (after processing all cells for that stage)
 
 ```bash
 rm -f /tmp/eco_study_<TAG>_<Stage>.v
