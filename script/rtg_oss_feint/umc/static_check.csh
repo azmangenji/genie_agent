@@ -133,9 +133,21 @@ else
     echo "Checking provided directory: $refdir_name"
     
     if (! -d $refdir_name) then
-        echo "ERROR: Directory not found: $refdir_name"
+        echo "Directory not found: $refdir_name - creating it"
+        mkdir -p $refdir_name
+        if ($status != 0) then
+            echo "ERROR: Failed to create directory: $refdir_name"
+            cat >> $source_dir/data/${tag}_spec << EOF
+#text#
+ ERROR: Failed to create directory: $refdir_name
+ Please check that the parent path exists and you have write permission.
+EOF
+            source $source_dir/script/rtg_oss_feint/finishing_task.csh
+            exit 1
+        endif
+        echo "Created directory: $refdir_name"
     endif
-    
+
     if (-f "${refdir_name}/configuration_id") then
         echo "Directory is a synced tree - using as-is"
     else

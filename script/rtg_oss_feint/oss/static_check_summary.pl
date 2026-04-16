@@ -33,10 +33,11 @@ my $changelist = "Unknown";
 my $config_file = "$base_dir/configuration_id";
 if (-e $config_file) {
     open(my $cfg_fh, '<', $config_file);
-    my $config_line = <$cfg_fh>;
+    my @config_lines = <$cfg_fh>;
     close($cfg_fh);
-    if ($config_line && $config_line =~ /\@(\d+)/) {
-        $changelist = $1;
+    if (@config_lines) {
+        chomp @config_lines;
+        $changelist = join("\n", @config_lines);
     }
 }
 
