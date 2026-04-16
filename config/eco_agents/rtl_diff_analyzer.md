@@ -172,3 +172,38 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
 ```
 
 All `net_path` values must be verified hierarchy paths using instance names. Do NOT include unverified paths.
+
+---
+
+## Output RPT
+
+After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt`:
+
+```
+================================================================================
+STEP 1 — RTL DIFF ANALYSIS
+Tag: <TAG>  |  Tile: <TILE>  |  JIRA: DEUMCIPRTL-<JIRA>
+================================================================================
+
+<For each entry in changes[]:>
+Source File : <file>
+Module      : <module_name>
+Change Type : <change_type>
+  Old Signal: <old_token>
+  New Signal: <new_token>
+  Context   :
+    <context_line>
+
+<Repeat block if more than one change>
+
+--------------------------------------------------------------------------------
+Nets to Query (<N> nets):
+--------------------------------------------------------------------------------
+  [<n>] <net_path>
+        Reason   : <reason>
+        Bus Var  : <YES / NO>
+
+<Repeat for each net>
+
+================================================================================
+```

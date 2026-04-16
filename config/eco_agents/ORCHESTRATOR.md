@@ -74,6 +74,31 @@ Using the `nets_to_query` list from Step 1:
    ```
    **Note:** Do NOT poll `data/<fenets_tag>_spec` for this sentinel — `find_equivalent_nets.csh` strips it before writing to the spec file. The rpt files are the authoritative source.
 4. Once all 3 rpt files have the sentinel, read all results from `data/<fenets_tag>_spec` (the spec file has the formatted results written at task completion)
+5. Consolidate raw FM output into a single file `<BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt` by concatenating all 3 rpt files with clear stage headers:
+   ```bash
+   {
+     echo "================================================================================"
+     echo "FIND EQUIVALENT NETS — RAW FM OUTPUT"
+     echo "fenets_tag: <fenets_tag>  |  TAG: <TAG>  |  Tile: <TILE>"
+     echo "================================================================================"
+     echo ""
+     echo "================================================================================"
+     echo "TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl"
+     echo "================================================================================"
+     cat <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<fenets_tag>.txt
+     echo ""
+     echo "================================================================================"
+     echo "TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize"
+     echo "================================================================================"
+     cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<fenets_tag>.txt
+     echo ""
+     echo "================================================================================"
+     echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
+     echo "================================================================================"
+     cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
+   } > <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
+   ```
+   Do the same for each FM-036 retry tag — write `<BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw.rpt` using the same pattern.
 
 **For FM-036 retries**, submit a new genie_cli.py call with the stripped net path — each retry gets its own tag, read from CLI output:
    ```bash
@@ -367,7 +392,226 @@ Go directly to Step 7 — generate final HTML report with all rounds' history, t
 
 ---
 
-## STEP 7 — Generate HTML Report
+## STEP 7 — Generate Reports (RPT + HTML)
+
+### Step 7a — Write Per-Step RPT Files
+
+**Each agent writes its own RPT** as part of its output (see each agent's md file). The orchestrator writes the Step 2 and Step 5 RPTs directly (since those steps are handled by the orchestrator, not sub-agents).
+
+#### Step 2 RPT — Write after fenets completes
+
+Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt`.
+
+**Key requirement:** For every net queried, the RPT must clearly state:
+1. **Why this net is being queried** — which RTL change drove it (change_type, old_token/new_token from Step 1)
+2. **Which block it belongs to** — the declaring module and full instance hierarchy
+3. **What FM found** — the raw impl cell+pin results, with filters explained
+4. **What was accepted vs rejected** — which results pass the 4 filters and why rejected ones were dropped
+5. **What happens next** — what Step 3 will do with these results
+
+Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt`:
+
+```
+================================================================================
+STEP 2 — FIND EQUIVALENT NETS
+Tag: <TAG>  |  fenets_tag: <fenets_tag>
+================================================================================
+
+Purpose:
+  Formality (FM) is used to find the gate-level impl cells that correspond
+  to each RTL net involved in the ECO change. This bridges the RTL diff
+  (Step 1) to the actual gate-level cells that need to be rewired (Step 3+).
+
+Filters applied to all FM results:
+  [F1] Polarity (+) only   — (-) lines are inverted nets, never safe to rewire
+  [F2] Hierarchy scope     — only cells within the declaring module's instance
+                             path; siblings filtered out (they use the net
+                             correctly for unrelated purposes)
+  [F3] Cell/pin pair only  — bare net aliases (no pin component) discarded
+  [F4] Input pins only     — output pins (Z, ZN, Q, QN) skipped; rewiring
+                             an output changes the cell's output net name,
+                             not its input connection
+
+================================================================================
+
+<For each net in nets_to_query from eco_rtl_diff.json, one block:>
+
+────────────────────────────────────────────────────────────────────────────────
+Net [<n>/<total>]: <net_path>
+────────────────────────────────────────────────────────────────────────────────
+RTL Context:
+  This net was queried because the RTL diff in Step 1 found a <change_type>
+  in module <module_name> (<file>): <old_token> is being replaced by
+  <new_token>. <net_path> is the gate-level scope path to locate where
+  <old_token / new_token> is used within instance <INST_A>/.../<INST_B>.
+  <If is_bus_variant=true:>
+  Note: This is a bus variant query (<signal>_0_) — queried alongside
+  <original_signal> to handle gate-level bit-indexed naming.
+
+Declaring Module : <module_name>
+Instance Path    : <TILE>/<INST_A>/.../<INST_B>
+Scope Filter     : Only impl lines containing /<TILE>/<INST_A>/.../<INST_B>/
+                   were accepted (F2 filter)
+
+FM Results per Stage:
+
+  [Synthesize]  (target: FmEqvPreEcoSynthesizeVsPreEcoSynRtl)
+    Raw FM lines returned: <N total>
+    After filters:
+      ACCEPTED : <cell_name> / pin=<pin>  (+)
+                 Reason kept  : polarity(+), correct scope, input pin
+      ACCEPTED : <cell_name2> / pin=<pin2>  (+)
+      REJECTED : <cell_name3> / pin=<pin3>  (-)
+                 Reason dropped: (-) polarity — inverted net
+      REJECTED : <path>/<bare_net_name>
+                 Reason dropped: no pin component (bare net alias, F3)
+      REJECTED : <sibling_path>/<cell>/<pin>
+                 Reason dropped: outside <INST_A>/.../<INST_B>/ scope (F2)
+    Qualifying cells passed to Step 3: <M>
+
+  [PrePlace]  (target: FmEqvPreEcoPrePlaceVsPreEcoSynthesize)
+    <same structure>
+    <If no FM result / target had failures:>
+    FM result  : NOT AVAILABLE — <reason: target had not-compared points /
+                 FM-036 error / target failed>
+    Action     : Step 3 will use Synthesize fallback for this stage
+
+  [Route]  (target: FmEqvPreEcoRouteVsPreEcoPrePlace)
+    <same structure>
+
+<If FM-036 occurred on this net:>
+FM-036 Handling:
+  FM returned "Error: Unknown name" for path <original_path>
+  This means FM does not recognize the signal at this hierarchy level.
+  Retry strategy — strip one hierarchy level per retry:
+    Original : <INST_A>/<INST_B>/<signal>  →  FM-036
+    Retry 1  : <INST_A>/<signal>           →  <FOUND: <cell_name>/<pin> | FM-036>
+    Retry 2  : <signal>                    →  <result>
+  Outcome    : <Used retry N result — cell <cell_name> / pin <pin> accepted>
+               OR <All retries failed — marked fm_failed, Step 3 uses direct grep>
+
+Step 3 will receive:
+  Synthesize : <N> qualifying cells  (<cell_name>/pin, <cell_name2>/pin2, ...)
+  PrePlace   : <N> qualifying cells  (or: fallback from Synthesize)
+  Route      : <N> qualifying cells  (or: fallback from Synthesize)
+
+<Repeat full block for each net>
+
+================================================================================
+```
+
+#### Step 5 RPT — Write after FM verification completes (each round)
+
+Write `<BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<N>.rpt`:
+
+```
+================================================================================
+STEP 5 — FORMALITY VERIFICATION  (Round <N>)
+Tag: <TAG>  |  eco_fm_tag: <eco_fm_tag>
+================================================================================
+
+  FmEqvEcoSynthesizeVsSynRtl         : <PASS / FAIL>
+  FmEqvEcoPrePlaceVsEcoSynthesize    : <PASS / FAIL>
+  FmEqvEcoRouteVsEcoPrePlace         : <PASS / FAIL>
+
+<If any FAIL:>
+Failing Points (<N> total):
+  Target: FmEqvEcoSynthesizeVsSynRtl
+    - <hierarchy path of failing DFF>
+    - <hierarchy path of failing DFF>
+  Target: FmEqvEcoPrePlaceVsEcoSynthesize
+    - <hierarchy path>
+
+OVERALL: <PASS / FAIL>
+================================================================================
+```
+
+#### Step 7a — Write Summary RPT
+
+After all steps complete, write `<BASE_DIR>/data/<TAG>_eco_summary.rpt`.
+
+All statistics are derived from `data/<TAG>_eco_applied.json`:
+- **Cells added**: count unique `inv_inst` values where `change_type=new_logic` AND `status=INSERTED`, deduplicated across stages (same logical cell appears in all 3 stages — count it once)
+- **Cells removed**: count of SKIPPED entries where `reason` contains "not found in PostEco" (cell optimized away by P&R — no longer present, no ECO needed). Zero for pure wire_swap runs.
+- **Pins disconnected**: count of APPLIED + INSERTED entries per stage (each entry = one pin had old_net removed)
+- **Nets/pins connected**: count of APPLIED + INSERTED entries per stage (each entry = one pin received new_net or inv_out)
+
+```
+================================================================================
+ECO ANALYSIS SUMMARY
+================================================================================
+Tag         : <TAG>
+Tile        : <TILE>
+JIRA        : DEUMCIPRTL-<JIRA>
+TileBuilder : <REF_DIR>
+Generated   : <YYYY-MM-DD HH:MM:SS>
+Rounds      : <N>
+================================================================================
+
+FINAL STATUS : <PASS / FAIL — MANUAL FIX NEEDED / MAX ROUNDS REACHED>
+
+<If PASS:>  All 3 Formality targets passed. ECO is clean.
+<If FAIL:>  Manual fix required. See step5 RPT for failing points.
+<If MAX:>   5 rounds attempted. See per-round step5 RPTs for details.
+
+--------------------------------------------------------------------------------
+ECO STATISTICS  (from eco_applied.json — all rounds combined)
+--------------------------------------------------------------------------------
+
+  Cells Added      : <N>  (new inverter cells inserted for new_logic changes)
+  Cells Removed    : <N>  (cells not found in PostEco — optimized away by P&R)
+                          <If 0: "(none — all target cells present in PostEco)">
+
+  Pins Disconnected / Nets Connected (per stage):
+
+                     Synthesize    PrePlace    Route
+                     ----------    --------    -----
+  Pins Disconnected: <N>           <N>         <N>
+  Nets Connected   : <N>           <N>         <N>
+  Skipped          : <N>           <N>         <N>
+  Verify Failed    : <N>           <N>         <N>
+
+  Note: "Pins Disconnected" and "Nets Connected" counts are equal for each stage
+        because every disconnected pin is immediately reconnected to the new net.
+        Skipped entries were NOT changed — see step4 RPT for reasons.
+
+--------------------------------------------------------------------------------
+TIMING & LOL ESTIMATION  (structural analysis — Synthesize PreEco netlist)
+--------------------------------------------------------------------------------
+
+  Signal Change : <old_net>  →  <new_net>
+
+  Old Net Driver: <driver_cell_name>  (<cell_type>)  pin=<Z/ZN/Q>
+                  <e.g. "combinational NAND2 — inputs from combinational logic">
+  New Net Driver: <driver_cell_name>  (<cell_type>)  pin=<Z/ZN/Q>
+                  <e.g. "FF Q output — direct register launch point">
+
+  Old Net Fanout: <N>
+  New Net Fanout: <N>
+
+  LOL Impact    : <e.g. "new_net source is shallower (FF Q) vs old_net
+                          (combinational chain) — fewer logic levels at rewire pin">
+  Timing Estimate: <BETTER / LIKELY_BETTER / NEUTRAL / RISK / LOAD_RISK / UNCERTAIN>
+  Reasoning     : <plain English — why timing improves/worsens/stays the same>
+
+--------------------------------------------------------------------------------
+Per-Step Reports
+--------------------------------------------------------------------------------
+  <BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt
+  <BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt
+  <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
+  <BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt
+  <BASE_DIR>/data/<TAG>_eco_step4_eco_applied.rpt
+  <BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt          <- omit if no new_logic
+  <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round1.rpt
+  <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round2.rpt  <- omit if single round
+  ...
+  <BASE_DIR>/data/<TAG>_eco_summary.rpt
+
+================================================================================
+```
+
+### Step 7b — Write HTML Report
 
 Write `data/<TAG>_eco_report.html` (and per-round `data/<TAG>_eco_report_round<N>.html` for fixer loop rounds) with sections:
 
@@ -379,9 +623,72 @@ Write `data/<TAG>_eco_report.html` (and per-round `data/<TAG>_eco_report_round<N
    - Rewires: before/after per cell per stage (APPLIED / SKIPPED + reason)
    - new_logic inserts: cell type, instance name, source_net, inv_out per stage
    - SVF updates: entries added to EcoChange.svf
-6. **PostEco FM Verification** — per round: PASS/FAIL per target, failing points count and paths
-7. **Fix Loop History** (if multiple rounds) — round-by-round: failure mode, strategy tried, result
-8. **Final Status** — PASS / MANUAL FIX NEEDED with specific guidance
+6. **Timing & LOL Impact** — based on structural comparison of old_net vs new_net driver in the Synthesize PreEco netlist:
+
+   Render as a table with one row per change:
+   ```html
+   <h2>Timing &amp; LOL Impact</h2>
+   <table>
+     <tr>
+       <th>Signal Change</th>
+       <th>Old Net Driver</th>
+       <th>New Net Driver</th>
+       <th>Old Fanout</th>
+       <th>New Fanout</th>
+       <th>LOL Impact</th>
+       <th>Timing Estimate</th>
+     </tr>
+     <tr>
+       <td><code>old_net → new_net</code></td>
+       <td><code>driver_cell (cell_type) pin=ZN</code></td>
+       <td><code>driver_cell (cell_type) pin=Q</code></td>
+       <td>N</td>
+       <td>N</td>
+       <td>Shallower / Deeper / Same</td>
+       <td><span class="pass">BETTER</span>
+           or <span class="fail">RISK</span>
+           or <span class="warn">UNCERTAIN</span></td>
+     </tr>
+   </table>
+   <p><b>Reasoning:</b> <plain English explanation from netlist study></p>
+   ```
+
+   **Timing estimate values and colors:**
+   - `BETTER` / `LIKELY_BETTER` → green (`class="pass"`)
+   - `NEUTRAL` → no color
+   - `RISK` / `LOAD_RISK` → red (`class="fail"`)
+   - `UNCERTAIN` → orange (`class="warn"`)
+
+   **Source:** data comes from `timing_lol_analysis` field in `_eco_preeco_study.json` (written by eco_netlist_studier Step 4c) and confirmed/revised by eco_applier Step 6b.
+
+7. **PostEco FM Verification** — per round: PASS/FAIL per target, failing points count and paths
+8. **Fix Loop History** (if multiple rounds) — round-by-round: failure mode, strategy tried, result
+9. **Final Status** — PASS / MANUAL FIX NEEDED with specific guidance
+9. **Step Reports** — append this section at the bottom of the HTML, after Final Status. List only the file paths — no descriptions, no table headers, no details:
+
+   ```html
+   <h2>Step Reports</h2>
+   <p><code><BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt</code></p>
+   <p><code><BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt</code></p>
+   <p><code><BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt</code></p>
+   <!-- One line per retry tag if FM-036 retries occurred: -->
+   <p><code><BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw.rpt</code></p>
+   <p><code><BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt</code></p>
+   <p><code><BASE_DIR>/data/<TAG>_eco_step4_eco_applied.rpt</code></p>
+   <!-- Include only if new_logic insertions exist: -->
+   <p><code><BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt</code></p>
+   <p><code><BASE_DIR>/data/<TAG>_eco_svf_entries.tcl</code></p>
+   <!-- One line per round: -->
+   <p><code><BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round1.rpt</code></p>
+   <p><code><BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round2.rpt</code></p>
+   <p><code><BASE_DIR>/data/<TAG>_eco_summary.rpt</code></p>
+   ```
+
+   **Rules:**
+   - Use the actual absolute `BASE_DIR` path — not a placeholder
+   - Omit the step4b and svf_entries.tcl lines if no new_logic insertions in this run
+   - For multi-round runs, add one step5 line per round
+   - This is the last section in the HTML
 
 **HTML style — MUST be email-safe (Outlook/Exchange compatible):**
 
@@ -466,6 +773,7 @@ The `--send-eco-email` command reads:
 | `data/<TAG>_eco_analyze` | Metadata: tile, ref_dir, tag, jira (written in PRE-FLIGHT; read by --send-eco-email) |
 | `data/<TAG>_eco_rtl_diff.json` | RTL diff analysis + nets to query |
 | `data/<fenets_tag>_spec` | find_equivalent_nets results (fenets_tag ≠ TAG) |
+| `data/<fenets_tag>_find_equivalent_nets_raw.rpt` | Raw FM output — all 3 targets concatenated into one file (fenets_tag ≠ TAG; one file per retry tag as well) |
 | `data/<TAG>_eco_preeco_study.json` | PreEco netlist confirmation |
 | `data/<TAG>_eco_applied.json` | ECO changes applied/inserted/skipped |
 | `data/<TAG>_eco_svf_update.json` | SVF update results (new_logic only) |
@@ -476,3 +784,10 @@ The `--send-eco-email` command reads:
 | `data/<TAG>_eco_fm_analysis_round<N>.json` | FM failure analysis per round |
 | `data/<TAG>_eco_report_round<N>.html` | Per-round HTML report |
 | `data/<TAG>_eco_report.html` | Final HTML report (all rounds) |
+| `data/<TAG>_eco_step1_rtl_diff.rpt` | Step 1 RPT — RTL diff results (written by rtl_diff_analyzer) |
+| `data/<TAG>_eco_step2_fenets.rpt` | Step 2 RPT — find_equivalent_nets results (written by orchestrator) |
+| `data/<TAG>_eco_step3_netlist_study.rpt` | Step 3 RPT — PreEco netlist study (written by eco_netlist_studier) |
+| `data/<TAG>_eco_step4_eco_applied.rpt` | Step 4 RPT — ECO changes applied (written by eco_applier) |
+| `data/<TAG>_eco_step4b_svf.rpt` | Step 4b RPT — SVF entries (written by eco_svf_updater, only if new_logic) |
+| `data/<TAG>_eco_step5_fm_verify_round<N>.rpt` | Step 5 RPT — FM verification per round (written by orchestrator) |
+| `data/<TAG>_eco_summary.rpt` | Summary RPT — index of all step RPTs + final status (written in Step 7a) |

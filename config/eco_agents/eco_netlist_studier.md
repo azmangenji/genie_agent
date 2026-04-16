@@ -174,6 +174,82 @@ If no alias found either:
 - `"confirmed": false` — do NOT apply this change; rewiring to a non-existent net would break the netlist
 - `"reason": "new_net <new_net> not found in <Stage> PreEco netlist and no HFS alias found"`
 
+### 4c. Structural Analysis — Timing & LOL Estimation
+
+**Only on Synthesize stage** (most logical, pre-P&R transformations). For each confirmed cell, compare the driver structure of `old_net` vs `new_net` in the PreEco netlist and make an engineering estimation of timing and LOL impact.
+
+**Step 1 — Find driver of old_net:**
+```bash
+grep -n "( <old_net> )" /tmp/eco_study_<TAG>_Synthesize.v | head -20
+```
+Look for the line where `old_net` appears as an **output** — i.e., on a `Z`, `ZN`, `Q`, `QN`, `CO`, or `S` pin. That cell is the driver.
+```bash
+# Extract the driver cell instantiation block
+grep -n "<driver_cell_name>" /tmp/eco_study_<TAG>_Synthesize.v | head -5
+```
+Record: driver cell name, driver cell type, driver pin (Z/ZN/Q etc.).
+
+**Step 2 — Find driver of new_net (or its HFS alias):**
+```bash
+grep -n "( <new_net> )" /tmp/eco_study_<TAG>_Synthesize.v | head -20
+```
+Same approach — find the cell driving `new_net` as an output.
+
+**Step 3 — Classify driver cell types:**
+
+| Driver type | LOL from source | Timing characteristic |
+|-------------|----------------|----------------------|
+| Sequential (DFF/latch — pin Q/QN) | 0 levels from FF | Clean launch point — good for timing |
+| Simple buffer/inverter (BUFD/INVD — pin Z/ZN) | shallow | Low overhead — usually good |
+| Complex combinational (AND/OR/NAND/NOR/AOI/OAI/MUX — pin Z/ZN) | deeper | Depends on how deep the cone is |
+| Tri-state / special | unknown | Flag for manual review |
+
+**Step 4 — Look one level back for combinational drivers:**
+
+If the driver of `new_net` is combinational, look at what feeds ITS inputs to estimate cone depth:
+```bash
+# Find inputs of the new_net driver cell
+grep -n "<new_net_driver_cell>" /tmp/eco_study_<TAG>_Synthesize.v | head -5
+# Read its instantiation block — look at input pin nets
+# For each input net, check if it comes from a FF (Q pin) or another combinational cell
+```
+One level of inspection is sufficient — the goal is estimation, not full traversal.
+
+**Step 5 — Compare fanout:**
+```bash
+grep -c "( <old_net> )" /tmp/eco_study_<TAG>_Synthesize.v
+grep -c "( <new_net> )" /tmp/eco_study_<TAG>_Synthesize.v
+```
+Higher fanout on `new_net` means more capacitive load → potentially worse slew at the rewire point.
+
+**Step 6 — Make engineering estimation:**
+
+Based on the above, write a plain-English assessment:
+
+| Scenario | LOL Impact | Timing Estimate |
+|----------|-----------|-----------------|
+| `new_net` driven by FF.Q, `old_net` driven by combinational chain | LOL decreases | **BETTER** — shorter path, cleaner launch |
+| `new_net` driven by combinational cell shallower than `old_net` driver | LOL decreases | **LIKELY BETTER** |
+| Both driven by same depth combinational logic | LOL neutral | **NEUTRAL** |
+| `new_net` driven by deeper combinational cone than `old_net` | LOL increases | **RISK** — flag for engineer review |
+| `new_net` has significantly higher fanout | N/A | **LOAD RISK** — slew may degrade |
+| Driver structure unclear / not found | N/A | **UNCERTAIN** — manual PrimeTime recommended |
+
+Record result as one of: `BETTER`, `LIKELY_BETTER`, `NEUTRAL`, `RISK`, `LOAD_RISK`, `UNCERTAIN`
+
+Add to the JSON output for this cell:
+```json
+"timing_lol_analysis": {
+  "old_net_driver": "<cell_name>  (<cell_type>)  pin=<Z/ZN/Q>",
+  "new_net_driver": "<cell_name>  (<cell_type>)  pin=<Z/ZN/Q>",
+  "old_net_fanout": <N>,
+  "new_net_fanout": <N>,
+  "lol_estimate": "<old_net driver depth description>  vs  <new_net driver depth description>",
+  "timing_estimate": "<BETTER / LIKELY_BETTER / NEUTRAL / RISK / LOAD_RISK / UNCERTAIN>",
+  "reasoning": "<1-2 sentence plain English explanation of why>"
+}
+```
+
 ### 5. Verify output count before moving to next stage
 
 Before cleaning up, count your output entries for this stage and compare to your qualifying list:
@@ -337,3 +413,74 @@ Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolut
 - Fallback priority: Synthesize → PrePlace → Route (use whichever has confirmed cells first)
 - Fallback entries are reliable for rewiring ECOs; flag `"source": "<ref_stage>_fallback"` for traceability
 - If ALL stages have no FM results: mark all as `"confirmed": false` and report for manual review
+
+---
+
+## Output RPT
+
+After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt`.
+
+**Key requirement:** For every cell entry, the RPT must clearly state:
+1. **Which RTL block this cell belongs to** — the declaring module and its instance hierarchy from the RTL diff JSON (`hierarchy` field)
+2. **Why this cell is being studied** — the RTL change that drove it here (change_type, old_token, new_token from `eco_rtl_diff.json`)
+3. **What was found** — the actual Verilog port connection confirming old_net on the expected pin
+4. **What the outcome is** — confirmed YES/NO and what that means for the next step
+
+```
+================================================================================
+STEP 3 — PREECO NETLIST STUDY
+Tag: <TAG>
+================================================================================
+
+ECO Context (from Step 1 RTL diff):
+  Change    : <change_type> in <module_name> (<file>)
+  Signal    : <old_token>  →  <new_token>
+  Reason    : This cell was identified because FM found it connected to
+              <old_token> within the <hierarchy> scope. The RTL change
+              replaces <old_token> with <new_token> at this point in
+              the logic, so we must rewire this gate-level cell to match.
+
+<For each stage (Synthesize, PrePlace, Route):>
+────────────────────────────────────────────────────────────────────────────────
+[<Stage>] — <N> cells studied, <M> confirmed
+  RTL Block : <module_name>  (instance path: <TILE>/<INST_A>/.../<INST_B>)
+  Scope     : Studying only cells within <INST_A>/.../<INST_B>/ hierarchy
+              (cells outside this scope were filtered out — they use <old_net>
+               correctly for a different purpose)
+────────────────────────────────────────────────────────────────────────────────
+
+  Cell [<n>/<total>]
+  ──────────────────
+  Cell Name : <cell_name>
+  Cell Type : <cell_type>
+  Block     : <TILE>/<INST_A>/.../<INST_B>/<cell_name>
+  Pin       : <pin>
+  Why Here  : FM reported this cell as an impl point for net <old_net> in
+              <Stage>. It is the gate-level cell that currently receives
+              <old_net> on pin <pin> — the exact connection the ECO must change.
+
+  Old Net   : <old_net>
+  New Net   : <new_net>  <(HFS alias in this stage: <new_net_alias>)>
+  Confirmed : <YES / NO>
+  Source    : <FM+trace / synthesize_fallback / route_fallback / grep>
+
+  Verilog (PreEco instantiation block):
+    <line_context — full Verilog cell instantiation as-is in the netlist>
+
+  Finding   : Pin <pin> has net <old_net> connected — confirmed match.
+              New net <new_net> is reachable in this stage — rewire is safe.
+  <If confirmed=NO:>
+  Finding   : <specific reason — pin mismatch / cell not found / new_net
+               unreachable / AMBIGUOUS>. This cell will be SKIPPED in Step 4.
+  Notes     : <any additional notes, e.g. HFS mapping explanation>
+
+  ···  (repeat Cell block for each qualifying cell)
+
+<If a stage used fallback:>
+  FALLBACK NOTE: <Stage> had no FM results (reason: <FM-036 / not-compared /
+  target failure>). Cells were identified by grepping confirmed cell names from
+  <reference_stage> into the <Stage> PreEco netlist — instance names are
+  preserved across P&R stages.
+
+================================================================================
+```

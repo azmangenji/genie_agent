@@ -92,6 +92,33 @@ Possible statuses: `WRITTEN`, `ALREADY_PRESENT`, `SKIPPED` (no new_logic entries
 
 ---
 
+## Output RPT
+
+After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt`:
+
+```
+================================================================================
+STEP 4b — SVF ENTRIES
+Tag: <TAG>  |  JIRA: DEUMCIPRTL-<JIRA>
+================================================================================
+
+TCL File : <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
+SVF File : <REF_DIR>/data/svf/EcoChange.svf  (appended by post_eco_formality.csh)
+
+Entries:
+  <Repeat for each entry:>
+  Instance  : <inv_inst_full_path>
+  Cell Type : <inv_cell_type>
+  Status    : <WRITTEN / ALREADY_PRESENT>
+
+<If no new_logic entries:>
+  (not applicable — no new_logic insertions in this round)
+
+================================================================================
+```
+
+---
+
 ## Critical Rules
 
 1. **Never directly modify EcoChange.svf** — write to the TCL file only; post_eco_formality handles the append

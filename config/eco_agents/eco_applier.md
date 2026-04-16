@@ -245,6 +245,29 @@ Cleanup temp verify file:
 rm -f /tmp/eco_verify_<TAG>_<Stage>.v
 ```
 
+### Step 6b — Structural Comparison: PostEco vs PreEco Netlist
+
+After verifying the ECO was applied, compare the **PostEco** cell structure against **PreEco** to confirm the structural change matches the timing/LOL estimation made in Step 3 (eco_netlist_studier).
+
+This is only needed for **Synthesize** stage (most logical representation).
+
+**What to compare:**
+
+1. **Old net driver** (from PreEco) — what drove `old_net` before the ECO
+2. **New net driver** (from PostEco) — what now drives the rewired pin
+
+```bash
+# In PreEco: find old_net driver
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -n "( <old_net> )" | head -10
+
+# In PostEco: find new_net driver
+zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -n "( <new_net> )" | head -10
+```
+
+Confirm the driver structures match the estimation from Step 3. If the PostEco structure reveals something unexpected (e.g., new_net is driven by a deeper combinational chain than estimated), **revise the timing estimate** accordingly.
+
+Record the structural comparison result — this feeds into the final RPT and HTML timing/LOL section.
+
 ### Step 7 — Cleanup (once per stage)
 
 ```bash
@@ -322,6 +345,127 @@ Write `data/<TAG>_eco_applied.json`. Each stage is an array — one entry per ce
     "verify_failed": 0
   }
 }
+```
+
+---
+
+## Critical Safety Rules
+
+## Output RPT
+
+After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step4_eco_applied.rpt`.
+
+**Key requirement:** For every cell entry, the RPT must clearly state:
+1. **Which RTL block this ECO targets** — the declaring module and instance hierarchy
+2. **Why this ECO fix is being applied** — what RTL change drove it, what the functional intent is
+3. **What was done exactly** — the specific net substitution or cell insertion, with the actual Verilog evidence
+4. **What was decided for SKIPPED entries** — the exact reason, so engineers know what needs manual attention
+
+```
+================================================================================
+STEP 4 — ECO APPLIED  (Round <ROUND>)
+Tag: <TAG>  |  JIRA: DEUMCIPRTL-<JIRA>
+================================================================================
+
+ECO Intent (from Step 1 RTL diff):
+  RTL Change : <change_type> in <module_name> (<file>)
+  Signal Swap: <old_token>  →  <new_token>
+  Functional : The RTL engineer changed which signal drives <expression_context>.
+               Gate-level netlists must be updated to reflect this — wherever
+               <old_token> feeds the relevant logic in module <module_name>,
+               it must be rewired to <new_token> instead.
+
+Summary: <applied> applied / <inserted> inserted / <skipped> skipped / <verify_failed> verify failed
+Backup : <Stage>.v.gz.bak_<TAG>_round<ROUND>  (created before any edit)
+
+<For each stage (Synthesize, PrePlace, Route):>
+────────────────────────────────────────────────────────────────────────────────
+[<Stage>]
+  RTL Block : <module_name>  (instance path: <TILE>/<INST_A>/.../<INST_B>)
+────────────────────────────────────────────────────────────────────────────────
+
+  Cell [<n>/<total>]  —  <APPLIED / INSERTED / SKIPPED / VERIFY_FAILED>
+  ──────────────────────────────────────────────────────────────────────
+  Cell Name : <cell_name>  (<cell_type>)
+  Block     : <TILE>/<INST_A>/.../<INST_B>/<cell_name>
+  Pin       : <pin>
+
+  Why This Fix:
+    This cell is the gate-level implementation of the <old_token> →
+    <new_token> RTL change in <module_name>. PreEco study (Step 3)
+    confirmed <old_net> on pin <pin>. The ECO rewires this pin so the
+    downstream logic (<output_net> → ...) now receives <new_net> instead,
+    matching the updated RTL intent.
+
+  <If rewire (APPLIED):>
+  Action    : Rewire  .<pin>(<old_net>)  →  .<pin>(<new_net>)
+  Scope     : Changed only within the <cell_name> instance block (line-range
+              scoped — no global substitution performed)
+  Occurrence: <N> occurrence(s) of .<pin>(<old_net>) in PostEco — must be 1
+  Verified  : YES — post-edit grep confirms .<pin>(<old_net>) no longer present
+              in the <cell_name> instance block
+  Backup    : <backup_path>
+
+  <If new_logic (INSERTED):>
+  Action    : Insert new inverter — <old_net> must be inverted to produce
+              <new_net>. Since <new_net> does not exist in this stage's
+              PostEco netlist, a new inverter cell is auto-inserted.
+  Inverter  : <inv_cell_type>  <inv_inst>
+              Input  : <source_net>  (the non-inverted form of <new_net>)
+              Output : <inv_out>  (used as new_net substitute)
+  Full Path : <inv_inst_full_path>
+  Then      : Rewired  .<pin>(<old_net>)  →  .<pin>(<inv_out>)
+  Placement : Inserted inside <module_name> scope (before its endmodule),
+              not at file-level endmodule
+  Verified  : YES — grep confirms <inv_inst> present in recompressed PostEco
+
+  <If SKIPPED:>
+  Action    : No change made to this cell in <Stage>
+  Reason    : <specific reason — e.g.:
+               "AMBIGUOUS — 3 occurrences of .<pin>(<old_net>) found in PostEco;
+                cannot safely scope the replacement without risk of modifying
+                unrelated logic. Manual review required."
+               OR
+               "cell not found in PostEco — may have been optimized away
+                during P&R. No ECO needed for this instance."
+               OR
+               "new_net <new_net> absent from PostEco and source_net
+                <source_net> also not found — cannot insert inverter.
+                Manual fix required.">
+  Engineer  : <what the engineer should do about this, if anything>
+
+  ···  (repeat Cell block for each cell)
+
+<If stage had no confirmed cells from Step 3:>
+  [<Stage>] — SKIPPED (no confirmed cells from PreEco study)
+  Reason    : Step 3 found no qualifying cells for this stage. No PostEco
+              edits were made. Backup was not created.
+
+--------------------------------------------------------------------------------
+TIMING & LOL ESTIMATION  (Synthesize stage structural analysis)
+--------------------------------------------------------------------------------
+
+  Old Net Driver : <driver_cell_name>  (<driver_cell_type>)  pin=<Z/ZN/Q>
+                   Structure: <e.g. "combinational NAND2, inputs from FF outputs"
+                               OR "FF Q output — direct register launch point">
+  Old Net Fanout : <N> connections in Synthesize PreEco netlist
+
+  New Net Driver : <driver_cell_name>  (<driver_cell_type>)  pin=<Z/ZN/Q>
+                   Structure: <e.g. "FF Q output — direct register launch point"
+                               OR "combinational INV, input from FF Q">
+  New Net Fanout : <N> connections in Synthesize PreEco netlist
+
+  LOL Impact     : <e.g. "new_net is driven directly by FF Q — shallower than
+                           old_net which passes through a combinational chain.
+                           Replacing old_net reduces logic depth at this pin.">
+  Timing Estimate: <BETTER / LIKELY_BETTER / NEUTRAL / RISK / LOAD_RISK / UNCERTAIN>
+  Reasoning      : <1-2 sentences — plain English explanation why timing will
+                    improve, worsen, or stay the same based on the structure>
+
+  PostEco Confirm: <"Structural match confirmed — estimate stands" /
+                    "Revised — PostEco reveals <difference>, estimate updated to <new>">
+
+================================================================================
 ```
 
 ---
