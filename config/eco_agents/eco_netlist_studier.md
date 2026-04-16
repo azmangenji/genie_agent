@@ -146,6 +146,34 @@ Check that the pin identified by find_equivalent_nets has old_net connected:
 - If confirmed: `"confirmed": true`
 - If not found or mismatched: `"confirmed": false` with explanation
 
+### 4b. Verify new_net is reachable in the same scope
+
+After confirming old_net, check that new_net exists within the same stage netlist:
+
+```bash
+grep -cw "<new_net>" /tmp/eco_study_<TAG>_<Stage>.v
+```
+
+- If count ≥ 1 → `"new_net_reachable": true` — safe to rewire directly
+- If count = 0 → `"new_net_reachable": false` — new_net not present in this stage's netlist
+
+**If new_net not reachable — try HFS alias search:**
+
+P&R tools may rename signals to internal net names (e.g., `FxPrePlace_HFSNET_XXXX`). Search by partial root name:
+
+```bash
+grep -n "<new_net_root>" /tmp/eco_study_<TAG>_<Stage>.v | head -10
+```
+
+Where `<new_net_root>` is the signal name without suffixes. If an alias is found, record it:
+- `"new_net_alias": "<FxPrePlace_HFSNET_XXXX>"` — the applier will use this alias instead of the bare new_net name
+- `"new_net_reachable": true`
+
+If no alias found either:
+- `"new_net_reachable": false`
+- `"confirmed": false` — do NOT apply this change; rewiring to a non-existent net would break the netlist
+- `"reason": "new_net <new_net> not found in <Stage> PreEco netlist and no HFS alias found"`
+
 ### 5. Verify output count before moving to next stage
 
 Before cleaning up, count your output entries for this stage and compare to your qualifying list:
@@ -271,7 +299,9 @@ Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolut
         "<port_Z>": "<output_net>"
       },
       "line_context": "<cell_type_1> <cell_name_1> (\n  .<port_A>(<net_A>),\n  .<port_B>(<old_signal>),\n  .<port_Z>(<output_net>)\n);",
-      "confirmed": true
+      "confirmed": true,
+      "new_net_reachable": true,
+      "new_net_alias": null
     },
     {
       "cell_name": "<cell_name_2>",
@@ -284,7 +314,9 @@ Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolut
         "<port_ZN>": "<output_net_2>"
       },
       "line_context": "<cell_type_2> <cell_name_2> (\n  .<port_I>(<old_signal>),\n  .<port_ZN>(<output_net_2>)\n);",
-      "confirmed": true
+      "confirmed": false,
+      "new_net_reachable": false,
+      "reason": "new_net <new_signal> not found in PrePlace PreEco netlist and no HFS alias found"
     }
   ],
   "PrePlace": [...],
