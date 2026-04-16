@@ -50,9 +50,21 @@ For each change record:
   "change_type": "<wire_swap|new_port|new_logic|port_connection>",
   "old_token": "<old_signal_name>",
   "new_token": "<new_signal_name>",
-  "context_line": "<full RTL line containing the change>"
+  "context_line": "<full RTL line containing the change>",
+  "target_register": "<register_name>",
+  "target_bit": "<[N] or null>"
 }
 ```
+
+**`target_register` and `target_bit` extraction (MANDATORY for wire_swap):**
+
+From `context_line`, extract the LHS register being assigned — this is the TARGET REGISTER that `eco_netlist_studier` uses for backward cone verification.
+
+- Pattern: `<register_name>[<N>]  <=` or `<register_name>  <=`
+- Example: `<TargetReg>[<N>]   <=` → `target_register: "<TargetReg>"`, `target_bit: "[<N>]"`
+- Example: `<TargetReg>  <=` → `target_register: "<TargetReg>"`, `target_bit: null`
+- If multiple always blocks changed (different bits of same register), record each separately with its own `target_bit`
+- For `new_port`, `new_logic`, `port_connection` types: set both to `null`
 
 **`module_name`** = the module defined in the RTL file where the diff was found. Extract it from the `module <name>` line at the top of the changed file — do NOT infer it from signal usage in other files.
 
@@ -145,7 +157,9 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
       "change_type": "<wire_swap|new_port|new_logic|port_connection>",
       "old_token": "<old_signal_name>",
       "new_token": "<new_signal_name>",
-      "context_line": "<full RTL line containing the change>"
+      "context_line": "<full RTL line containing the change>",
+      "target_register": "<register_name from LHS of context_line>",
+      "target_bit": "<[0] or null>"
     }
   ],
   "nets_to_query": [
@@ -186,12 +200,13 @@ Tag: <TAG>  |  Tile: <TILE>  |  JIRA: DEUMCIPRTL-<JIRA>
 ================================================================================
 
 <For each entry in changes[]:>
-Source File : <file>
-Module      : <module_name>
-Change Type : <change_type>
-  Old Signal: <old_token>
-  New Signal: <new_token>
-  Context   :
+Source File     : <file>
+Module          : <module_name>
+Change Type     : <change_type>
+  Old Signal    : <old_token>
+  New Signal    : <new_token>
+  Target Reg    : <target_register><target_bit>
+  Context       :
     <context_line>
 
 <Repeat block if more than one change>

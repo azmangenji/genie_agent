@@ -6,6 +6,8 @@
 
 **Inputs also include JIRA number** — used for naming new_logic ECO cells: `eco_<jira>_<seq>` and nets: `n_eco_<jira>_<seq>`.
 
+**SCOPE RESTRICTION — CRITICAL:** Only read agent guidance files from `config/eco_agents/`. Do NOT read from `config/analyze_agents/` — those files govern static check analysis (CDC/RDC, Lint, SpgDFT) and contain rules that are wrong for ECO gate-level netlist editing. In particular, `config/analyze_agents/shared/CRITICAL_RULES.md` does NOT apply to this flow.
+
 ---
 
 ## CRITICAL RULES
@@ -29,6 +31,8 @@
 ---
 
 ## PRE-FLIGHT
+
+**Rule loading for this flow:** This flow does NOT use `config/analyze_agents/shared/CRITICAL_RULES.md`. Do NOT read it. Do NOT prepend it to sub-agent prompts. The only guidance files for this flow are the md files inside `config/eco_agents/`. If you have read `config/analyze_agents/ORCHESTRATOR.md`, discard its Pre-Flight instructions — they do not apply here.
 
 Before any step:
 1. `cd <BASE_DIR>` (parent of `runs/` folder from LOG_FILE)

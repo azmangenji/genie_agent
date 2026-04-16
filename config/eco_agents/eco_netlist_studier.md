@@ -174,7 +174,45 @@ If no alias found either:
 - `"confirmed": false` — do NOT apply this change; rewiring to a non-existent net would break the netlist
 - `"reason": "new_net <new_net> not found in <Stage> PreEco netlist and no HFS alias found"`
 
-### 4c. Structural Analysis — Timing & LOL Estimation
+### 4c. Backward Cone Verification (MANDATORY for wire_swap)
+
+**Purpose:** FM's `find_equivalent_nets` returns ALL cells using `old_net` in scope — including cells that use it for completely unrelated purposes. This step confirms the cell is actually in the backward cone of the TARGET REGISTER from the RTL change. A cell NOT in the backward cone must be excluded even if FM confirmed it, because rewiring it would break other logic.
+
+Read `target_register` and `target_bit` from `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`. If `target_register` is null (non-wire_swap change type), skip this step.
+
+**Step 1 — Find target register D-input net in PreEco netlist:**
+
+```bash
+grep -n "<target_register>" /tmp/eco_study_<TAG>_<Stage>.v | head -10
+```
+
+Read the register instantiation block. Find the D-input port that corresponds to `target_bit`:
+- Single-bit FF: `.D(<net>)` → D-net is `<net>`
+- Multi-bit MB cell: find the `.D<N>` port matching `target_bit` (e.g., `target_bit=[0]` → `.D4` or `.D1` depending on port ordering — read the Q outputs to match bit index)
+- Record the D-input net as `<target_d_net>`
+
+**Step 2 — Trace backward from D-input (max 8 hops):**
+
+```bash
+# Find driver of <target_d_net>
+grep -n "( <target_d_net> )" /tmp/eco_study_<TAG>_<Stage>.v | head -5
+```
+
+Look for the line where `<target_d_net>` appears as an OUTPUT (on pin `ZN`, `Z`, `Q`, `CO`, `S`). Read that cell's instantiation block to get its input nets. Repeat backward until:
+- `old_net` (or its HFS alias e.g. `FxPrePlace_HFSNET_XXXX`) appears on an input pin → **FOUND in backward cone — stop**
+- OR you reach a primary input or clock net → **NOT in backward cone — stop**
+
+The cell under study (the FM-confirmed cell) is in the backward cone **if and only if** it appears in this traced path.
+
+**Step 3 — Decision:**
+- Cell IS in backward cone → keep `"confirmed": true`, add `"in_backward_cone": true`
+- Cell is NOT in backward cone → override to `"confirmed": false`, `"in_backward_cone": false`, `"reason": "not in backward cone of <target_register><target_bit> — output feeds different logic, rewiring would break unrelated DFFs"`
+
+**Example:** For `<target_register>[<N>]` — backward trace: `<D_net> ← <cell_A> ← <net_A> ← <cell_B> ← <net_B> ← <cell_C>/pin=<old_net>`. Only `<cell_C>` is in the backward cone. Another cell that also uses `<old_net>` but whose output feeds different registers is NOT in cone and must be excluded.
+
+**CRITICAL RULE:** If the backward trace reaches the cell under study → confirmed. If the trace reaches `old_net` through a completely different path not involving the cell under study → the cell is NOT in cone. FM confirmed it uses old_net, but for a different functional purpose.
+
+### 4d. Structural Analysis — Timing & LOL Estimation
 
 **Only on Synthesize stage** (most logical, pre-P&R transformations). For each confirmed cell, compare the driver structure of `old_net` vs `new_net` in the PreEco netlist and make an engineering estimation of timing and LOL impact.
 
@@ -376,6 +414,7 @@ Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolut
       },
       "line_context": "<cell_type_1> <cell_name_1> (\n  .<port_A>(<net_A>),\n  .<port_B>(<old_signal>),\n  .<port_Z>(<output_net>)\n);",
       "confirmed": true,
+      "in_backward_cone": true,
       "new_net_reachable": true,
       "new_net_alias": null
     },
