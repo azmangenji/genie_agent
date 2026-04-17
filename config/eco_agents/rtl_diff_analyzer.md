@@ -102,15 +102,24 @@ Extract the instance name from the instantiation line:
 <module_b> <INST_B> (   ← module_name=<module_b>, instance_name=<INST_B>
 ```
 
-**3. Repeat up the hierarchy until you reach the tile level:**
+**3. Repeat up the hierarchy until you reach the tile module — stop at the tile's DIRECT CHILDREN:**
+
+Keep tracing upward until the parent module IS the tile module (its name matches `<TILE>`). Stop there — do NOT include the tile itself in the path. The tile is the boundary.
+
 ```bash
 grep -n "<parent_module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<grandparent>.v
 ```
 
-**4. Build full path using INSTANCE NAMES — from declaring module up to tile:**
-- If tile=`<TILE>` and hierarchy is: tile → `<INST_A>` (instance of `<module_A>`) → `<INST_B>` (instance of `<module_B>`) and signal is DECLARED in `<module_B>`
-- Path = `<INST_A>/<INST_B>/signal_name`
-- The `hierarchy` array MUST reflect all levels down to the declaring module: `["<INST_A>", "<INST_B>"]`
+**4. Build full path using INSTANCE NAMES — from declaring module's instance up to (but NOT including) the tile:**
+
+- If tile=`<TILE>` and hierarchy is: `<TILE>` → `<INST_A>` (instance of `<module_A>`) → `<INST_B>` (instance of `<module_B>`) and signal is DECLARED in `<module_B>`
+- Path = `<INST_A>/<INST_B>/signal_name`   ← does NOT start with `<TILE>`
+- The `hierarchy` array contains only levels BELOW the tile: `["<INST_A>", "<INST_B>"]`
+
+**CRITICAL — Do NOT include the tile name in the path:**
+FM scopes all queries under the tile automatically. If `<TILE>=umccmd` and the path is `umccmd/ARB/signal`, FM constructs the internal path as `.../umccmd/umccmd/ARB/signal` (double prefix) → FM-036 error for all nets. The correct path is `ARB/signal`.
+
+Rule: `net_path[0]` must NEVER equal `<TILE>`.
 
 **5. Self-verify (MANDATORY before writing output):**
 ```bash
@@ -119,9 +128,14 @@ grep -n "^\s*reg\b.*<signal>\|^\s*wire\b.*<signal>" <REF_DIR>/data/PreEco/SynRtl
 
 # Confirm instance name is correct at each level
 grep -n "<module_name> <instance_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
+
+# Confirm net_path does NOT start with tile name
+# WRONG: net_path = "<TILE>/<INST_A>/signal"  → FM-036
+# RIGHT: net_path = "<INST_A>/signal"
 ```
 
 If the `reg`/`wire` declaration is NOT found in the module you identified → you stopped too high — go one level deeper.
+If `net_path` starts with `<TILE>` → you went one level too far up — remove the first component.
 
 ---
 
