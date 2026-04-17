@@ -154,7 +154,7 @@ HFS (High Fanout Signal) aliases (`FxPrePlace_HFSNET_*`, `FxOptCts_HFSNET_*`, et
 - The HFS alias may belong to the **parent scope**, while the target cell is **inside a sub-module**
 - FM compares stage-to-stage using logical signal names — an HFS alias in one stage may not match the direct signal name used in another stage
 
-**Always use the direct signal name (e.g., `SendWckSyncOffCs0`) when it exists in the netlist. Only fall back to an HFS alias as a last resort when the direct name is truly absent.**
+**Always use the direct signal name (i.e., `<new_token>` from the RTL diff) when it exists in the netlist. Only fall back to an HFS alias as a last resort when the direct name is truly absent.**
 
 After confirming old_net, check for new_net in this priority order:
 
