@@ -50,10 +50,16 @@ For each entry in the stage array where `"confirmed": true`, perform steps 4a–
 
 #### 4a — Detect change type
 
-Check if `new_net` exists in the PostEco temp file:
+**CRITICAL — Which `new_net` value to use:**
+- If `new_net_alias` is **null** in the study JSON → use `new_net` (direct signal name) for all checks and rewires
+- If `new_net_alias` is **non-null** in the study JSON → use `new_net_alias` (HFS alias) for all checks and rewires instead of `new_net`
+
+In practice: if the netlist studier followed Priority 1 correctly, `new_net_alias` will always be null and you use the direct `new_net`. `new_net_alias` is only set when Priority 1 failed (direct name absent) and Priority 2 found an HFS alias.
+
+Check if the effective `new_net` (direct or alias per above) exists in the PostEco temp file:
 
 ```bash
-grep -cw "<new_net>" /tmp/eco_apply_<TAG>_<Stage>.v
+grep -cw "<effective_new_net>" /tmp/eco_apply_<TAG>_<Stage>.v
 ```
 
 - If count ≥ 1 → **rewire** (normal path, go to 4b)

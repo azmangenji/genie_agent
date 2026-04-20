@@ -201,8 +201,15 @@ Why this works: in a flat gate-level netlist, `<new_token>` exists as a real net
 grep -cw "<new_token>" /tmp/eco_study_<TAG>_<Stage>.v
 ```
 
-- If count ≥ 1 → `"new_net_reachable": true`, `"new_net_alias": null` — use `new_token` directly, do NOT search for HFS alias
+- If count ≥ 1 → `"new_net_reachable": true`, `"new_net_alias": null` — **STOP HERE**. Use `new_token` directly as `new_net`. Do NOT search for any HFS alias. Do NOT set `new_net_alias`. Do NOT tell the applier to use an alias. The applier will rewire `.<pin>(<old_net>)` → `.<pin>(<new_token>)` using the direct name.
 - If count = 0 → direct name truly absent from file, proceed to Priority 2
+
+**CRITICAL — when Priority 1 is satisfied, the JSON entry MUST have:**
+```json
+"new_net": "<new_token>",
+"new_net_alias": null
+```
+**Never set `new_net_alias` to an HFS value when Priority 1 succeeds** — the applier reads `new_net_alias` and will use it over `new_net` if set. Setting it causes the alias to be applied even when the direct name would work.
 
 **Priority 2 — HFS alias search (ONLY if direct name not found):**
 
