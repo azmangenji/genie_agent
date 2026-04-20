@@ -78,16 +78,22 @@ Using the `nets_to_query` list from Step 1:
 # Load the RTL diff JSON
 rtl_diff = load("<BASE_DIR>/data/<TAG>_eco_rtl_diff.json")
 
-# Extract target_register values (must NOT be queried)
-target_registers = {c["target_register"] for c in rtl_diff["changes"] if c.get("target_register")}
+# Collect all valid signal names to query: only old_token and new_token from each change
+valid_tokens = set()
+for c in rtl_diff["changes"]:
+    if c.get("old_token"): valid_tokens.add(c["old_token"])
+    if c.get("new_token"): valid_tokens.add(c["new_token"])
 
-# Filter: keep only nets whose net_path does NOT end with a target_register name
+# Keep only nets whose signal name (last path component, strip _0_ bus suffix) matches a valid token
+def net_signal(net_path):
+    name = net_path.split("/")[-1]
+    return name[:-3] if name.endswith("_0_") else name  # strip bus suffix if present
+
 valid_nets = [n for n in rtl_diff["nets_to_query"]
-              if not any(n["net_path"].endswith(reg) or n["net_path"].endswith(reg + "_0_")
-                         for reg in target_registers)]
+              if net_signal(n["net_path"]) in valid_tokens]
 ```
 
-If any `nets_to_query` entry is a `target_register` (e.g., `ARB/ArbBypassWckIsInSync`, `ARB/ArbBypassWckIsInSync_0_`), **drop it silently** — do NOT submit it to FM. Only `old_token` and `new_token` nets are valid queries. This validation catches bugs from reused Step 1 results that predate the current md rules.
+If any `nets_to_query` entry does not correspond to `old_token` or `new_token` from the change list, **drop it silently** — do NOT submit it to FM. Only `old_token` and `new_token` nets are valid queries. This validation catches bugs from reused Step 1 results that predate the current md rules.
 
 1. Build the comma-separated net list from all `net_path` entries in the **validated** `nets_to_query`
 2. Submit via `genie_cli.py` with `--xterm` (live output in popup window, correct TileBuilder/LSF environment):
