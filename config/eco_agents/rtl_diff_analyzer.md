@@ -165,11 +165,13 @@ For EACH change, determine which gate-level nets will reveal WHERE to make the E
 - For `port_connection`: query both old and new connection signals
 - **Avoid querying flip-flop Q outputs** — focus on driving nets and inputs
 
-**Bus signals:** If declared as `reg [N:0] SignalName`, generate BOTH:
+**Bus signals:** If `old_token` or `new_token` is declared as `reg [N:0] SignalName`, generate BOTH variants for that signal:
 - `<INST_A>/<INST_B>/SignalName` (may work in some FM targets)
 - `<INST_A>/<INST_B>/SignalName_0_` (gate-level bit-indexed form for bit 0)
 
 Pass BOTH to find_equivalent_nets — FM-036 on one, the other may succeed.
+
+**CRITICAL — `target_register` is NEVER queried via find_equivalent_nets.** `target_register` (the LHS register of the changed assignment, e.g., `ArbBypassWckIsInSync`) is only recorded in the JSON for Step 3 backward cone verification. Do NOT add it or any bus variant of it to `nets_to_query`. Only `old_token` and `new_token` (and their bus variants if applicable) go into `nets_to_query`.
 
 ---
 
