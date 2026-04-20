@@ -131,6 +131,62 @@ Using the `nets_to_query` list from Step 1:
      --execute --xterm
    ```
 
+### "No Equivalent Nets" Retry Strategy
+
+If a stage returns `--- No Equivalent Nets:` (not FM-036 — the net path was valid but FM found no gate-level equivalents):
+
+This typically happens when:
+- The hierarchy path is at the wrong level (too high or too low)
+- The P&R stage restructured the signal into HFS aliases not visible at the queried scope
+
+**Retry steps (max 2 retries, each gets its own genie_cli call):**
+
+1. **Retry with deeper hierarchy** — add one more instance level from the declaring module trace (e.g., `<INST_A>/<signal>` → `<INST_A>/<INST_B>/<signal>` if `<INST_B>` is the sub-module containing the declaration):
+   ```bash
+   python3 script/genie_cli.py \
+     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<deeper_net_path>" \
+     --execute --xterm
+   ```
+   Read new `<noequiv_retry1_tag>` from CLI output. Poll rpt files for sentinel. Once complete:
+   ```bash
+   # Write and copy raw rpt for this retry
+   {
+     echo "TARGET: FmEqvPreEcoSynthesizeVsPreEcoSynRtl"
+     cat <REF_DIR>/rpts/FmEqvPreEcoSynthesizeVsPreEcoSynRtl/find_equivalent_nets_<noequiv_retry1_tag>.txt
+     echo "TARGET: FmEqvPreEcoPrePlaceVsPreEcoSynthesize"
+     cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<noequiv_retry1_tag>.txt
+     echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
+     cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<noequiv_retry1_tag>.txt
+   } > <BASE_DIR>/data/<noequiv_retry1_tag>_find_equivalent_nets_raw.rpt
+   cp <BASE_DIR>/data/<noequiv_retry1_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
+   ```
+   Read results from `<BASE_DIR>/data/<noequiv_retry1_tag>_spec`. If results found → use them and stop retrying.
+
+2. **Retry with parent hierarchy** — strip one level from original path (e.g., `<INST_A>/<INST_B>/<signal>` → `<INST_A>/<signal>`):
+   ```bash
+   python3 script/genie_cli.py \
+     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<parent_net_path>" \
+     --execute --xterm
+   ```
+   Read new `<noequiv_retry2_tag>` from CLI output. Same output handling as retry 1:
+   ```bash
+   # Write and copy raw rpt
+   { ... } > <BASE_DIR>/data/<noequiv_retry2_tag>_find_equivalent_nets_raw.rpt
+   cp <BASE_DIR>/data/<noequiv_retry2_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
+   ```
+   Read results from `<BASE_DIR>/data/<noequiv_retry2_tag>_spec`.
+
+**Output files per retry:**
+- `data/<noequiv_retry<N>_tag>_find_equivalent_nets_raw.rpt` — raw FM output for each retry
+- Copied to `<AI_ECO_FLOW_DIR>/` alongside the main fenets raw rpt
+- Referenced in `data/<TAG>_eco_step2_fenets.rpt` with note: `NO_EQUIV_NETS retry<N> tag: <noequiv_retry<N>_tag>`
+
+**If all retries still return "No Equivalent Nets":**
+- Apply Stage Fallback in Step 3 (eco_netlist_studier) — grep confirmed cell names from another stage
+- Record reason in step2 fenets rpt: `NO_EQUIV_NETS — all retries exhausted, fallback required for <Stage>`
+
+---
+
 ### FM-036 Fallback Strategy
 
 If any net returns `Error: Unknown name ... (FM-036)`:

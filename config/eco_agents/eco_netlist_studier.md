@@ -222,6 +222,45 @@ The cell under study (the FM-confirmed cell) is in the backward cone **if and on
 
 **CRITICAL RULE:** If the backward trace reaches the cell under study → confirmed. If the trace reaches `old_net` through a completely different path not involving the cell under study → the cell is NOT in cone. FM confirmed it uses old_net, but for a different functional purpose.
 
+### 4c-verify. Forward Trace Second Verification (MANDATORY for cells marked in_backward_cone: false)
+
+**Purpose:** The backward cone trace starts from the target register and traces backward. It is possible (though rare) that the trace missed a path through complex logic restructuring. For every cell marked `in_backward_cone: false`, run a forward trace from the cell's output to double-confirm it truly does NOT reach `<target_register><target_bit>`.
+
+**Step 1 — Find the cell's output net:**
+
+From the cell instantiation block already read in Step 4, identify the output pin net (pin `Z`, `ZN`, `Q`, etc.) — call it `<cell_output_net>`.
+
+**Step 2 — Trace forward (max 6 hops):**
+
+```bash
+# Find what cell receives <cell_output_net> as an input
+grep -n "( <cell_output_net> )" /tmp/eco_study_<TAG>_<Stage>.v | grep -v "\.ZN\|\.Z\b\|\.Q\b" | head -5
+```
+
+Read the receiving cell's instantiation, find its output net, and repeat forward. Stop when either:
+- `<target_d_net>` (the D-input of `<target_register>`) is reached → **cell IS in cone — upgrade to `in_backward_cone: true`**
+- A primary output, another register's D-input (different from target), or unrelated logic → **NOT in cone — exclusion confirmed**
+
+**Step 3 — Update JSON and RPT:**
+
+**Case A — Forward trace reached target register (backward cone was wrong):**
+- Update JSON: `"in_backward_cone": true`, `"confirmed": true`, `"forward_trace_verified": true`, `"forward_trace_result": "UPGRADED — output reaches <target_register><target_bit> via <hop_chain>"`
+- Remove the previous exclusion reason
+- This cell is now included in the ECO — add it back to the qualifying list for eco_applier
+
+**Case B — Forward trace confirmed exclusion:**
+- Update JSON: `"in_backward_cone": false`, `"confirmed": false`, `"forward_trace_verified": true`, `"forward_trace_result": "CONFIRMED EXCLUDED — output feeds <actual_destination>, not <target_register><target_bit>"`
+
+**In the step3 RPT**, add a sub-section under each cell's block:
+```
+  Forward Trace : <UPGRADED / CONFIRMED EXCLUDED>
+  Trace Path    : <cell_output_net> → <cell_B> → <net_B> → ... → <final_destination>
+  Decision      : <"Now CONFIRMED — cell added back to qualifying list" /
+                   "Exclusion verified — cell correctly excluded from ECO">
+```
+
+**Why this matters:** A cell excluded by backward cone but actually feeding the target register (through a path the backward trace missed) would leave the ECO incomplete — FM would fail. This second pass catches that case before applying the ECO.
+
 ### 4d. Structural Analysis — Timing & LOL Estimation
 
 **Only on Synthesize stage** (most logical, pre-P&R transformations). For each confirmed cell, compare the driver structure of `old_net` vs `new_net` in the PreEco netlist and make an engineering estimation of timing and LOL impact.
