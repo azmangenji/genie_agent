@@ -66,7 +66,7 @@ From `context_line`, extract the LHS register being assigned — this is the TAR
 - If multiple always blocks changed (different bits of same register), record each separately with its own `target_bit`
 - For `new_port`, `new_logic`, `port_connection` types: set both to `null`
 
-**`module_name`** = the module defined in the RTL file where the diff was found. Extract it from the `module <name>` line at the top of the changed file — do NOT infer it from signal usage in other files.
+**`module_name`** = the module that **declares** the changed signals as `reg` or `wire` — NOT necessarily the module in the changed file. The changed file's module is only the starting candidate. Step C will verify whether the signals are truly declared (`reg`/`wire`) in that module or merely passed through as input/output ports. If they are only ports, `module_name` must be updated to the parent module where the `reg`/`wire` declaration lives. Leave this field as the changed file's module initially — Step C is responsible for correcting it if needed.
 
 ---
 
@@ -86,12 +86,18 @@ grep -rn "^\s*reg\b.*<signal>\|^\s*wire\b.*<signal>" <REF_DIR>/data/PreEco/SynRt
 
 Use anchored patterns (`^\s*reg\b`, `^\s*wire\b`) to find only **declarations**, not usages or port connections. The file that contains the declaration is the declaring module.
 
-- If the diff file is `rtl_<module_X>.v` → `module_name = <module_X>` (use the changed file's module directly)
-- Confirm by checking that `reg` or `wire` declaration of the signal exists in that file:
+- Start with the changed file's module as the candidate. Confirm that `reg` or `wire` declaration of the signal exists in that file:
 ```bash
 grep -n "^\s*reg\b.*<signal>\|^\s*wire\b.*<signal>" <REF_DIR>/data/PreEco/SynRtl/rtl_<module_X>.v
 ```
-If NOT found → the signal is only a port in this file → look one level deeper (the signal is declared in a sub-module instantiated here).
+- **If FOUND** → declaring module = changed file's module → `module_name` in JSON stays as `<module_X>` ✓
+- **If NOT found** → the signal is only an `input`/`output` port in the changed file. The declaring module is a **PARENT** module (one that instantiates the changed file's module and drives this signal as a `reg`/`wire`). Search all RTL files for the declaration:
+```bash
+grep -rn "^\s*reg\b.*<signal>\|^\s*wire\b.*<signal>" <REF_DIR>/data/PreEco/SynRtl/
+```
+The file containing the `reg`/`wire` declaration is the declaring module. **Update `module_name` in the JSON to this declaring module** — NOT the changed file's module. The hierarchy path and scope filter in Steps 2–4 will be based on this declaring module's instance, not the changed file's instance.
+
+**Example:** diff found in `rtl_umctim.v` (module `umctim`), but `SendWckSyncOffCs0` is `reg` in `rtl_umcarb.v` (module `umcarb`). → `module_name = umcarb`, hierarchy starts at `ARB` (umcarb's instance in the tile), NOT at `ARB/TIM` (umctim's instance).
 
 **2. Find that module's INSTANCE NAME in its parent:**
 ```bash
@@ -136,6 +142,15 @@ grep -n "<module_name> <instance_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent
 
 If the `reg`/`wire` declaration is NOT found in the module you identified → you stopped too high — go one level deeper.
 If `net_path` starts with `<TILE>` → you went one level too far up — remove the first component.
+
+**6. Update `module_name` in JSON and RPT if declaring module differs from changed file:**
+
+If Step C found that the declaring module is different from the changed file's module (i.e., the signals are only ports in the changed file), you MUST:
+- Update `"module_name"` in `<TAG>_eco_rtl_diff.json` to the declaring module
+- Update the `Module :` line in `<TAG>_eco_step1_rtl_diff.rpt` to the declaring module
+- Add a `Notes:` section in the RPT explaining: "diff found in `<changed_file>` (module `<changed_module>`), but `<signal>` is declared as `reg`/`wire` in `<declaring_module>` — `module_name` set to declaring module `<declaring_module>`"
+
+**This is the root cause of Run B's Step 1 error:** diff was in `rtl_umctim.v` → candidate module = `umctim`. But `SendWckSyncOffCs0`/`SendWckSyncOffCs2` are `reg` in `rtl_umcarb.v`. Correct `module_name` = `umcarb`, hierarchy starts at `ARB`, not `ARB/TIM`.
 
 ---
 

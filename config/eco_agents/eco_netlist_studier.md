@@ -158,13 +158,21 @@ HFS (High Fanout Signal) aliases (`FxPrePlace_HFSNET_*`, `FxOptCts_HFSNET_*`, et
 
 After confirming old_net, check for new_net in this priority order:
 
+**CRITICAL — `old_net` being an HFS alias does NOT bypass Priority 1:**
+
+`<new_net>` for Priority 1 is always `new_token` from the RTL diff JSON — it is NEVER derived from the alias pattern of `old_net`. Even when `old_net` found on the pin is an HFS alias (e.g., `FxPrePlace_HFSNET_2657` instead of `SendWckSyncOffCs2`), you MUST still run Priority 1 using `new_token` directly (e.g., `SendWckSyncOffCs0`). Do NOT assume new_net must also be an HFS alias because old_net is one.
+
+Why this works: in a flat gate-level netlist, `SendWckSyncOffCs0` exists as a real net at ARB scope (driving a buffer into TIM). `grep -cw "SendWckSyncOffCs0"` will return ≥ 1. Priority 1 applies → use direct name, stop.
+
+**Example (Run B's mistake):** old_net on pin B1 = `FxPrePlace_HFSNET_2657`. Agent incorrectly reasoned: "old_net is HFS → new_net must also be HFS → use `FxPrePlace_HFSNET_2196`". Correct action: run `grep -cw "SendWckSyncOffCs0"` → count ≥ 1 → use `SendWckSyncOffCs0` directly. Run A did this and FM PASSED.
+
 **Priority 1 — Direct signal name (ALWAYS try first):**
 ```bash
-grep -cw "<new_net>" /tmp/eco_study_<TAG>_<Stage>.v
+grep -cw "<new_token>" /tmp/eco_study_<TAG>_<Stage>.v
 ```
 
-- If count ≥ 1 → `"new_net_reachable": true`, `"new_net_alias": null` — use direct name, do NOT search for HFS alias
-- If count = 0 → direct name not present, proceed to Priority 2
+- If count ≥ 1 → `"new_net_reachable": true`, `"new_net_alias": null` — use `new_token` directly, do NOT search for HFS alias
+- If count = 0 → direct name truly absent from file, proceed to Priority 2
 
 **Priority 2 — HFS alias search (ONLY if direct name not found):**
 
@@ -553,6 +561,7 @@ ECO Context (from Step 1 RTL diff):
   Old Net   : <old_net>
   New Net   : <new_net>  <(HFS alias in this stage: <new_net_alias>)>
   Confirmed : <YES / NO>
+  In Cone   : <YES / NO (reason)>
   Source    : <FM+trace / synthesize_fallback / route_fallback / grep>
 
   Verilog (PreEco instantiation block):
@@ -560,18 +569,36 @@ ECO Context (from Step 1 RTL diff):
 
   Finding   : Pin <pin> has net <old_net> connected — confirmed match.
               New net <new_net> is reachable in this stage — rewire is safe.
-  <If confirmed=NO:>
-  Finding   : <specific reason — pin mismatch / cell not found / new_net
-               unreachable / AMBIGUOUS>. This cell will be SKIPPED in Step 4.
+  <If confirmed=NO (not in backward cone):>
+  Finding   : Not in backward cone of <target_register><target_bit>.
+              Output net <cell_output_net> feeds <actual_destination> — different logic.
+              This cell will be SKIPPED in Step 4.
+
+  <If 2nd iteration (forward trace) was performed — always show for NO cells:>
+  Forward Trace (2nd Iteration):
+    Method    : Traced forward from output net <cell_output_net> for <N> hops
+    Path      : <cell_output_net> → <cell_B>/<net_B> → ... → <final_destination>
+    Result    : <UPGRADED — reaches <target_register><target_bit> via above path /
+                 CONFIRMED EXCLUDED — terminates at <actual_destination>, not target>
+    Decision  : <"Cell upgraded to CONFIRMED — added to ECO qualifying list" /
+                 "Exclusion verified by 2nd iteration — cell correctly excluded">
+
   Notes     : <any additional notes, e.g. HFS mapping explanation>
 
   ···  (repeat Cell block for each qualifying cell)
 
 <If a stage used fallback:>
-  FALLBACK NOTE: <Stage> had no FM results (reason: <FM-036 / not-compared /
+  FALLBACK NOTE: <Stage> had no FM results (reason: <FM-036 / no-equiv-nets /
   target failure>). Cells were identified by grepping confirmed cell names from
   <reference_stage> into the <Stage> PreEco netlist — instance names are
   preserved across P&R stages.
+
+<If "No Equivalent Nets" retry was performed for this stage:>
+  NO-EQUIV-NETS 2ND ITERATION NOTE:
+    Original query  : <original_net_path> → No Equivalent Nets
+    Retry 1 (<noequiv_retry1_tag>) : <retry1_net_path> → <FOUND <N> cells / Still no results>
+    Retry 2 (<noequiv_retry2_tag>) : <retry2_net_path> → <FOUND <N> cells / Still no results>
+    Final outcome   : <Used retry <N> results / All retries exhausted — stage fallback applied>
 
 ================================================================================
 ```

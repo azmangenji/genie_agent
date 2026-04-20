@@ -117,7 +117,42 @@ Using the `nets_to_query` list from Step 1:
    ```
    Do the same for each FM-036 retry tag — write `<BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw.rpt` using the same pattern and copy to `<AI_ECO_FLOW_DIR>/`.
 
-   After writing `data/<TAG>_eco_step2_fenets.rpt`, copy it:
+   Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` using this format:
+
+   ```
+   ================================================================================
+   STEP 2 — FIND EQUIVALENT NETS
+   Tag: <TAG>  |  fenets_tag: <fenets_tag>  |  Tile: <TILE>
+   ================================================================================
+
+   <For each net queried, one block:>
+   ────────────────────────────────────────────────────────────────────────────────
+   Net [<n>/<total>]: <net_path>
+   ────────────────────────────────────────────────────────────────────────────────
+   RTL Context   : <change_type> in <module_name> — <old_token> → <new_token>
+
+   <If "No Equivalent Nets" 2nd iteration was performed for any stage:>
+   2nd Iteration (No Equiv Nets Retry):
+     Original query : <original_net_path> → No Equivalent Nets in <Stage>
+     Retry 1 (<noequiv_retry1_tag>): <retry1_net_path> → <FOUND <N> cells / Still no results>
+     Retry 2 (<noequiv_retry2_tag>): <retry2_net_path> → <FOUND <N> cells / All retries exhausted>
+     Outcome        : <Used retry <N> results for <Stage> / Stage fallback applied>
+
+   FM Results per Stage:
+     [Synthesize] : <N> qualifying cells  (or: No Equiv Nets → retry<N> used / fallback)
+     [PrePlace]   : <N> qualifying cells  (or: No Equiv Nets → retry<N> used / fallback)
+     [Route]      : <N> qualifying cells  (or: FM-036 → stripped path / fallback)
+
+   Qualifying cells passed to Step 3:
+     Synthesize : <cell_name>/<pin>, ...
+     PrePlace   : <cell_name>/<pin>, ...  (or: fallback from Synthesize)
+     Route      : <cell_name>/<pin>, ...  (or: fallback from Synthesize)
+
+   <Repeat for each net>
+   ================================================================================
+   ```
+
+   After writing, copy it:
    ```bash
    cp <BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt <AI_ECO_FLOW_DIR>/
    ```

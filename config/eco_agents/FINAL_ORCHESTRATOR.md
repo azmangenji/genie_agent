@@ -123,11 +123,31 @@ TIMING & LOL ESTIMATION  (structural analysis — Synthesize PreEco netlist)
   Reasoning      : <plain English>
 
 --------------------------------------------------------------------------------
+2nd Iteration Summary
+--------------------------------------------------------------------------------
+<Include this section ONLY if any 2nd iteration was performed:>
+
+  Step 2 — No Equivalent Nets Retry:
+    <For each stage that triggered retry:>
+    <Stage>  : Original query <original_net_path> → No Equiv Nets
+               Retry 1 (<noequiv_retry1_tag>): <result>
+               Retry 2 (<noequiv_retry2_tag>): <result>  <- omit if not needed
+               Outcome: <Used retry <N> / Stage fallback applied>
+
+  Step 3 — Forward Trace Verification:
+    <For each cell where forward trace ran:>
+    <Stage>/<cell_name> : Backward cone said NO →
+               Forward trace: <UPGRADED (reached <target_register>) /
+                               CONFIRMED EXCLUDED (feeds <destination>)>
+
+--------------------------------------------------------------------------------
 Per-Step Reports  (all at: <AI_ECO_FLOW_DIR>/)
 --------------------------------------------------------------------------------
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step1_rtl_diff.rpt
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
   <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
+  <AI_ECO_FLOW_DIR>/<noequiv_retry1_tag>_find_equivalent_nets_raw.rpt  <- if No Equiv Nets retry
+  <AI_ECO_FLOW_DIR>/<noequiv_retry2_tag>_find_equivalent_nets_raw.rpt  <- if 2nd retry
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt  <- one line per round
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt          <- omit if no new_logic
@@ -152,8 +172,10 @@ Write `<BASE_DIR>/data/<TAG>_eco_report.html` with these sections:
 
 1. **ECO Summary** — tile, ref_dir, tag, final FM result (PASS/FAIL/MAX_ROUNDS), total rounds
 2. **RTL Diff Summary** — read from `data/<TAG>_eco_rtl_diff.json`
-3. **Net Analysis** — read from `data/<TAG>_eco_step2_fenets.rpt`
-4. **PreEco Netlist Study** — read from `data/<TAG>_eco_preeco_study.json`
+3. **Net Analysis** — read from `data/<TAG>_eco_step2_fenets.rpt`. If 2nd iteration (No Equiv Nets retry) was performed, include a sub-section:
+   - *2nd Iteration (Step 2)*: for each stage that triggered retry, show original query result, retry tag(s), retry net path, and final outcome (found or fallback)
+4. **PreEco Netlist Study** — read from `data/<TAG>_eco_preeco_study.json`. If 2nd iteration (forward trace) was performed on any cell, include a sub-section:
+   - *2nd Iteration (Step 3)*: for each cell where forward trace ran, show backward cone result (NO), forward trace path, and final outcome (UPGRADED or CONFIRMED EXCLUDED)
 5. **ECO Actions Applied** — read from `data/<TAG>_eco_applied_round<ROUND>.json` for each round
 6. **Timing & LOL Impact** — from `timing_lol_analysis` in `_eco_preeco_study.json`
 7. **PostEco FM Verification** — read from `data/<TAG>_eco_fm_verify.json` and per-round step5 RPTs
@@ -166,8 +188,11 @@ Write `<BASE_DIR>/data/<TAG>_eco_report.html` with these sections:
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step1_rtl_diff.rpt</code></p>
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt</code></p>
 <p><code><AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt</code></p>
-<!-- One line per retry tag if FM-036 retries occurred: -->
+<!-- One line per FM-036 retry tag: -->
 <p><code><AI_ECO_FLOW_DIR>/<retry_tag>_find_equivalent_nets_raw.rpt</code></p>
+<!-- One line per No-Equiv-Nets retry tag (if 2nd iteration Step 2 was performed): -->
+<p><code><AI_ECO_FLOW_DIR>/<noequiv_retry1_tag>_find_equivalent_nets_raw.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<noequiv_retry2_tag>_find_equivalent_nets_raw.rpt</code></p>
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt</code></p>
 <!-- One line per round: -->
 <p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt</code></p>
