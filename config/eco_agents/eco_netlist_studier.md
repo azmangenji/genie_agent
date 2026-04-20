@@ -4,7 +4,16 @@
 
 **CRITICAL:** FM returns multiple impl cells per net. You MUST process ALL of them — not just the first. Missing a cell means the ECO is incomplete.
 
-**Inputs:** REF_DIR, TAG, BASE_DIR, path to `<fenets_tag>_spec` file, path to `<TAG>_eco_rtl_diff.json`
+**Inputs:** REF_DIR, TAG, BASE_DIR, path to `<TAG>_eco_rtl_diff.json`, and a **per-stage spec source map** — the ORCHESTRATOR passes which spec file to use for each stage:
+
+```
+SPEC_SOURCES:
+  Synthesize: <path_to_spec_for_synthesize>   ← initial or noequiv_retry spec
+  PrePlace:   <path_to_spec_for_preplace>     ← initial, noequiv_retry spec, or FALLBACK
+  Route:      <path_to_spec_for_route>        ← initial or fm036_retry spec
+```
+
+**CRITICAL: Use the spec file specified for each stage — do NOT use the same spec file for all stages.** Each stage's qualifying cells come from the run that resolved its results. Reading the wrong spec for a stage will give wrong cells (e.g., using the initial spec for Route when a FM-036 retry resolved it gives the unresolved FM-036 result instead of the retry's cells).
 
 ---
 
@@ -141,10 +150,31 @@ From the instantiation block, extract ALL `.portname(netname)` entries:
 
 ### 4. Confirm old_net is present
 
-Check that the pin identified by find_equivalent_nets has old_net connected:
-- Expected: `.<pin>(<old_net>)` — where `<pin>` is the FM-identified pin and `<old_net>` is from RTL diff
-- If confirmed: `"confirmed": true`
-- If not found or mismatched: `"confirmed": false` with explanation
+Check that the pin identified by find_equivalent_nets has old_net connected. The old_net may appear as its direct RTL name OR as an HFS alias — check both before excluding:
+
+**Step 1 — Try direct old_net name:**
+```bash
+grep -c "\.<pin>(<old_token>)" /tmp/eco_study_<TAG>_<Stage>.v
+```
+- If count ≥ 1 → `"old_net": "<old_token>"`, `"confirmed": true` — proceed to 4b
+
+**Step 2 — If direct name not found, check for HFS alias on that pin:**
+```bash
+grep -n "<cell_name>" /tmp/eco_study_<TAG>_<Stage>.v
+# Read the cell instantiation block, find the actual net on <pin>
+```
+If the actual net on `<pin>` is an HFS alias (e.g., `FxPrePlace_HFSNET_XXXX`), verify it is indeed an alias of `old_token` by checking the module port connection (e.g., `.<old_token>(FxPrePlace_HFSNET_XXXX)` in the parent module instantiation). If confirmed:
+- Set `"old_net": "<FxPrePlace_HFSNET_XXXX>"` (the alias found on the pin)
+- Set `"confirmed": true`
+- Add note: `"old_net_alias": true`, `"old_net_alias_reason": "direct <old_token> not on pin — HFS alias <HFSNET_XXXX> confirmed as equivalent"`
+- The ECO applier will rewire `.<pin>(<HFSNET_XXXX>)` → `.<pin>(<new_net>)`
+
+**Do NOT silently drop a cell because direct old_net is not on the pin.** Always check for HFS alias before marking `"confirmed": false`. Silently dropping a cell here means the backward cone target goes unapplied.
+
+**Example (generic):** Cell `<cell_name>` pin `<pin>` — `grep ".<pin>(<old_token>)"` = 0. Correct action: read the cell instantiation block → find `.<pin>(<HFSNET_alias>)` → verify `<HFSNET_alias>` is an alias of `<old_token>` via parent module port connection → set `old_net = <HFSNET_alias>` → `confirmed: true`.
+
+If neither direct name NOR HFS alias found on the pin:
+- `"confirmed": false`, reason: "old_net `<old_token>` not found on pin `<pin>` — no direct name or HFS alias match"
 
 ### 4b. Verify new_net is reachable in the same scope
 
@@ -160,11 +190,11 @@ After confirming old_net, check for new_net in this priority order:
 
 **CRITICAL — `old_net` being an HFS alias does NOT bypass Priority 1:**
 
-`<new_net>` for Priority 1 is always `new_token` from the RTL diff JSON — it is NEVER derived from the alias pattern of `old_net`. Even when `old_net` found on the pin is an HFS alias (e.g., `FxPrePlace_HFSNET_2657` instead of `SendWckSyncOffCs2`), you MUST still run Priority 1 using `new_token` directly (e.g., `SendWckSyncOffCs0`). Do NOT assume new_net must also be an HFS alias because old_net is one.
+`<new_net>` for Priority 1 is always `new_token` from the RTL diff JSON — it is NEVER derived from the alias pattern of `old_net`. Even when `old_net` found on the pin is an HFS alias, you MUST still run Priority 1 using `new_token` directly. Do NOT assume new_net must also be an HFS alias because old_net is one.
 
-Why this works: in a flat gate-level netlist, `SendWckSyncOffCs0` exists as a real net at ARB scope (driving a buffer into TIM). `grep -cw "SendWckSyncOffCs0"` will return ≥ 1. Priority 1 applies → use direct name, stop.
+Why this works: in a flat gate-level netlist, `<new_token>` exists as a real net (driving a buffer into the sub-module). `grep -cw "<new_token>"` will return ≥ 1. Priority 1 applies → use direct name, stop.
 
-**Example (Run B's mistake):** old_net on pin B1 = `FxPrePlace_HFSNET_2657`. Agent incorrectly reasoned: "old_net is HFS → new_net must also be HFS → use `FxPrePlace_HFSNET_2196`". Correct action: run `grep -cw "SendWckSyncOffCs0"` → count ≥ 1 → use `SendWckSyncOffCs0` directly. Run A did this and FM PASSED.
+**Example (generic):** old_net on `<pin>` = `<HFSNET_alias>`. Do NOT reason: "old_net is HFS → new_net must also be HFS → search for `<new_token>_alias`". Correct action: run `grep -cw "<new_token>"` → count ≥ 1 → use `<new_token>` directly.
 
 **Priority 1 — Direct signal name (ALWAYS try first):**
 ```bash
@@ -195,6 +225,10 @@ If no alias found either:
 ### 4c. Backward Cone Verification (MANDATORY for wire_swap)
 
 **Purpose:** FM's `find_equivalent_nets` returns ALL cells using `old_net` in scope — including cells that use it for completely unrelated purposes. This step confirms the cell is actually in the backward cone of the TARGET REGISTER from the RTL change. A cell NOT in the backward cone must be excluded even if FM confirmed it, because rewiring it would break other logic.
+
+**CRITICAL — "FM confirmed" is NOT proof of backward cone membership.** FM confirms the cell uses `old_net` — it does NOT confirm the cell is in the backward cone of the target register. You MUST trace the backward cone explicitly. Writing `"In Cone: YES"` without an actual traced path is a protocol violation.
+
+**Example (generic):** Multiple cells marked `In Cone: YES` solely because FM confirmed them — no backward trace performed. A proper trace would reveal that some cells drive different registers or unrelated logic, and must be EXCLUDED. Failing to trace causes wrong cells to be applied and the correct cell to be missed.
 
 Read `target_register` and `target_bit` from `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`. If `target_register` is null (non-wire_swap change type), skip this step.
 

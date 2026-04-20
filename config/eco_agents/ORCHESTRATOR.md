@@ -138,7 +138,7 @@ If any `nets_to_query` entry does not correspond to `old_token` or `new_token` f
    } > <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
    cp <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
    ```
-   Do the same for each FM-036 retry tag — write `<BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_retry<N>.rpt` (where N=1,2,3) using the same pattern and copy to `<AI_ECO_FLOW_DIR>/`. The `_retry<N>` suffix makes it clear which file is the initial run vs each retry attempt.
+   Do the same for each FM-036 retry tag — write `<BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_fm036_retry<N>.rpt` (where N=1,2,3) using the same pattern and copy to `<AI_ECO_FLOW_DIR>/`. The `_fm036_retry<N>` suffix distinguishes FM-036 retries from No-Equiv-Nets retries (`_noequiv_retry<N>`) — both can exist in the same run without ambiguity.
 
    Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` using this format:
 
@@ -219,8 +219,8 @@ This typically happens when:
      cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<noequiv_retry1_tag>.txt
      echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
      cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<noequiv_retry1_tag>.txt
-   } > <BASE_DIR>/data/<noequiv_retry1_tag>_find_equivalent_nets_raw_retry1.rpt
-   cp <BASE_DIR>/data/<noequiv_retry1_tag>_find_equivalent_nets_raw_retry1.rpt <AI_ECO_FLOW_DIR>/
+   } > <BASE_DIR>/data/<noequiv_retry1_tag>_find_equivalent_nets_raw_noequiv_retry1.rpt
+   cp <BASE_DIR>/data/<noequiv_retry1_tag>_find_equivalent_nets_raw_noequiv_retry1.rpt <AI_ECO_FLOW_DIR>/
    ```
    Read results from `<BASE_DIR>/data/<noequiv_retry1_tag>_spec`. If results found → use them and stop retrying.
 
@@ -233,15 +233,15 @@ This typically happens when:
    Read new `<noequiv_retry2_tag>` from CLI output. Same output handling as retry 1:
    ```bash
    # Write and copy raw rpt
-   { ... } > <BASE_DIR>/data/<noequiv_retry2_tag>_find_equivalent_nets_raw_retry2.rpt
-   cp <BASE_DIR>/data/<noequiv_retry2_tag>_find_equivalent_nets_raw_retry2.rpt <AI_ECO_FLOW_DIR>/
+   { ... } > <BASE_DIR>/data/<noequiv_retry2_tag>_find_equivalent_nets_raw_noequiv_retry2.rpt
+   cp <BASE_DIR>/data/<noequiv_retry2_tag>_find_equivalent_nets_raw_noequiv_retry2.rpt <AI_ECO_FLOW_DIR>/
    ```
    Read results from `<BASE_DIR>/data/<noequiv_retry2_tag>_spec`.
 
 **Output files per retry:**
-- `data/<noequiv_retry<N>_tag>_find_equivalent_nets_raw_retry<N>.rpt` — raw FM output for each retry (N=1,2)
+- `data/<noequiv_retry<N>_tag>_find_equivalent_nets_raw_noequiv_retry<N>.rpt` — raw FM output for each No-Equiv-Nets retry (N=1,2)
 - Copied to `<AI_ECO_FLOW_DIR>/` alongside the main fenets raw rpt
-- The `_retry<N>` suffix distinguishes each attempt from the initial run at a glance
+- The `_noequiv_retry<N>` suffix distinguishes these from FM-036 retries at a glance
 - Referenced in `data/<TAG>_eco_step2_fenets.rpt` with note: `NO_EQUIV_NETS retry<N> tag: <noequiv_retry<N>_tag>`
 
 **If all retries still return "No Equivalent Nets":**
@@ -281,10 +281,10 @@ If any net returns `Error: Unknown name ... (FM-036)`:
      cat <REF_DIR>/rpts/FmEqvPreEcoPrePlaceVsPreEcoSynthesize/find_equivalent_nets_<retry_tag>.txt
      echo "TARGET: FmEqvPreEcoRouteVsPreEcoPrePlace"
      cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<retry_tag>.txt
-   } > <BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_retry<N>.rpt
-   cp <BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_retry<N>.rpt <AI_ECO_FLOW_DIR>/
+   } > <BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_fm036_retry<N>.rpt
+   cp <BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw_fm036_retry<N>.rpt <AI_ECO_FLOW_DIR>/
    ```
-   Where N=1 for first retry, N=2 for second, N=3 for third. This makes it immediately clear in `AI_ECO_FLOW_DIR/` which file is the initial run and which are retries.
+   Where N=1 for first retry, N=2 for second, N=3 for third. The `_fm036_retry<N>` suffix distinguishes these from No-Equiv-Nets retries — both can coexist in the same run without ambiguity.
 
    **Retry loop rules:**
    - Max **3 retries** (`_retry1`, `_retry2`, `_retry3`)
@@ -308,8 +308,19 @@ If any net returns `Error: Unknown name ... (FM-036)`:
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_studier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
-- The exact path to the find_equivalent_nets results: `<BASE_DIR>/data/<fenets_tag>_spec` (use the `<fenets_tag>` read from the genie_cli.py output in Step 2, NOT the main `<TAG>`)
 - The RTL diff JSON at `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (provides old_net/new_net per change)
+- **ALL spec file paths** from Step 2 — initial run AND every retry:
+  - Initial: `<BASE_DIR>/data/<fenets_tag>_spec`
+  - No-Equiv-Nets retries: `<BASE_DIR>/data/<noequiv_retry1_tag>_spec`, `<BASE_DIR>/data/<noequiv_retry2_tag>_spec` (if they exist)
+  - FM-036 retries: `<BASE_DIR>/data/<fm036_retry1_tag>_spec`, `<BASE_DIR>/data/<fm036_retry2_tag>_spec`, `<BASE_DIR>/data/<fm036_retry3_tag>_spec` (if they exist)
+- **Per-stage spec source mapping** — explicitly tell Step 3 which spec file to use for each stage:
+  ```
+  SPEC_SOURCES:
+    Synthesize: <fenets_tag>_spec  (or <noequiv_retry1_tag>_spec if retry resolved it)
+    PrePlace:   <fenets_tag>_spec  (or <noequiv_retry1_tag>_spec if retry resolved it, else FALLBACK)
+    Route:      <fenets_tag>_spec  (or <fm036_retry1_tag>_spec if FM-036 retry resolved it)
+  ```
+  This prevents Step 3 from reading the wrong spec for a given stage — each stage uses the spec from the run that actually resolved its results.
 - Task: For each impl cell in FM output, find instantiation in PreEco netlist, extract port connections, confirm old_net on expected pin
 - Output: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`
 
