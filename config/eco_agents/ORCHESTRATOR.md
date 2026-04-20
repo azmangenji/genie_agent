@@ -46,13 +46,19 @@ Before any step:
    tag=<TAG>
    jira=<JIRA>
    ```
+6. Create the AI ECO flow directory at REF_DIR and set `AI_ECO_FLOW_DIR`:
+   ```bash
+   AI_ECO_FLOW_DIR=<REF_DIR>/AI_ECO_FLOW_<TAG>
+   mkdir -p <AI_ECO_FLOW_DIR>
+   ```
+   This directory collects all step RPTs in one place under REF_DIR for easy access.
 
 ---
 
 ## STEP 1 — RTL Diff Analysis
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/rtl_diff_analyzer.md` prepended to the prompt. Pass:
-- `REF_DIR`, `TILE`, `TAG`, `BASE_DIR`
+- `REF_DIR`, `TILE`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - Task: Run RTL diff, extract changed signals, determine nets to query, build verified hierarchy paths
 - Output: `data/<TAG>_eco_rtl_diff.json`
 
@@ -107,8 +113,14 @@ Using the `nets_to_query` list from Step 1:
      echo "================================================================================"
      cat <REF_DIR>/rpts/FmEqvPreEcoRouteVsPreEcoPrePlace/find_equivalent_nets_<fenets_tag>.txt
    } > <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
+   cp <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt <AI_ECO_FLOW_DIR>/
    ```
-   Do the same for each FM-036 retry tag — write `<BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw.rpt` using the same pattern.
+   Do the same for each FM-036 retry tag — write `<BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw.rpt` using the same pattern and copy to `<AI_ECO_FLOW_DIR>/`.
+
+   After writing `data/<TAG>_eco_step2_fenets.rpt`, copy it:
+   ```bash
+   cp <BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt <AI_ECO_FLOW_DIR>/
+   ```
 
 **CHECKPOINT:** Verify both `data/<fenets_tag>_find_equivalent_nets_raw.rpt` and `data/<TAG>_eco_step2_fenets.rpt` exist and are non-empty before proceeding to Step 3.
 
@@ -163,7 +175,7 @@ If any net returns `Error: Unknown name ... (FM-036)`:
 ## STEP 3 — Study PreEco Gate-Level Netlist
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_studier.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`
+- `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - The exact path to the find_equivalent_nets results: `<BASE_DIR>/data/<fenets_tag>_spec` (use the `<fenets_tag>` read from the genie_cli.py output in Step 2, NOT the main `<TAG>`)
 - The RTL diff JSON at `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (provides old_net/new_net per change)
 - Task: For each impl cell in FM output, find instantiation in PreEco netlist, extract port connections, confirm old_net on expected pin
@@ -194,7 +206,7 @@ Format of output:
 ## STEP 4 — Apply ECO to PostEco Netlists
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_applier.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number — 1 for initial run, 2/3/... for fixer loop)
+- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number — 1 for initial run, 2/3/... for fixer loop), `AI_ECO_FLOW_DIR`
 - The PreEco study JSON from Step 3
 - Task: For each confirmed cell, backup PostEco netlist (using `bak_<TAG>_round<ROUND>` naming), locate same cell, verify old_net on pin, replace with new_net (rewire) or auto-insert inverter (new_logic), recompress, verify
 - Output: `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`
@@ -210,7 +222,7 @@ Wait for eco_applier sub-agent to complete.
 Read `data/<TAG>_eco_applied_round<ROUND>.json`. Check if any entry has `"change_type": "new_logic"` and `"status": "INSERTED"`.
 
 If yes — **spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_svf_updater.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number)
+- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number), `AI_ECO_FLOW_DIR`
 - Task: Write `eco_change -type insert_cell` entries to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl` (do NOT append to EcoChange.svf yet — FmEcoSvfGen will regenerate it and must run first)
 - Output: `<BASE_DIR>/data/<TAG>_eco_svf_update.json` + `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 
@@ -293,6 +305,11 @@ Write merged results to `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`:
 
 **OVERALL PASS** = all 3 targets show PASS in the merged JSON.
 
+After writing `data/<TAG>_eco_step5_fm_verify_round1.rpt`, copy to AI_ECO_FLOW_DIR:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round1.rpt <AI_ECO_FLOW_DIR>/
+```
+
 **CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` exist and are non-empty. Verify `eco_fm_tag` is saved in `eco_fixer_state.fm_results_per_round`. Do NOT enter Step 6 without these files in place.
 
 ---
@@ -308,6 +325,7 @@ Always write `<BASE_DIR>/data/<TAG>_round_handoff.json` before spawning:
   "tile": "<TILE>",
   "jira": "<JIRA>",
   "base_dir": "<BASE_DIR>",
+  "ai_eco_flow_dir": "<REF_DIR>/AI_ECO_FLOW_<TAG>",
   "round": 1,
   "fenets_tag": "<fenets_tag>",
   "eco_fm_tag": "<eco_fm_tag>",

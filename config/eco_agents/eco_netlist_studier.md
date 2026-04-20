@@ -467,7 +467,10 @@ Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolut
 
 ## Output RPT
 
-After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt`.
+After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt` then copy to `AI_ECO_FLOW_DIR`:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt <AI_ECO_FLOW_DIR>/
+```
 
 **Key requirement:** For every cell entry, the RPT must clearly state:
 1. **Which RTL block this cell belongs to** — the declaring module and its instance hierarchy from the RTL diff JSON (`hierarchy` field)

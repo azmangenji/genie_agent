@@ -21,9 +21,11 @@
 ## INPUTS
 
 Read `<ROUND_HANDOFF_PATH>` (passed in your prompt) to get:
-- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
+- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`, `ai_eco_flow_dir`
 - `TOTAL_ROUNDS` — total number of rounds run
 - `status` — `FM_PASSED`, `FM_FAILED`, or `MAX_ROUNDS`
+
+Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 
 ---
 
@@ -46,6 +48,7 @@ Tag         : <TAG>
 Tile        : <TILE>
 JIRA        : DEUMCIPRTL-<JIRA>
 TileBuilder : <REF_DIR>
+AI_ECO_DIR  : <AI_ECO_FLOW_DIR>
 Generated   : <YYYY-MM-DD HH:MM:SS>
 Rounds      : <TOTAL_ROUNDS>
 ================================================================================
@@ -56,20 +59,53 @@ FINAL STATUS : <PASS / FAIL — MANUAL FIX NEEDED / MAX ROUNDS REACHED>
 <If FAIL:>  Manual fix required. See step5 RPT for failing points.
 <If MAX:>   5 rounds attempted. See per-round step5 RPTs for details.
 
+  FmEqvEcoSynthesizeVsSynRtl      : <PASS/FAIL>  (<timestamp>)
+  FmEqvEcoPrePlaceVsEcoSynthesize : <PASS/FAIL>  (<timestamp>)
+  FmEqvEcoRouteVsEcoPrePlace      : <PASS/FAIL>  (<timestamp>)
+
+<If any FAIL — list failing points:>
+  Failing Points:
+    Target: <target_name>
+      - <hierarchy path of failing DFF>
+
 --------------------------------------------------------------------------------
-ECO STATISTICS  (from eco_applied_round<ROUND>.json — all rounds combined)
+RTL CHANGE
+--------------------------------------------------------------------------------
+
+  File        : <rtl_file.v>
+  Module      : <module_name>
+  Change Type : <wire_swap / new_logic / new_port / port_connection>
+  Old Signal  : <old_token>
+  New Signal  : <new_token>
+  Target Reg  : <target_register><target_bit>
+  Context     :
+    <context_line>
+
+--------------------------------------------------------------------------------
+ECO CHANGES APPLIED  (per stage, all rounds)
+--------------------------------------------------------------------------------
+
+  Stage       Cell                          Pin   Old Net              New Net              Status
+  ----------  ----------------------------  ----  -------------------  -------------------  -------
+  Synthesize  <cell_name>                   <pin> <old_net>            <new_net>            APPLIED
+  PrePlace    <cell_name>                   <pin> <old_net>            <new_net>            APPLIED
+  Route       <cell_name>                   <pin> <old_net>            <new_net>            APPLIED
+  <If skipped entries:>
+  Synthesize  <cell_name>                   <pin> <old_net>            <new_net>            SKIPPED (<reason_summary>)
+
+--------------------------------------------------------------------------------
+ECO STATISTICS
 --------------------------------------------------------------------------------
 
   Cells Added      : <N>  (new inverter cells inserted for new_logic changes)
   Cells Removed    : <N>  (cells not found in PostEco — optimized away by P&R)
                           <If 0: "(none — all target cells present in PostEco)">
 
-  Pins Disconnected / Nets Connected (per stage, all rounds):
+  Pins Rewired (per stage, all rounds):
 
                      Synthesize    PrePlace    Route
                      ----------    --------    -----
-  Pins Disconnected: <N>           <N>         <N>
-  Nets Connected   : <N>           <N>         <N>
+  Applied          : <N>           <N>         <N>
   Skipped          : <N>           <N>         <N>
   Verify Failed    : <N>           <N>         <N>
 
@@ -77,28 +113,33 @@ ECO STATISTICS  (from eco_applied_round<ROUND>.json — all rounds combined)
 TIMING & LOL ESTIMATION  (structural analysis — Synthesize PreEco netlist)
 --------------------------------------------------------------------------------
 
-  Signal Change : <old_net>  →  <new_net>
-  Old Net Driver: <driver_cell_name>  (<cell_type>)  pin=<Z/ZN/Q>
-  New Net Driver: <driver_cell_name>  (<cell_type>)  pin=<Z/ZN/Q>
-  Old Net Fanout: <N>
-  New Net Fanout: <N>
-  LOL Impact    : <description>
+  Signal Change  : <old_net>  →  <new_net>
+  Old Net Driver : <driver_cell_name>  (<cell_type>)  pin=<Z/ZN/Q>
+  New Net Driver : <driver_cell_name>  (<cell_type>)  pin=<Z/ZN/Q>
+  Old Net Fanout : <N>
+  New Net Fanout : <N>
+  LOL Impact     : <description>
   Timing Estimate: <BETTER / LIKELY_BETTER / NEUTRAL / RISK / LOAD_RISK / UNCERTAIN>
-  Reasoning     : <plain English>
+  Reasoning      : <plain English>
 
 --------------------------------------------------------------------------------
-Per-Step Reports
+Per-Step Reports  (all at: <AI_ECO_FLOW_DIR>/)
 --------------------------------------------------------------------------------
-  <BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt
-  <BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt
-  <BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt
-  <BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt
-  <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt  <- one line per round
-  <BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt          <- omit if no new_logic
-  <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt  <- one line per round
-  <BASE_DIR>/data/<TAG>_eco_summary.rpt
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step1_rtl_diff.rpt
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
+  <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt  <- one line per round
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt          <- omit if no new_logic
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt  <- one line per round
+  <AI_ECO_FLOW_DIR>/<TAG>_eco_summary.rpt
 
 ================================================================================
+```
+
+After writing `data/<TAG>_eco_summary.rpt`, copy to AI_ECO_FLOW_DIR:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_summary.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_summary.rpt` written and non-empty before proceeding.
@@ -118,24 +159,24 @@ Write `<BASE_DIR>/data/<TAG>_eco_report.html` with these sections:
 7. **PostEco FM Verification** — read from `data/<TAG>_eco_fm_verify.json` and per-round step5 RPTs
 8. **Fix Loop History** (if TOTAL_ROUNDS > 1) — read from `data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 9. **Final Status** — PASS / MANUAL FIX NEEDED / MAX ROUNDS with guidance
-10. **Step Reports** — file paths only:
+10. **Step Reports** — file paths pointing to `AI_ECO_FLOW_DIR` under REF_DIR:
 
 ```html
 <h2>Step Reports</h2>
-<p><code><BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt</code></p>
-<p><code><BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt</code></p>
-<p><code><BASE_DIR>/data/<fenets_tag>_find_equivalent_nets_raw.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step1_rtl_diff.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt</code></p>
 <!-- One line per retry tag if FM-036 retries occurred: -->
-<p><code><BASE_DIR>/data/<retry_tag>_find_equivalent_nets_raw.rpt</code></p>
-<p><code><BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<retry_tag>_find_equivalent_nets_raw.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt</code></p>
 <!-- One line per round: -->
-<p><code><BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt</code></p>
 <!-- Include only if new_logic insertions exist: -->
-<p><code><BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt</code></p>
-<p><code><BASE_DIR>/data/<TAG>_eco_svf_entries.tcl</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_svf_entries.tcl</code></p>
 <!-- One line per round: -->
-<p><code><BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt</code></p>
-<p><code><BASE_DIR>/data/<TAG>_eco_summary.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt</code></p>
+<p><code><AI_ECO_FLOW_DIR>/<TAG>_eco_summary.rpt</code></p>
 ```
 
 **HTML style — MUST be email-safe (Outlook/Exchange compatible):**

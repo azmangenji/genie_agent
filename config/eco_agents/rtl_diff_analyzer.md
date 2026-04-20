@@ -205,7 +205,10 @@ All `net_path` values must be verified hierarchy paths using instance names. Do 
 
 ## Output RPT
 
-After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt`:
+After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt` then copy to `AI_ECO_FLOW_DIR`:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step1_rtl_diff.rpt <AI_ECO_FLOW_DIR>/
+```
 
 ```
 ================================================================================

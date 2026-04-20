@@ -94,7 +94,10 @@ Possible statuses: `WRITTEN`, `ALREADY_PRESENT`, `SKIPPED` (no new_logic entries
 
 ## Output RPT
 
-After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt`:
+After writing the JSON, write `<BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt` then copy to `AI_ECO_FLOW_DIR`:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step4b_svf.rpt <AI_ECO_FLOW_DIR>/
+```
 
 ```
 ================================================================================

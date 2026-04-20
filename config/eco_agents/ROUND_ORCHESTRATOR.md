@@ -22,11 +22,13 @@
 ## INPUTS
 
 Read `<ROUND_HANDOFF_PATH>` (passed in your prompt) to get:
-- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
+- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`, `ai_eco_flow_dir`
 - `round` — the round that just failed (e.g., 1)
 - `eco_fm_tag` — FM tag from the failed round
 - `svf_update_needed` — whether new_logic cells were inserted
 - `status` — should be `FM_FAILED`
+
+Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 
 Read `<BASE_DIR>/data/<TAG>_eco_fixer_state` to confirm current round and get `strategies_tried`.
 
@@ -79,7 +81,7 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 ## STEP 6d — Analyze FM Failure
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_fm_analyzer.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `ROUND=<ROUND>`
+- `REF_DIR`, `TAG`, `BASE_DIR`, `ROUND=<ROUND>`, `AI_ECO_FLOW_DIR`
 - `eco_fm_tag` — from ROUND_HANDOFF or fixer_state
 - Path to FM spec: `<BASE_DIR>/data/<eco_fm_tag>_spec`
 - Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`
@@ -129,7 +131,7 @@ Then update `eco_fixer_state`:
 ## STEP 4 — Apply ECO (Next Round)
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_applier.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`
+- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
 - PreEco study JSON: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`
 - Output: `<BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json`
 
@@ -142,7 +144,7 @@ Then update `eco_fixer_state`:
 Read `data/<TAG>_eco_applied_round<NEXT_ROUND>.json`. If any entry has `change_type=new_logic` and `status=INSERTED`:
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_svf_updater.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`
+- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
 - Output: `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 
 Set `svf_update_needed = true`.
@@ -202,6 +204,11 @@ Failing Points (<N> total):
     - <hierarchy path>
 OVERALL: <PASS / FAIL>
 ================================================================================
+```
+
+After writing `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt`, copy to AI_ECO_FLOW_DIR:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
 ```
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt` both exist. Verify `eco_fm_tag` is recorded.
