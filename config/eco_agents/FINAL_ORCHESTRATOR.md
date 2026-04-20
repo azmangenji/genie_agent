@@ -59,9 +59,9 @@ FINAL STATUS : <PASS / FAIL — MANUAL FIX NEEDED / MAX ROUNDS REACHED>
 <If FAIL:>  Manual fix required. See step5 RPT for failing points.
 <If MAX:>   5 rounds attempted. See per-round step5 RPTs for details.
 
-  FmEqvEcoSynthesizeVsSynRtl      : <PASS/FAIL>  (<timestamp>)
-  FmEqvEcoPrePlaceVsEcoSynthesize : <PASS/FAIL>  (<timestamp>)
-  FmEqvEcoRouteVsEcoPrePlace      : <PASS/FAIL>  (<timestamp>)
+  FmEqvEcoSynthesizeVsSynRtl      : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing)
+  FmEqvEcoPrePlaceVsEcoSynthesize : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing)
+  FmEqvEcoRouteVsEcoPrePlace      : <PASS/FAIL>  (<timestamp> — <N> equiv points, <M> failing)
 
 <If any FAIL — list failing points:>
   Failing Points:
