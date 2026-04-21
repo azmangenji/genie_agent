@@ -196,7 +196,22 @@ ls <BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json
 
 **Generate Step 4 RPT from JSON — do this yourself, do NOT rely on eco_applier:**
 
-Read `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` and write the RPT summarizing all applied/inserted/skipped entries per stage. The eco_applier sub-agent focuses on netlist editing only — RPT generation is YOUR responsibility to avoid context pressure on the sub-agent.
+```python
+applied = load("data/<TAG>_eco_applied_round<NEXT_ROUND>.json")
+s = applied["summary"]
+with open("data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt", "w") as f:
+    f.write(f"STEP 4 — ECO APPLIED (Round <NEXT_ROUND>)\nTag: <TAG>\n{'='*80}\n")
+    f.write(f"Summary: {s['applied']} applied / {s['inserted']} inserted / "
+            f"{s['skipped']} skipped / {s['verify_failed']} verify_failed\n\n")
+    for stage in ["Synthesize", "PrePlace", "Route"]:
+        f.write(f"[{stage}]\n")
+        for e in applied[stage]:
+            f.write(f"  {e['status']:10s} {e.get('cell_name','?'):40s} "
+                    f"pin={e.get('pin','?')} type={e.get('change_type','?')}\n")
+            if e['status'] == 'SKIPPED':
+                f.write(f"             Reason: {e.get('reason','?')}\n")
+        f.write("\n")
+```
 
 ```bash
 # Write RPT
@@ -231,59 +246,21 @@ If no new_logic: set `svf_update_needed = false`, skip Step 4b.
 
 ## STEP 5 — PostEco Formality Verification
 
-### Step 5a — Write FM config
+**Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=<NEXT_ROUND>`
+- `ECO_TARGETS=<space-separated failing targets from previous round>` (only failing, not all 3)
+- `svf_update_needed=<true|false>` (from Step 4b)
+- Path to existing `data/<TAG>_eco_fm_verify.json` (for merge with previous round results)
+- Task: write FM config, submit FM, block until complete, parse+merge results, write verify JSON + RPT
 
-Write `<REF_DIR>/data/eco_fm_config` (only failing targets from previous round — not all 3):
+Wait for the sub-agent to complete.
+
+**CHECKPOINT:** Verify ALL of the following:
 ```bash
-cat > <REF_DIR>/data/eco_fm_config << EOF
-ECO_TARGETS=<space-separated failing targets from previous round>
-RUN_SVF_GEN=<1 if FmEqvEcoSynthesizeVsSynRtl in failing list AND svf_update_needed else 0>
-ECO_SVF_ENTRIES=<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
-EOF
+ls <BASE_DIR>/data/<TAG>_eco_fm_verify.json
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt
 ```
-
-### Step 5b — Run PostEco FM
-
-```bash
-cd <BASE_DIR>
-python3 script/genie_cli.py \
-  -i "run post eco formality at <REF_DIR> for <TILE>" \
-  --execute --xterm
-```
-
-Read the new `eco_fm_tag` from CLI output. Poll `data/<eco_fm_tag>_spec` every 5 minutes until `OVERALL ECO FM RESULT:` appears.
-
-Parse results and **merge with previous round results** — carry forward PASS results, update only re-run targets:
-```python
-cumulative = load previous _eco_fm_verify.json
-for target in ECO_TARGETS:
-    cumulative[target] = new result
-cumulative["round"] = NEXT_ROUND
-cumulative["eco_fm_tag"] = eco_fm_tag
-save("<BASE_DIR>/data/<TAG>_eco_fm_verify.json", cumulative)
-```
-
-Write `<BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt`:
-```
-================================================================================
-STEP 5 — FORMALITY VERIFICATION  (Round <NEXT_ROUND>)
-Tag: <TAG>  |  eco_fm_tag: <eco_fm_tag>
-================================================================================
-  FmEqvEcoSynthesizeVsSynRtl         : <PASS / FAIL>
-  FmEqvEcoPrePlaceVsEcoSynthesize    : <PASS / FAIL>
-  FmEqvEcoRouteVsEcoPrePlace         : <PASS / FAIL>
-<If any FAIL:>
-Failing Points (<N> total):
-  Target: ...
-    - <hierarchy path>
-OVERALL: <PASS / FAIL>
-================================================================================
-```
-
-After writing `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt`, copy to AI_ECO_FLOW_DIR:
-```bash
-cp <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
-```
+Read `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` to get `eco_fm_tag` — save to `eco_fixer_state.fm_results_per_round`.
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<NEXT_ROUND>.rpt` both exist. Verify `eco_fm_tag` is recorded.
 

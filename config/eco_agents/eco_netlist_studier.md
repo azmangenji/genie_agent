@@ -109,7 +109,15 @@ The cell_name is the second-to-last path component; the pin is the last componen
 
 **Before studying any FM-returned cells, process ALL `new_logic` changes from the RTL diff JSON.** These are new cells (DFFs, combinational gates) that must be inserted into the PostEco netlist. FM has no results for these — they don't exist in PreEco. The studier must plan their insertion so the applier can create them.
 
-Read all entries in `changes[]` where `change_type` is one of: `"new_logic"`, `"and_term"`. Skip `"new_port"`, `"port_connection"`, and `"port_promotion"` entries — those are port wiring and net exposure changes that don't require new gate insertion (handled via flat_net_name resolution). Also skip `"wire_swap"` at this phase — wire_swap is handled by FM find_equivalent_nets results in Phase 1.
+Read all entries in `changes[]` and process by type:
+
+- `"new_logic"` / `"and_term"` → process as gate/DFF insertion (see steps 0a–0f below)
+- `"new_port"` → create `port_declaration` study entry (see step 0g)
+- `"port_connection"` → create `port_connection` study entry (see step 0h)
+- `"port_promotion"` → create `port_promotion` study entry (see step 0i — net already exists, just needs declaration type change)
+- `"wire_swap"` → skip (handled by FM find_equivalent_nets in Phase 1)
+
+**CRITICAL: For hierarchical PostEco netlists, `new_port` and `port_connection` changes are NOT automatically handled by inserting cells. They require explicit port list updates and instance connection additions in the PostEco netlist. Skipping them causes FM elaboration failures.**
 
 **`port_promotion` handling:** When `flat_net_exists: true`, simply verify the net exists in PreEco Synthesize netlist:
 ```bash
@@ -121,7 +129,22 @@ If count ≥ 1 → net confirmed in flat netlist. Record in study JSON as:
 ```
 No further processing needed — the net is already accessible in the flat netlist.
 
-**`and_term` → `new_logic_gate` mapping:** An `and_term` change from the RTL diff always produces a `new_logic_gate` entry in the study JSON (never a `rewire` or `new_logic_dff`). The `change_type` written to `eco_preeco_study.json` is `"new_logic_gate"` — NOT `"and_term"`. The eco_applier only sees `new_logic_gate` and processes it via Step 4c-GATE.
+**`and_term` → `new_logic_gate` + `rewire` pair:** An `and_term` change produces TWO entries:
+
+1. **`new_logic_gate`** entry — the new AND/NAND gate that adds the new term:
+   - inputs: `[<existing_expression_output_net>, <flat_net_name>]`
+   - output: `n_eco_<jira>_<seq>`
+
+2. **`rewire`** entry — the consuming cell that must switch from `<existing_expression_output_net>` to `n_eco_<jira>_<seq>`:
+   - Find the cell that consumes `<existing_expression_output_net>` on its input pin (the cell downstream of the old expression)
+   - `old_net = <existing_expression_output_net>`, `new_net = n_eco_<jira>_<seq>`
+   - `new_logic_dependency = [<seq>]` (rewire depends on gate being inserted first)
+
+**Example:** `QualPmArbWinVld_d1 = A & ~B & ~C` (old: `A & ~B`, new term: `~C`)
+- Gate: AND2(`existing_AB_output`, `C_n`) → `n_eco_..._and_result`
+- Rewire: cell consuming `existing_AB_output` → change to `n_eco_..._and_result`
+
+The `change_type` for gate entry is `"new_logic_gate"`, for rewire entry is `"rewire"` — NOT `"and_term"`. eco_applier processes the gate in Pass 1 and the rewire in Pass 4.
 
 **`and_term` handling (Gap 4):** When `change_type == "and_term"`:
 - `new_token` is the new AND term signal (the one being added)
@@ -274,6 +297,83 @@ For combinational gate:
   "confirmed": true
 }
 ```
+
+### 0g — Process `new_port` changes → `port_declaration` study entries
+
+For each `new_port` change (new input or output port added to a module):
+
+1. Identify:
+   - `module_name`: the module getting the new port (e.g., `umcsdpintf`)
+   - `signal_name`: the new port signal (`new_token`)
+   - `declaration_type`: `"input"` or `"output"` from `context_line`
+   - `flat_net_name`: from RTL diff JSON (the net connected to this port in the flat netlist)
+   - `instance_scope`: hierarchy path of this module from tile root (e.g., `FEI/SDPINTF`)
+
+2. Verify in PreEco Synthesize: find `module ddrss_umccmd_t_<module_name>` to confirm module exists:
+   ```bash
+   grep -n "module ddrss_umccmd_t_<module_name>" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+   ```
+
+3. Record in study JSON:
+   ```json
+   {
+     "change_type": "port_declaration",
+     "module_name": "<full_module_name>",
+     "signal_name": "<new_port_name>",
+     "declaration_type": "input|output",
+     "flat_net_name": "<from rtl_diff_analyzer flat_net_name>",
+     "instance_scope": "<INST_A>/<INST_B>",
+     "confirmed": true
+   }
+   ```
+
+### 0h — Process `port_connection` changes → `port_connection` study entries
+
+For each `port_connection` change (new `.port(net)` added to a module instance):
+
+1. Identify:
+   - `parent_module`: the module containing the instance (from `module_name` field in change)
+   - `instance_name`: the instance being connected (from `context_line`, e.g., `CTRLSW`)
+   - `port_name`: the port being connected (from `context_line`, e.g., `NeedFreqAdj`)
+   - `net_name`: the net connected to it (from `context_line`, e.g., `ARB_FEI_NeedFreqAdj`)
+   - `submodule_type`: look up what module type `instance_name` is in the parent (grep parent RTL)
+
+2. Verify in PreEco Synthesize: find the instance block:
+   ```bash
+   grep -n "<submodule_type_pattern> <instance_name>" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+   ```
+
+3. Record in study JSON:
+   ```json
+   {
+     "change_type": "port_connection",
+     "parent_module": "<full_parent_module_name>",
+     "submodule_pattern": "<grep_pattern_for_submodule_type>",
+     "instance_name": "<INST_NAME>",
+     "port_name": "<port_being_connected>",
+     "net_name": "<net_to_connect>",
+     "confirmed": true
+   }
+   ```
+
+### 0i — Process `port_promotion` changes → `port_promotion` study entries
+
+For each `port_promotion` change (`reg X` → `output reg X`):
+
+1. The net already exists in the flat netlist as a local wire driven by existing gates.
+2. Verify net exists: `grep -cw "<signal_name>" /tmp/eco_study_<TAG>_Synthesize.v`
+3. Record:
+   ```json
+   {
+     "change_type": "port_promotion",
+     "module_name": "<full_module_name>",
+     "signal_name": "<signal>",
+     "declaration_type": "output",
+     "flat_net_confirmed": true,
+     "confirmed": true
+   }
+   ```
+   eco_applier will add `<signal_name>` to the module port list and change `wire` to `output`.
 
 ### 0f — Mark wire_swap entries that depend on new_logic outputs
 
@@ -750,6 +850,19 @@ Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolut
 ```
 
 **Note:** `change_type` in eco_preeco_study.json uses applier-facing values (`rewire`, `new_logic_dff`, `new_logic_gate`) — NOT RTL diff values (`wire_swap`, `new_logic`). The studier translates: `wire_swap` → `rewire`, explicit `new_logic` → `new_logic_dff` or `new_logic_gate` based on cell type.
+
+**MANDATORY: Sort each stage array by change_type in processing order before writing JSON:**
+```python
+PASS_ORDER = {
+    "new_logic": 1, "new_logic_dff": 1, "new_logic_gate": 1,  # Pass 1
+    "port_declaration": 2, "port_promotion": 2,                 # Pass 2
+    "port_connection": 3,                                        # Pass 3
+    "rewire": 4,                                                 # Pass 4
+}
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    study[stage].sort(key=lambda e: PASS_ORDER.get(e.get("change_type", "rewire"), 4))
+```
+eco_applier processes arrays in order — if entries are unsorted, rewires run before new_logic insertions exist, causing SKIPPED failures.
 
 ---
 

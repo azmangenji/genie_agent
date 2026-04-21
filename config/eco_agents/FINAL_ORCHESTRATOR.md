@@ -36,7 +36,7 @@ Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 Read all `data/<TAG>_eco_applied_round<ROUND>.json` files (ROUND = 1 to TOTAL_ROUNDS) and combine statistics.
 
 **Statistics calculation:**
-- **Cells Added**: count unique `instance_name`/`inv_inst` values where `change_type` in `["new_logic", "new_logic_dff", "new_logic_gate"]` AND `status=INSERTED`, deduplicated across stages (same logical cell appears in 3 stages — count once)
+- **Cells Added**: count unique `instance_name` values where `change_type` in `["new_logic", "new_logic_dff", "new_logic_gate"]` AND `status=INSERTED`, deduplicated across stages (same logical cell appears in 3 stages — count once; field is `instance_name` for all 3 types)
 - **Cells Removed**: count SKIPPED entries where `reason` contains "not found in PostEco"
 - **Pins Disconnected / Nets Connected**: count APPLIED + INSERTED entries per stage per round (cumulative)
 

@@ -25,7 +25,7 @@ Collect all entries where `"status": "INSERTED"` and `change_type` is one of:
 - `"new_logic_dff"` — DFF insertion
 - `"new_logic_gate"` — combinational gate insertion
 
-From the **Synthesize** stage only. SVF `eco_change` is only required for `FmEqvEcoSynthesizeVsSynRtl` (RTL vs gate-level). PrePlace and Route stage-to-stage targets auto-match by instance name.
+From the **Synthesize** stage only. SVF `guide_eco_change` entries are only required for `FmEqvEcoSynthesizeVsSynRtl` (RTL vs gate-level comparison). For `FmEqvEcoPrePlaceVsEcoSynthesize` and `FmEqvEcoRouteVsEcoPrePlace` (gate-level stage-to-stage comparisons), FM automatically matches cells by their instance path name — no SVF entries needed for those targets.
 
 For each such entry, extract from eco_applied_round<ROUND>.json — all three change types record the same key fields:
 - `inv_inst_full_path` — full hierarchy path computed by eco_applier (e.g., `<TILE>/<INST_A>/<INST_B>/eco_<jira>_<seq>`)
@@ -57,16 +57,18 @@ Write (or append) to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl` (always use ful
 
 ```tcl
 # ECO new_logic cell insertion — TAG=<TAG> JIRA=<JIRA>
-eco_change \
+guide_eco_change \
   -type insert_cell \
   -instance { <inv_inst_full_path from eco_applied_round<ROUND>.json> } \
-  -reference { <inv_cell_type from eco_applied_round<ROUND>.json> }
+  -reference { <cell_type from eco_applied_round<ROUND>.json> }
 ```
+
+**NOTE: Use `guide_eco_change` NOT `eco_change`.** FM version X-2025.06-SP3-VAL-20251201 and later rejects `eco_change` with CMD-005 error causing full elaboration failure. `guide_eco_change` is the correct format. See CRITICAL_RULES.md Rule 11.
 
 Example (all values read from eco_applied_round<ROUND>.json — nothing hardcoded):
 ```tcl
 # ECO new_logic cell insertion — TAG=<TAG> JIRA=<JIRA>
-eco_change \
+guide_eco_change \
   -type insert_cell \
   -instance { <tile>/<INST_A>/<INST_B>/eco_<jira>_<seq> } \
   -reference { <inv_cell_type> }

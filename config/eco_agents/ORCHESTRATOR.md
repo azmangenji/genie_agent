@@ -74,9 +74,34 @@ Wait for the sub-agent to complete and read `data/<TAG>_eco_rtl_diff.json`.
 
 ## STEP 2 — Run find_equivalent_nets
 
-Using the `nets_to_query` list from Step 1:
+**Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fenets_runner.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
+- Path to RTL diff JSON: `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`
+- Task: validate nets, submit fenets, block until complete, handle all retries, write all raw rpts + step2 fenets RPT
 
-**MANDATORY: Validate `nets_to_query` before submitting.** Whether Step 1 was just run or reused from a previous tag, always check the JSON before building the net list:
+Wait for the sub-agent to complete.
+
+**CHECKPOINT — Verify ALL of the following before proceeding to Step 3:**
+```bash
+ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
+```
+If any file is missing — eco_fenets_runner failed. Do NOT continue.
+
+**Extract SPEC_SOURCES from `data/<TAG>_eco_step2_fenets.rpt`** (read the SPEC_SOURCES section at the bottom of the RPT) — pass these to the Step 3 sub-agent prompt.
+
+---
+
+### Step 2 Notes (reference — do NOT execute yourself)
+
+Full implementation is in `eco_fenets_runner.md`. Key rules for the sub-agent:
+- Validate nets (filter port_promotion/new_port/port_connection types)
+- Do NOT reuse previous run scope — submit fresh if paths differ
+- Retry direction always DEEPER (not shallower)
+- Use single Bash blocking call for all polls (no repeated tool calls)
+- Copy all rpts to AI_ECO_FLOW_DIR before exiting
+
+The following detail is for sub-agent reference. **Validate `nets_to_query` before submitting.** Whether Step 1 was just run or reused from a previous tag, always check the JSON before building the net list:
 
 ```python
 # Load the RTL diff JSON
@@ -507,11 +532,30 @@ Format of output (each stage array may contain both wire_swap rewire entries AND
 
 **Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
 
-Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_study.rpt` summarizing all confirmed/excluded cells per stage. Then copy to AI_ECO_FLOW_DIR:
+Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_study.rpt`:
+
+```python
+study = load("data/<TAG>_eco_preeco_study.json")
+with open("data/<TAG>_eco_step3_netlist_study.rpt", "w") as f:
+    f.write(f"STEP 3 — PREECO NETLIST STUDY\nTag: <TAG>\n{'='*80}\n\n")
+    for stage in ["Synthesize", "PrePlace", "Route"]:
+        confirmed = [e for e in study[stage] if e.get("confirmed")]
+        excluded  = [e for e in study[stage] if not e.get("confirmed")]
+        f.write(f"[{stage}] — {len(confirmed)} confirmed, {len(excluded)} excluded\n")
+        for e in confirmed:
+            f.write(f"  CONFIRMED: {e.get('cell_name','?')} pin={e.get('pin','?')} "
+                    f"old={e.get('old_net','?')} new={e.get('new_net','?')} "
+                    f"type={e.get('change_type','?')}\n")
+        for e in excluded:
+            f.write(f"  EXCLUDED:  {e.get('cell_name','?')} — {e.get('reason','?')}\n")
+        f.write("\n")
+```
+
+Then copy to AI_ECO_FLOW_DIR and verify:
 ```bash
 cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt <AI_ECO_FLOW_DIR>/
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt
 ```
-Verify the copy succeeded before proceeding to Step 4.
 
 ---
 
@@ -529,11 +573,28 @@ Wait for eco_applier sub-agent to complete.
 
 **Generate Step 4 RPT from JSON (ORCHESTRATOR responsibility — NOT eco_applier):**
 
-Read `data/<TAG>_eco_applied_round<ROUND>.json` and write `data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt` summarizing all applied/inserted/skipped entries per stage. Then copy to AI_ECO_FLOW_DIR:
+```python
+applied = load("data/<TAG>_eco_applied_round<ROUND>.json")
+s = applied["summary"]
+with open("data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt", "w") as f:
+    f.write(f"STEP 4 — ECO APPLIED (Round <ROUND>)\nTag: <TAG>  |  JIRA: <JIRA>\n{'='*80}\n")
+    f.write(f"Summary: {s['applied']} applied / {s['inserted']} inserted / "
+            f"{s['skipped']} skipped / {s['verify_failed']} verify_failed\n\n")
+    for stage in ["Synthesize", "PrePlace", "Route"]:
+        f.write(f"[{stage}]\n")
+        for e in applied[stage]:
+            f.write(f"  {e['status']:10s} {e.get('cell_name','?'):40s} "
+                    f"pin={e.get('pin','?')} type={e.get('change_type','?')}\n")
+            if e['status'] == 'SKIPPED':
+                f.write(f"             Reason: {e.get('reason','?')}\n")
+        f.write("\n")
+```
+
+Copy to AI_ECO_FLOW_DIR and verify:
 ```bash
 cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 ```
-Verify the copy succeeded before proceeding to Step 4b.
 
 ---
 
@@ -556,7 +617,26 @@ If no new_logic insertions: set `svf_update_needed = false`, skip Step 4b.
 
 ## STEP 5 — PostEco Formality Verification
 
-**Guard:** Read `data/<TAG>_eco_applied_round<ROUND>.json` and check `summary.applied + summary.inserted`. If both are 0, skip this step and Step 6 entirely — go directly to Step 8. Write `data/<TAG>_eco_fm_verify.json` with `"skipped": true, "reason": "no changes applied"` and note this in the HTML report.
+**Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=1`
+- `ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace`
+- `svf_update_needed=<true|false>` (from Step 4b)
+- Task: write FM config, submit FM, block until complete, parse results, write verify JSON + RPT
+
+Wait for the sub-agent to complete.
+
+**CHECKPOINT:** Verify ALL of the following:
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_fm_verify.json
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step5_fm_verify_round1.rpt
+```
+Also read `data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_tag` — save it to `eco_fixer_state` if FM failed.
+
+---
+
+### Step 5 Notes (reference — do NOT execute yourself)
+
+Full implementation is in `eco_fm_runner.md`. Key rules: write eco_fm_config with fixed filename (not tag-based), use single Bash blocking call for FM wait (timeout 21600s = 6h), merge results with previous round, write tmp file with eco_fm_tag.
 
 ### Step 5a — Write FM config file
 

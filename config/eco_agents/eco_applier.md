@@ -6,17 +6,19 @@
 
 ---
 
-## CRITICAL: Processing Order — new_logic BEFORE wire_swap
+## CRITICAL: Processing Order — 4 passes per stage
 
-The PreEco study JSON may contain two types of entries:
-- `new_logic_dff` / `new_logic_gate` — new cell insertions
-- `rewire` — net substitutions (some may have `new_logic_dependency`)
+The PreEco study JSON may contain entries of multiple change types. Process in this strict order within each stage's decompress/edit/recompress cycle:
 
-**You MUST process in this order within each stage:**
-1. **Pass 1 — new_logic insertions first** (DFF and gate entries): insert all new cells so their output nets (`n_eco_<jira>_<seq>`) exist in the temp file
-2. **Pass 2 — rewire entries**: now `new_net` (which may be `n_eco_<jira>_<seq>`) exists → rewire path (4b) succeeds
+1. **Pass 1 — new_logic insertions** (`new_logic_dff`, `new_logic_gate`, `new_logic`): insert all new cells so their output nets exist in the temp file
+2. **Pass 2 — port_declaration** (`port_declaration`, `port_promotion`): update module port lists and change wire/output/input declarations
+3. **Pass 3 — port_connection** (`port_connection`): add `.port(net)` connections to module instance blocks
+4. **Pass 4 — rewire** (`rewire`): change pin connections on existing cells
 
-If you attempt rewire before new_logic insertion, `grep -cw "<new_net>"` returns 0 → falls to new_logic path → fails. Always insert new cells first.
+**Why this order:**
+- Port declarations must exist before connections reference them
+- New_logic cells must exist before rewires reference their output nets
+- Rewires come last — they may depend on both new cells AND new port connections
 
 ---
 
@@ -311,6 +313,109 @@ Record: `status=INSERTED`, `change_type=new_logic_gate`, `instance_name`, `inv_i
 
 ---
 
+#### 4c-PORT_DECL — port_declaration path (Pass 2)
+
+For entries with `change_type: "port_declaration"` (new input or output port, NOT previously in port list):
+
+**Step 1 — Find module definition line:**
+```bash
+grep -n "^module <module_name> \|^module <module_name>(" /tmp/eco_apply_<TAG>_<Stage>.v | head -3
+```
+
+**Step 2 — Add signal to module port list (handles multi-line port lists):**
+
+```python
+mod_idx = next(i for i, l in enumerate(lines) if 'module <module_name>' in l)
+# Find the closing ');' of the port list — may be many lines after 'module' line
+# The port list ends at the FIRST standalone ');' after the module declaration
+close_idx = next(
+    i for i in range(mod_idx + 1, len(lines))
+    if lines[i].strip() in (');', ') ;', ');  // end of port list')
+)
+# Insert signal name before the closing ')'
+lines[close_idx] = lines[close_idx].replace(');', f', <signal_name>\n);')
+```
+
+**Step 3 — Add declaration in module body:**
+
+Add declaration line after existing declarations (before the first cell instantiation):
+```verilog
+  input/output  <signal_name> ;
+```
+
+Record: `status=APPLIED`, `change_type=port_declaration`.
+
+---
+
+#### 4c-PORT_PROMO — port_promotion path (Pass 2)
+
+For entries with `change_type: "port_promotion"` (signal was `reg`, now promoted to `output reg`):
+
+**The signal is ALREADY in the module port list — do NOT add it again.**
+
+**Step 1 — Find and change the declaration keyword only:**
+```python
+# Find 'wire <signal_name>' in module body and change to 'output'
+for i, line in enumerate(lines[mod_idx:], mod_idx):
+    if f'wire {signal_name}' in line and ';' in line:
+        lines[i] = line.replace('wire ', 'output ')
+        break
+```
+
+**Step 2 — Verify:** `grep -c "output.*<signal_name>"` in module scope — must ≥ 1.
+
+Record: `status=APPLIED`, `change_type=port_promotion`.
+
+**Step 4 — Verify:** `grep -c "<signal_name>" /tmp/eco_apply_<TAG>_<Stage>.v` in the module scope — must be ≥ 1 in port list AND ≥ 1 as declaration.
+
+Record: `status=APPLIED`, `change_type=port_declaration|port_promotion`, `signal_name`, `module_name`.
+
+---
+
+#### 4c-PORT_CONN — port_connection path (Pass 3)
+
+For entries with `change_type: "port_connection"`:
+
+**Read from study JSON entry:**
+```python
+parent_module    = entry["parent_module"]     # e.g., "ddrss_umccmd_t_umcarb"
+submodule_pattern= entry["submodule_pattern"] # e.g., "ddrss_umccmd_t_umcarbctrlsw"
+instance_name    = entry["instance_name"]     # e.g., "CTRLSW"
+port_name        = entry["port_name"]         # e.g., "NeedFreqAdj"
+net_name         = entry["net_name"]          # e.g., "ARB_FEI_NeedFreqAdj"
+```
+
+**Step 1 — Find the instance block in the parent module:**
+```bash
+grep -n "<submodule_pattern> <instance_name>" /tmp/eco_apply_<TAG>_<Stage>.v | head -5
+```
+
+**Step 2 — Find the closing `);` of the instance:**
+```python
+inst_line = grep result line number
+# Read forward from inst_line until first standalone ');'
+close_idx = next(i for i in range(inst_line, len(lines))
+                 if lines[i].strip() in (');', ') ;'))
+```
+
+**Step 3 — Insert the new port connection before the closing `);`:**
+```python
+# Replace ');' with ', .<port_name>( <net_name> ) );'
+lines[close_idx] = lines[close_idx].replace(');',
+    f', .<port_name>( <net_name> ) );')
+```
+
+**Step 4 — Verify:** `grep -c ".<port_name>( <net_name> )"` in the instance block — must = 1.
+
+**Step 5 — If `net_name` doesn't exist in the stage as a wire/signal** (not yet declared), add a wire declaration in the parent module scope before the instance:
+```verilog
+  wire  <net_name> ;
+```
+
+Record: `status=APPLIED`, `change_type=port_connection`, `port_name`, `net_name`, `instance_name`.
+
+---
+
 #### 4d — Find the cell in PostEco (rewire path only)
 
 Already done in 4b. For new_logic, cell finding is part of 4c-5.
@@ -389,9 +494,12 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 | `change_type=rewire`, `new_net` exists in PostEco | Rewire path (4b) |
 | `change_type=rewire`, `new_net` absent, source_net found | Inverter path (4c) — auto-insert INV cell |
 | `change_type=rewire`, `new_net` absent, source_net also absent | SKIPPED — "source_net not found" |
-| `change_type=new_logic_dff` | DFF insertion path (4c-DFF) |
-| `change_type=new_logic_gate` | Gate insertion path (4c-GATE) |
-| `change_type=rewire` with `new_logic_dependency` | Must be processed in Pass 2 — after Pass 1 new_logic insertions create the `new_net` |
+| `change_type=new_logic_dff` | DFF insertion path (4c-DFF) — Pass 1 |
+| `change_type=new_logic_gate` | Gate insertion path (4c-GATE) — Pass 1 |
+| `change_type=port_declaration` | Port list + declaration update (4c-PORT_DECL) — Pass 2 |
+| `change_type=port_promotion` | Wire → output promotion (4c-PORT_DECL) — Pass 2 |
+| `change_type=port_connection` | Instance port connection addition (4c-PORT_CONN) — Pass 3 |
+| `change_type=rewire` with `new_logic_dependency` | Must be in Pass 4 — after Pass 1 new_logic insertions |
 | Input signal missing in PostEco, `input_from_change` set | Process the dependency change first, then retry |
 | Input signal missing, no dependency | SKIPPED — "input signal not found in PostEco" |
 | Cell not in PostEco | SKIPPED — cell may have been optimized away |

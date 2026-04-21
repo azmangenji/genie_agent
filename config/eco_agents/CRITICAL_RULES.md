@@ -152,7 +152,33 @@ If any stage's md5 matches its backup — the ECO was not applied to that stage.
 
 ---
 
-## RULE 13 — Orchestrator Generates RPTs, Sub-Agents Write JSON Only
+## RULE 13 — Use Single Bash Call for All Blocking Waits
+
+**Never poll with repeated Claude tool calls.** Polling inside Claude (grep → sleep → grep → sleep...) consumes 10-30 tool calls per wait cycle, burning context budget. Use a single Bash tool call with an in-shell while loop instead:
+
+```bash
+# CORRECT — ONE tool call, shell loops internally
+timeout <seconds> bash -c '
+  while true; do
+    <check condition> && echo "DONE" && break
+    sleep <interval>
+  done
+' && echo "SUCCESS" || echo "TIMEOUT"
+```
+
+```bash
+# WRONG — repeated tool calls, each one consumes context
+grep -c "sentinel" file   # tool call 1
+# ... sleep ...
+grep -c "sentinel" file   # tool call 2
+# ... etc. for 20+ calls
+```
+
+Apply this pattern everywhere a wait is needed: fenets completion, FM completion, any job polling.
+
+---
+
+## RULE 14 — Orchestrator Generates RPTs, Sub-Agents Write JSON Only
 
 **Sub-agents (eco_netlist_studier, eco_applier) write their JSON output only and exit. The ORCHESTRATOR or ROUND_ORCHESTRATOR generates all RPT files from the JSON.**
 
