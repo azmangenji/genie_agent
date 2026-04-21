@@ -186,7 +186,30 @@ Then update `eco_fixer_state`:
 - PreEco study JSON: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`
 - Output: `<BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json`
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` exists and contains `summary` field. Verify backup files exist for each stage with confirmed cells.
+**CHECKPOINT + RPT GENERATION (ROUND_ORCHESTRATOR responsibility):**
+
+```bash
+# 1. Verify JSON exists with summary
+ls <BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json
+# 2. Verify backup files exist for each stage with confirmed cells
+```
+
+**Generate Step 4 RPT from JSON — do this yourself, do NOT rely on eco_applier:**
+
+Read `data/<TAG>_eco_applied_round<NEXT_ROUND>.json` and write the RPT summarizing all applied/inserted/skipped entries per stage. The eco_applier sub-agent focuses on netlist editing only — RPT generation is YOUR responsibility to avoid context pressure on the sub-agent.
+
+```bash
+# Write RPT
+# ... (read JSON and format RPT content)
+
+# Copy to AI_ECO_FLOW_DIR immediately
+cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
+
+# Verify copy
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt
+```
+
+Do NOT proceed to Step 4b until the RPT is confirmed in both data/ and AI_ECO_FLOW_DIR.
 
 ---
 

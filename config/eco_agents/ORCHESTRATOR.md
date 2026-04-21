@@ -505,6 +505,14 @@ Format of output (each stage array may contain both wire_swap rewire entries AND
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_preeco_study.json` exists and has non-empty arrays for all 3 stages (Synthesize, PrePlace, Route) before proceeding. If missing or all stages empty — the sub-agent failed. Do NOT continue to Step 4.
 
+**Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
+
+Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_study.rpt` summarizing all confirmed/excluded cells per stage. Then copy to AI_ECO_FLOW_DIR:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study.rpt <AI_ECO_FLOW_DIR>/
+```
+Verify the copy succeeded before proceeding to Step 4.
+
 ---
 
 ## STEP 4 — Apply ECO to PostEco Netlists
@@ -518,6 +526,14 @@ Format of output (each stage array may contain both wire_swap rewire entries AND
 Wait for eco_applier sub-agent to complete.
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_applied_round<ROUND>.json` exists and contains a `summary` field. Check that backup files `<REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>` exist for each stage that had confirmed cells. Do NOT continue to Step 4b or Step 5 if file is missing.
+
+**Generate Step 4 RPT from JSON (ORCHESTRATOR responsibility — NOT eco_applier):**
+
+Read `data/<TAG>_eco_applied_round<ROUND>.json` and write `data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt` summarizing all applied/inserted/skipped entries per stage. Then copy to AI_ECO_FLOW_DIR:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
+```
+Verify the copy succeeded before proceeding to Step 4b.
 
 ---
 
