@@ -106,20 +106,69 @@ Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`. For each entry in `revised_
 ```python
 study = load("<BASE_DIR>/data/<TAG>_eco_preeco_study.json")
 
+action_to_change_type = {
+    "rewire":           "rewire",
+    "revert_and_rewire":"rewire",
+    "insert_cell":      "new_logic",
+    "new_logic_dff":    "new_logic_dff",
+    "new_logic_gate":   "new_logic_gate",
+    "exclude":          "rewire",
+    "set_dont_verify":  "rewire",
+}
+
 for change in fm_analysis["revised_changes"]:
     stages = ["Synthesize","PrePlace","Route"] if change["stage"]=="ALL" else [change["stage"]]
+    action = change["action"]
+    change_type = action_to_change_type.get(action, "rewire")
+
     for s in stages:
-        entry = find_or_create(study[s], cell_name=change["cell_name"], pin=change["pin"])
-        entry["old_net"]   = change["old_net"]
-        entry["new_net"]   = change["new_net"]
-        entry["confirmed"] = True
-        entry["source"]    = f"fm_analyzer_round{ROUND}"
+        if action in ("new_logic_dff", "new_logic_gate"):
+            # These entries have no cell_name/pin — append directly as new insertion entries
+            new_entry = {
+                "change_type": change_type,
+                "target_register": change.get("target_register"),
+                "instance_scope":  change.get("instance_scope"),
+                "cell_type":       change.get("cell_type"),
+                "instance_name":   change.get("instance_name"),
+                "output_net":      change.get("output_net"),
+                "gate_function":   change.get("gate_function"),
+                "port_connections":change.get("port_connections", {}),
+                "input_from_change": change.get("input_from_change"),
+                "confirmed": True,
+                "source": f"fm_analyzer_round{ROUND}"
+            }
+            study[s].append(new_entry)
+        else:
+            # Rewire/insert_cell/exclude/set_dont_verify — find or create by cell_name + pin
+            entry = find_or_create(study[s], cell_name=change["cell_name"], pin=change["pin"])
+            entry["old_net"]     = change["old_net"]
+            entry["new_net"]     = change["new_net"]
+            entry["change_type"] = change_type
+            entry["confirmed"]   = True
+            entry["source"]      = f"fm_analyzer_round{ROUND}"
+            if action == "exclude":
+                entry["confirmed"] = False
+                entry["reason"] = change.get("rationale", "excluded by fm_analyzer")
 
 save("<BASE_DIR>/data/<TAG>_eco_preeco_study.json", study)
 ```
 
 Then update `eco_fixer_state`:
-1. Append strategy description to `strategies_tried`
+1. Append strategy description to `strategies_tried` — format:
+   ```python
+   strategy_entry = {
+       "round": ROUND,
+       "failure_mode": fm_analysis["failure_mode"],
+       "cells_changed": [
+           f"{c['stage']}:{c['cell_name']}/{c['pin']}:{c['action']}"
+           for c in fm_analysis["revised_changes"]
+           if c["action"] not in ("set_dont_verify", "exclude")
+       ],
+       "cells_excluded": [c["cell_name"] for c in fm_analysis["revised_changes"] if c["action"] == "exclude"]
+   }
+   eco_fixer_state["strategies_tried"].append(strategy_entry)
+   ```
+   This allows eco_fm_analyzer (next round) to check `strategies_tried` and avoid repeating the same cell+pin+action combination.
 2. Increment `round` by 1
 3. Save updated `eco_fixer_state`
 4. Set `NEXT_ROUND = round + 1`

@@ -10,7 +10,7 @@
 
 ## When to Run
 
-Only run when `data/<TAG>_eco_applied_round<ROUND>.json` contains entries with `"change_type": "new_logic"` and `"status": "INSERTED"`. If no such entries exist, skip — no SVF update needed.
+Only run when `data/<TAG>_eco_applied_round<ROUND>.json` contains entries with `"status": "INSERTED"` and `change_type` in `["new_logic", "new_logic_dff", "new_logic_gate"]`. If no such entries exist, skip — no SVF update needed.
 
 ---
 
@@ -20,25 +20,32 @@ Only run when `data/<TAG>_eco_applied_round<ROUND>.json` contains entries with `
 cat <BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json
 ```
 
-Collect all entries where `"change_type": "new_logic"` and `"status": "INSERTED"` from the **Synthesize** stage only. SVF `eco_change` is only required for `FmEqvEcoSynthesizeVsSynRtl` (RTL vs gate-level). PrePlace and Route stage-to-stage targets auto-match by instance name.
+Collect all entries where `"status": "INSERTED"` and `change_type` is one of:
+- `"new_logic"` — inverter insertion
+- `"new_logic_dff"` — DFF insertion
+- `"new_logic_gate"` — combinational gate insertion
 
-For each such entry, extract directly from eco_applied_round<ROUND>.json:
-- `inv_inst_full_path` — full hierarchy path already computed by eco_applier (e.g., `<TILE>/<INST_A>/<INST_B>/eco_<jira>_001`)
-- `inv_cell_type` — the std cell type as found in the netlist
+From the **Synthesize** stage only. SVF `eco_change` is only required for `FmEqvEcoSynthesizeVsSynRtl` (RTL vs gate-level). PrePlace and Route stage-to-stage targets auto-match by instance name.
 
-No path reconstruction needed — eco_applier already built the full path.
+For each such entry, extract from eco_applied_round<ROUND>.json — all three change types record the same key fields:
+- `inv_inst_full_path` — full hierarchy path computed by eco_applier (e.g., `<TILE>/<INST_A>/<INST_B>/eco_<jira>_<seq>`)
+- `cell_type` — the std cell type (field name is `cell_type` for ALL three types: `new_logic`, `new_logic_dff`, `new_logic_gate`)
+
+No path reconstruction needed — eco_applier already computed `inv_inst_full_path` for all three types.
 
 ---
 
 ## STEP 2 — Check for Duplicate Entries in TCL File
 
-Before writing, verify the entry does not already exist in `data/<TAG>_eco_svf_entries.tcl`:
+Before writing each entry, verify the instance name does not already exist in `data/<TAG>_eco_svf_entries.tcl`:
 
 ```bash
 if [ -f "<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl" ]; then
-    grep -c "<inv_inst>" <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
+    grep -c "<instance_name>" <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 fi
 ```
+
+Where `<instance_name>` is the `instance_name` field from the entry (e.g., `eco_<jira>_<seq>`).
 
 If count > 0: skip this entry (already written from a previous attempt) — report ALREADY_PRESENT.
 
@@ -127,5 +134,6 @@ Entries:
 1. **Never directly modify EcoChange.svf** — write to the TCL file only; post_eco_formality handles the append
 2. **Synthesize stage only** — only register cells for the Synthesize stage; PrePlace and Route auto-match by instance name
 3. **Duplicate check** — skip if entry already present in the TCL file (safe for retries)
-4. **Full hierarchy path** — use `<TILE>/<inst_hierarchy>/<inv_inst>` from module root, NOT the Formality DB path
+4. **Full hierarchy path** — use `inv_inst_full_path` from eco_applied_round<ROUND>.json (eco_applier already computed it for all change types)
 5. **No hardcoded values** — all cell types and instance names come from `eco_applied_round<ROUND>.json`
+6. **All new_logic types require SVF entry** — `new_logic` (inverter), `new_logic_dff` (DFF), and `new_logic_gate` (combinational gate) all use `eco_change -type insert_cell` with the same format; the SVF format does not differ between cell types

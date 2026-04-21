@@ -34,7 +34,7 @@ Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 Read all `data/<TAG>_eco_applied_round<ROUND>.json` files (ROUND = 1 to TOTAL_ROUNDS) and combine statistics.
 
 **Statistics calculation:**
-- **Cells Added**: count unique `inv_inst` values where `change_type=new_logic` AND `status=INSERTED`, deduplicated across stages (same logical cell appears in 3 stages — count once)
+- **Cells Added**: count unique `instance_name`/`inv_inst` values where `change_type` in `["new_logic", "new_logic_dff", "new_logic_gate"]` AND `status=INSERTED`, deduplicated across stages (same logical cell appears in 3 stages — count once)
 - **Cells Removed**: count SKIPPED entries where `reason` contains "not found in PostEco"
 - **Pins Disconnected / Nets Connected**: count APPLIED + INSERTED entries per stage per round (cumulative)
 
@@ -146,8 +146,10 @@ Per-Step Reports  (all at: <AI_ECO_FLOW_DIR>/)
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step1_rtl_diff.rpt
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
   <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
-  <AI_ECO_FLOW_DIR>/<noequiv_retry1_tag>_find_equivalent_nets_raw.rpt  <- if No Equiv Nets retry
-  <AI_ECO_FLOW_DIR>/<noequiv_retry2_tag>_find_equivalent_nets_raw.rpt  <- if 2nd retry
+  <AI_ECO_FLOW_DIR>/<noequiv_retry1_tag>_find_equivalent_nets_raw_noequiv_retry1.rpt  <- if No Equiv Nets retry 1
+  <AI_ECO_FLOW_DIR>/<noequiv_retry2_tag>_find_equivalent_nets_raw_noequiv_retry2.rpt  <- if No Equiv Nets retry 2
+  <AI_ECO_FLOW_DIR>/<fm036_retry1_tag>_find_equivalent_nets_raw_fm036_retry1.rpt      <- if FM-036 retry 1
+  <AI_ECO_FLOW_DIR>/<fm036_retry2_tag>_find_equivalent_nets_raw_fm036_retry2.rpt      <- if FM-036 retry 2
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study.rpt
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt  <- one line per round
   <AI_ECO_FLOW_DIR>/<TAG>_eco_step4b_svf.rpt          <- omit if no new_logic

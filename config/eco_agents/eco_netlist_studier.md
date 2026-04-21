@@ -105,7 +105,149 @@ The cell_name is the second-to-last path component; the pin is the last componen
 
 ---
 
+## Phase 0 — Process new_logic and new_port Changes FIRST
+
+**Before studying any FM-returned cells, process ALL `new_logic` changes from the RTL diff JSON.** These are new cells (DFFs, combinational gates) that must be inserted into the PostEco netlist. FM has no results for these — they don't exist in PreEco. The studier must plan their insertion so the applier can create them.
+
+Read all entries in `changes[]` where `change_type` is one of: `"new_logic"`, `"and_term"`. Skip `"new_port"`, `"port_connection"`, and `"port_promotion"` entries — those are port wiring and net exposure changes that don't require new gate insertion (handled via flat_net_name resolution). Also skip `"wire_swap"` at this phase — wire_swap is handled by FM find_equivalent_nets results in Phase 1.
+
+**`port_promotion` handling:** When `flat_net_exists: true`, simply verify the net exists in PreEco Synthesize netlist:
+```bash
+grep -cw "<old_token>" /tmp/eco_study_<TAG>_Synthesize.v
+```
+If count ≥ 1 → net confirmed in flat netlist. Record in study JSON as:
+```json
+{"change_type": "port_promotion", "signal": "<old_token>", "flat_net_confirmed": true, "no_gate_needed": true}
+```
+No further processing needed — the net is already accessible in the flat netlist.
+
+**`and_term` → `new_logic_gate` mapping:** An `and_term` change from the RTL diff always produces a `new_logic_gate` entry in the study JSON (never a `rewire` or `new_logic_dff`). The `change_type` written to `eco_preeco_study.json` is `"new_logic_gate"` — NOT `"and_term"`. The eco_applier only sees `new_logic_gate` and processes it via Step 4c-GATE.
+
+**`and_term` handling (Gap 4):** When `change_type == "and_term"`:
+- `new_token` is the new AND term signal (the one being added)
+- `flat_net_name` (or `flat_net_name_per_instance`) from the RTL diff JSON gives the ACTUAL flat net name driving this port in the parent scope
+- Verify the flat net exists: `grep -cw "<flat_net_name>" /tmp/eco_study_<TAG>_Synthesize.v` — if count ≥ 1, it already exists
+- The gate needed is an AND2 with inputs: `[output_of_existing_expr_cell, <flat_net_name>]` (or NAND2 if the new term is inverted `~NewSignal`)
+- Record as `new_logic_gate` entry with `gate_function: "AND2"` (or `"NAND2"` for `~<signal>`), `port_connections: {A: "<existing_output_net>", B: "<flat_net_name>", ZN: "n_eco_<jira>_<seq>"}`
+- `input_from_change: null` (flat_net_name already exists, no dependency on another new_logic change)
+
+**For multi-instance modules** (when `instances` field is non-null): process each instance separately. The `flat_net_name_per_instance` gives different net names per instance. Create separate `new_logic_gate` entries with different instance_scopes:
+```json
+[
+  {"change_type": "new_logic_gate", "instance_scope": "<INST_A>", "port_connections": {"B": "<flat_net_for_INST_A>"}, ...},
+  {"change_type": "new_logic_gate", "instance_scope": "<INST_B>", "port_connections": {"B": "<flat_net_for_INST_B>"}, ...}
+]
+```
+
+For each `new_logic` change:
+
+### 0a — Classify the new cell type
+
+From the RTL diff `context_line`:
+- `always @(posedge <clk>)` with `if (<reset>) ... <= 0; else ... <= <expr>` → **DFF** (sequential)
+- `wire/assign <signal> = <expr>` → **combinational gate** (AND, OR, NOR, NAND, etc.)
+- Bare `reg <signal>` declaration with no always block in this change → skip, driven by another change
+
+### 0b — Identify input signals
+
+Parse the RTL `context_line` to extract:
+- For DFF: `clock_net`, `reset_net` (active-low or active-high), `data_expression` (may be complex)
+- For combinational: the input signals in the expression
+
+Verify each input signal exists in the PreEco Synthesize netlist:
+```bash
+grep -cw "<input_signal>" /tmp/eco_study_<TAG>_Synthesize.v
+```
+If count = 0 — this input signal is itself a new_logic output from another change. Record the dependency: `input_from_change: <N>`. The applier must insert changes in dependency order.
+
+### 0c — Find suitable cell type from PreEco netlist
+
+**For DFF:**
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*(DFF|DFQD|SDFQD|SDFFQ|DFFR|DFFRQ)[A-Z0-9]* [a-z]" | head -5
+```
+Extract the cell type. Verify it has pins for: clock (CK/CLK/CP), data (D), reset (RN/RB/RST), output (Q/QN).
+
+**For combinational gate:**
+Determine the gate function from the RTL expression:
+- `A & B` → AND2 → grep for `AND2` or `AN2` cell
+- `~A | ~B` = NAND(A,B) → grep for `NAND2` or `ND2` cell
+- `A | B` → OR2 → grep for `OR2` or `OR2D` cell
+- `~(A | B)` → NOR2 → grep for `NOR2` or `NR2` cell
+- Multi-input variants → AND3/NAND3/OR3/NOR3 etc.
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*<CELL_PATTERN>[A-Z0-9]* [a-z]" | head -5
+```
+
+### 0d — Assign instance and output net names
+
+Use the same JIRA-based naming convention as inverter insertions:
+```
+eco_inst  = eco_<jira>_<seq>      (e.g., eco_9868_001)
+eco_out   = n_eco_<jira>_<seq>    (e.g., n_eco_9868_001)
+```
+Seq counter is per `change_type + target_register` pair — same seq used across all 3 stages for the same logical change.
+
+### 0e — Record as new_logic_insertion entry in study JSON
+
+```json
+{
+  "change_type": "new_logic_dff",       // or "new_logic_gate"
+  "target_register": "<signal_name>",   // from RTL diff change
+  "instance_scope": "<INST_A>/<INST_B>", // hierarchy of declaring module
+  "cell_type": "<DFF_cell_type>",
+  "instance_name": "eco_<jira>_<seq>",
+  "output_net": "n_eco_<jira>_<seq>",
+  "port_connections": {
+    "CK":  "<clock_net>",
+    "D":   "<data_net_or_expression_output>",
+    "RN":  "<reset_net>",
+    "Q":   "n_eco_<jira>_<seq>"
+  },
+  "input_from_change": <N_or_null>,     // if data input comes from another new_logic change
+  "confirmed": true
+}
+```
+
+For combinational gate:
+```json
+{
+  "change_type": "new_logic_gate",
+  "target_register": "<output_signal>",
+  "instance_scope": "<INST_A>/<INST_B>",
+  "cell_type": "<gate_cell_type>",
+  "instance_name": "eco_<jira>_<seq>",
+  "output_net": "n_eco_<jira>_<seq>",
+  "gate_function": "<NAND2|NOR2|AND2|OR2|...>",
+  "port_connections": {
+    "A":  "<input_net_1>",
+    "B":  "<input_net_2>",
+    "ZN": "n_eco_<jira>_<seq>"
+  },
+  "input_from_change": <N_or_null>,
+  "confirmed": true
+}
+```
+
+### 0f — Mark wire_swap entries that depend on new_logic outputs
+
+For each `wire_swap` change whose `new_token` matches a `new_logic` output net (`n_eco_<jira>_<seq>`), add `"new_logic_dependency": [<seq>]` to its study JSON entry. The applier must process the new_logic insertion before the wire_swap.
+
+---
+
 ## Process Per Stage (Synthesize, PrePlace, Route)
+
+**Multi-instance handling (Gap 2):** When the RTL diff JSON `instances` field is non-null (e.g., `["DCQARB0", "DCQARB1"]`), the `nets_to_query` will contain separate entries per instance (each with an `instance` field). Process each instance's FM results INDEPENDENTLY — do NOT merge cells from different instances into the same study array entry. Each instance gets its own set of confirmed cells, its own backward cone trace (the same target_register but different instance path), and its own `new_logic_gate` entry (with different `flat_net_name_per_instance`).
+
+The study JSON for multi-instance changes will have multiple entries in each stage array — one per instance:
+```json
+{
+  "Synthesize": [
+    {"instance": "<INST_A>", "cell_name": "<cell_in_INST_A>", "instance_scope": "<INST_A>", ...},
+    {"instance": "<INST_B>", "cell_name": "<cell_in_INST_B>", "instance_scope": "<INST_B>", ...}
+  ]
+}
+```
 
 For each stage where find_equivalent_nets found qualifying impl cells (after applying all 4 filters above), process EACH cell independently.
 
@@ -532,10 +674,36 @@ Write `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` (always use the full absolut
       "reason": "new_net <new_signal> not found in PrePlace PreEco netlist and no HFS alias found"
     }
   ],
+    {
+      "change_type": "new_logic_dff",
+      "target_register": "<signal_name>",
+      "instance_scope": "<INST_A>/<INST_B>",
+      "cell_type": "<DFF_cell_type>",
+      "instance_name": "eco_<jira>_<seq>",
+      "output_net": "n_eco_<jira>_<seq>",
+      "port_connections": {"CK": "<clk_net>", "D": "<data_net>", "RN": "<reset_net>", "Q": "n_eco_<jira>_<seq>"},
+      "input_from_change": null,
+      "confirmed": true
+    },
+    {
+      "change_type": "new_logic_gate",
+      "target_register": "<output_signal>",
+      "instance_scope": "<INST_A>/<INST_B>",
+      "cell_type": "<gate_cell_type>",
+      "instance_name": "eco_<jira>_<seq>",
+      "output_net": "n_eco_<jira>_<seq>",
+      "gate_function": "<NAND2|NOR2|AND2|...>",
+      "port_connections": {"A": "<input_net_1>", "B": "<input_net_2>", "ZN": "n_eco_<jira>_<seq>"},
+      "input_from_change": null,
+      "confirmed": true
+    }
+  ],
   "PrePlace": [...],
   "Route": [...]
 }
 ```
+
+**Note:** `change_type` in eco_preeco_study.json uses applier-facing values (`rewire`, `new_logic_dff`, `new_logic_gate`) — NOT RTL diff values (`wire_swap`, `new_logic`). The studier translates: `wire_swap` → `rewire`, explicit `new_logic` → `new_logic_dff` or `new_logic_gate` based on cell type.
 
 ---
 

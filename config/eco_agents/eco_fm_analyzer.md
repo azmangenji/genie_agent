@@ -180,11 +180,22 @@ If you cannot find a specific cell-level fix, you MUST fall back to:
 ```
 
 **`action` values:**
-- `rewire` — apply this net substitution in eco_applier
-- `insert_cell` — insert new inverter cell
+- `rewire` — apply this net substitution in eco_applier (Step 4b)
+- `insert_cell` — insert new inverter cell (eco_applier Step 4c — for simple `~source_net` case only)
+- `new_logic_dff` — insert new flip-flop cell (eco_applier Step 4c-DFF); include `port_connections` in revised_changes entry
+- `new_logic_gate` — insert new combinational gate (eco_applier Step 4c-GATE); include `gate_function` and `port_connections`
 - `revert_and_rewire` — the cell was rewired wrong; apply the correct rewire in this round
 - `exclude` — do NOT touch this cell in future rounds (caused regression)
 - `set_dont_verify` — add FM `set_dont_verify` entry for a proven pre-existing failing DFF (not a rewire)
+
+**Mode A — Check for missing new_logic_dff/new_logic_gate cells:**
+
+Before classifying as "ECO not applied to right cells", check if any `new_logic_dff` or `new_logic_gate` entry in `eco_applied_round<ROUND>.json` has `status=SKIPPED`. If so:
+```bash
+# Verify the DFF/gate cell is missing from PostEco Synthesize
+zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -c "<instance_name>"
+```
+If count = 0 → the cell was never inserted. Recommend `action: new_logic_dff` or `action: new_logic_gate` with the same `port_connections` from the study JSON — the applier will insert it in the next round.
 
 ---
 

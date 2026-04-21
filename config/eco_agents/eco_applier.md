@@ -6,6 +6,20 @@
 
 ---
 
+## CRITICAL: Processing Order — new_logic BEFORE wire_swap
+
+The PreEco study JSON may contain two types of entries:
+- `new_logic_dff` / `new_logic_gate` — new cell insertions
+- `rewire` — net substitutions (some may have `new_logic_dependency`)
+
+**You MUST process in this order within each stage:**
+1. **Pass 1 — new_logic insertions first** (DFF and gate entries): insert all new cells so their output nets (`n_eco_<jira>_<seq>`) exist in the temp file
+2. **Pass 2 — rewire entries**: now `new_net` (which may be `n_eco_<jira>_<seq>`) exists → rewire path (4b) succeeds
+
+If you attempt rewire before new_logic insertion, `grep -cw "<new_net>"` returns 0 → falls to new_logic path → fails. Always insert new cells first.
+
+---
+
 ## CRITICAL: One Decompress/Recompress Per Stage
 
 The PreEco study JSON contains an **array** of cells per stage. You MUST process ALL entries for a stage within a single decompress/recompress cycle — do NOT decompress, edit, and recompress per cell. The correct flow is:
@@ -211,6 +225,92 @@ inv_inst_full_path = f"{TILE}/{hierarchy_path}/{inv_inst}"
 # e.g. "<TILE>/<INST_A>/<INST_B>/eco_<jira>_001"
 ```
 
+#### 4c-DFF — new_logic_dff path (insert new flip-flop)
+
+For entries with `change_type: "new_logic_dff"` from the PreEco study JSON:
+
+**Step 1 — Verify all input signals exist in PostEco temp file:**
+```bash
+grep -cw "<clock_net>"  /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
+grep -cw "<reset_net>"  /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
+grep -cw "<data_net>"   /tmp/eco_apply_<TAG>_<Stage>.v   # must be ≥ 1
+```
+If any input is missing AND it is produced by another `new_logic` entry → process that entry first (respect `input_from_change` dependency). If missing with no dependency → SKIPPED, reason="input signal not found in PostEco".
+
+**Step 2 — Find DFF cell type from PreEco netlist (if not already found in this stage):**
+```bash
+zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -E "^[[:space:]]*(DFF|DFQD|SDFQD)[A-Z0-9]* [a-z]" | head -3
+```
+Use the cell type recorded in the study JSON (`port_connections` provides the correct port names).
+
+**Step 3 — Build port connection string from study JSON `port_connections`:**
+```verilog
+  // ECO new_logic_dff insert — TAG=<TAG> JIRA=<JIRA>
+  <cell_type> <instance_name> (.<CK>(<clock_net>), .<D>(<data_net>), .<RN>(<reset_net>), .<Q>(<output_net>));
+```
+Use the exact port names from the study JSON `port_connections` map.
+
+**Step 4 — Find correct module scope and insert** (same as Step 4c-4 for inverters):
+```python
+cell_line_idx = next(i for i, l in enumerate(lines) if '<any_existing_cell_in_same_scope>' in l)
+endmodule_idx = next(i for i in range(cell_line_idx, len(lines)) if 'endmodule' in lines[i])
+new_lines = ['  // ECO new_logic_dff — TAG=<TAG> JIRA=<JIRA>\n',
+             '  <cell_type> <instance_name> (<port_connection_string>);\n']
+lines[endmodule_idx:endmodule_idx] = new_lines
+```
+
+**Step 5 — Compute `inv_inst_full_path`** (same formula as inverter — needed by SVF updater):
+```python
+rtl_diff = load("<BASE_DIR>/data/<TAG>_eco_rtl_diff.json")
+# Use instance_scope from study JSON entry
+instance_scope = entry["instance_scope"]   # e.g., "ARB/CTRLSW"
+inv_inst_full_path = f"{TILE}/{instance_scope}/{instance_name}"
+```
+
+**Step 6 — Verify:** `grep -c "<instance_name>"` in recompressed file ≥ 1.
+
+Record: `status=INSERTED`, `change_type=new_logic_dff`, `instance_name`, `inv_inst_full_path`, `output_net`, `cell_type`.
+
+---
+
+#### 4c-GATE — new_logic_gate path (insert new combinational gate)
+
+For entries with `change_type: "new_logic_gate"` from the PreEco study JSON:
+
+**Step 1 — Verify all input signals exist:**
+```bash
+for each input_net in port_connections.values() (excluding output pin):
+    grep -cw "<input_net>" /tmp/eco_apply_<TAG>_<Stage>.v  # must be ≥ 1
+```
+If any input is a new_logic output (`n_eco_<jira>_<seq>`) — verify that new_logic entry was already processed in Pass 1.
+
+**Step 2 — Find gate cell type from PreEco netlist matching `gate_function`:**
+```bash
+# For NAND2: grep for ND2 or NAND2
+zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -E "^[[:space:]]*(NAND2|ND2|NR2|NOR2|AND2|OR2)[A-Z0-9]* [a-z]" | head -3
+```
+Use the `cell_type` from the study JSON `port_connections`.
+
+**Step 3 — Build port connection string from study JSON:**
+```verilog
+  // ECO new_logic_gate insert — TAG=<TAG> JIRA=<JIRA>
+  <cell_type> <instance_name> (.<A>(<input_net_1>), .<B>(<input_net_2>), .<ZN>(<output_net>));
+```
+
+**Step 4 — Insert before correct endmodule** (same pattern as 4c-DFF).
+
+**Step 5 — Compute `inv_inst_full_path`:**
+```python
+instance_scope = entry["instance_scope"]
+inv_inst_full_path = f"{TILE}/{instance_scope}/{instance_name}"
+```
+
+**Step 6 — Verify:** `grep -c "<instance_name>"` in recompressed file ≥ 1.
+
+Record: `status=INSERTED`, `change_type=new_logic_gate`, `instance_name`, `inv_inst_full_path`, `output_net`, `gate_function`, `cell_type`.
+
+---
+
 #### 4d — Find the cell in PostEco (rewire path only)
 
 Already done in 4b. For new_logic, cell finding is part of 4c-5.
@@ -286,9 +386,14 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 
 | Case | Action |
 |------|--------|
-| `new_net` exists in PostEco | Rewire path (4b) |
-| `new_net` absent, source_net found | new_logic path (4c) — auto-insert inverter |
-| `new_net` absent, source_net also absent | SKIPPED — "source_net not found in PostEco" |
+| `change_type=rewire`, `new_net` exists in PostEco | Rewire path (4b) |
+| `change_type=rewire`, `new_net` absent, source_net found | Inverter path (4c) — auto-insert INV cell |
+| `change_type=rewire`, `new_net` absent, source_net also absent | SKIPPED — "source_net not found" |
+| `change_type=new_logic_dff` | DFF insertion path (4c-DFF) |
+| `change_type=new_logic_gate` | Gate insertion path (4c-GATE) |
+| `change_type=rewire` with `new_logic_dependency` | Must be processed in Pass 2 — after Pass 1 new_logic insertions create the `new_net` |
+| Input signal missing in PostEco, `input_from_change` set | Process the dependency change first, then retry |
+| Input signal missing, no dependency | SKIPPED — "input signal not found in PostEco" |
 | Cell not in PostEco | SKIPPED — cell may have been optimized away |
 | old_net not on pin | SKIPPED — PostEco may differ from PreEco structurally |
 | Occurrence count > 1 | SKIPPED + AMBIGUOUS — cannot safely change without risk |
@@ -317,17 +422,44 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
     },
     {
       "cell_name": "<cell_name>",
-      "cell_type": "<cell_type>",
+      "cell_type": "<CellType>",
       "pin": "<pin>",
       "old_net": "<old_signal>",
       "new_net": "<inv_out>",
       "change_type": "new_logic",
       "status": "INSERTED",
-      "inv_inst": "eco_<jira>_<seq>",
+      "instance_name": "eco_<jira>_<seq>",
       "inv_inst_full_path": "<TILE>/<INST_A>/<INST_B>/eco_<jira>_<seq>",
-      "inv_out": "n_eco_<jira>_<seq>",
+      "output_net": "n_eco_<jira>_<seq>",
       "source_net": "<source_net>",
-      "inv_cell_type": "<CellType>",
+      "cell_type": "<CellType>",
+      "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
+      "verified": true
+    },
+    {
+      "change_type": "new_logic_dff",
+      "target_register": "<signal_name>",
+      "instance_scope": "<INST_A>/<INST_B>",
+      "cell_type": "<DFF_cell_type>",
+      "instance_name": "eco_<jira>_<seq>",
+      "inv_inst_full_path": "<TILE>/<INST_A>/<INST_B>/eco_<jira>_<seq>",
+      "output_net": "n_eco_<jira>_<seq>",
+      "port_connections": {"CK": "<clk>", "D": "<data>", "RN": "<reset>", "Q": "n_eco_<jira>_<seq>"},
+      "status": "INSERTED",
+      "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
+      "verified": true
+    },
+    {
+      "change_type": "new_logic_gate",
+      "target_register": "<output_signal>",
+      "instance_scope": "<INST_A>/<INST_B>",
+      "cell_type": "<gate_cell_type>",
+      "instance_name": "eco_<jira>_<seq>",
+      "inv_inst_full_path": "<TILE>/<INST_A>/<INST_B>/eco_<jira>_<seq>",
+      "output_net": "n_eco_<jira>_<seq>",
+      "gate_function": "<NAND2|NOR2|AND2|...>",
+      "port_connections": {"A": "<input1>", "B": "<input2>", "ZN": "n_eco_<jira>_<seq>"},
+      "status": "INSERTED",
       "backup": "<REF_DIR>/data/PostEco/Synthesize.v.gz.bak_<TAG>_round<ROUND>",
       "verified": true
     },
@@ -488,4 +620,6 @@ TIMING & LOL ESTIMATION  (Synthesize stage structural analysis)
 5. **ALWAYS verify after recompressing** — confirm old_net count drops to 0 and new cell is present
 6. **ONE decompress per stage** — decompress once, apply ALL confirmed cells, then recompress once
 7. **Keep processing remaining cells if one is SKIPPED** — a SKIPPED cell does not abort the stage
-8. **Polarity rule** — only insert inverter when new_net is an inverted signal (`~source_net`); for non-inverted new_logic, report SKIPPED and flag for manual review
+8. **Polarity rule** — only use Step 4c (inverter) when new_net is an inverted signal (`~source_net`); for DFF or gate new_logic, use 4c-DFF or 4c-GATE respectively — never SKIPPED simply because it is not a simple inversion
+9. **Dependency order** — always insert new_logic cells (Pass 1) before attempting rewires that depend on their output nets (Pass 2); never attempt rewire when new_net is a `n_eco_<jira>_<seq>` that hasn't been inserted yet
+10. **Consistent instance naming across stages** — `eco_<jira>_<seq>` must be the same name in Synthesize, PrePlace, and Route for the same logical change — FM stage-to-stage matching requires identical instance names

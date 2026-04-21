@@ -17,7 +17,7 @@
 3. **Study PreEco before touching PostEco** — always read PreEco netlist first to confirm cell+pin
 4. **Single-occurrence rule** — if old_net appears >1 time on a pin in PostEco, skip and report AMBIGUOUS
 5. **Backup always** — `cp PostEco/${stage}.v.gz PostEco/${stage}.v.gz.bak_${tag}_round${round}` before any edit (round-specific backup so each round can be independently reverted)
-6. **new_logic = auto-insert inverter** — when new_net doesn't exist in PostEco, auto-insert a new inverter cell (see eco_applier.md Step 4c); follow with eco_svf_updater to register the cell in EcoChange.svf
+6. **new_logic = cell insertion** — when new_net doesn't exist in PostEco, insert a new cell: inverter (Step 4c) for simple inversion, DFF (Step 4c-DFF) for sequential registers, or combinational gate (Step 4c-GATE) for multi-input logic; follow with eco_svf_updater to register all inserted cells in EcoChange.svf
 7. **Polarity rule** — only use `+` (non-inverted) impl nets for rewiring, never `-` (inverted); for inverted signals use new_logic insert
 8. **Bus dual-query** — for bus signals `reg [N:0] X`, query both `X` and `X_0_` to find gate-level name
 9. **PostEco FM verification** — always run all 3 PostEco targets after applying ECO
@@ -78,9 +78,14 @@ Using the `nets_to_query` list from Step 1:
 # Load the RTL diff JSON
 rtl_diff = load("<BASE_DIR>/data/<TAG>_eco_rtl_diff.json")
 
-# Collect all valid signal names to query: only old_token and new_token from each change
+# Collect all valid signal names to query: only old_token and new_token from wire_swap/and_term changes
+# port_promotion, new_port, port_connection changes have no FM query — skip them
+no_fm_types = {"port_promotion", "new_port", "port_connection"}
+
 valid_tokens = set()
 for c in rtl_diff["changes"]:
+    if c.get("change_type") in no_fm_types:
+        continue   # these change types never generate FM queries
     if c.get("old_token"): valid_tokens.add(c["old_token"])
     if c.get("new_token"): valid_tokens.add(c["new_token"])
 
@@ -404,27 +409,88 @@ If any net returns `Error: Unknown name ... (FM-036)`:
   - Initial: `<BASE_DIR>/data/<fenets_tag>_spec`
   - No-Equiv-Nets retries: `<BASE_DIR>/data/<noequiv_retry1_tag>_spec`, `<BASE_DIR>/data/<noequiv_retry2_tag>_spec` (if they exist)
   - FM-036 retries: `<BASE_DIR>/data/<fm036_retry1_tag>_spec`, `<BASE_DIR>/data/<fm036_retry2_tag>_spec`, `<BASE_DIR>/data/<fm036_retry3_tag>_spec` (if they exist)
-- **Per-stage spec source mapping** — explicitly tell Step 3 which spec file to use for each stage:
+- **Per-stage spec source mapping** — build and pass to Step 3 which spec file to use for each stage.
+
+  **How to build SPEC_SOURCES (algorithm):**
+  ```python
+  # Start: all stages use initial run spec
+  spec_sources = {
+      "Synthesize": f"{BASE_DIR}/data/{fenets_tag}_spec",
+      "PrePlace":   f"{BASE_DIR}/data/{fenets_tag}_spec",
+      "Route":      f"{BASE_DIR}/data/{fenets_tag}_spec",
+  }
+
+  # For each No-Equiv-Nets retry that was run:
+  for retry_tag, retry_spec_path in noequiv_retries:   # in order retry1, retry2
+      retry_raw = read_raw_rpt(retry_tag)
+      for stage in ["Synthesize", "PrePlace", "Route"]:
+          if stage_has_qualifying_cells(retry_raw, stage):
+              spec_sources[stage] = f"{BASE_DIR}/data/{retry_tag}_spec"
+              break   # first retry that resolved this stage wins
+
+  # For each FM-036 retry:
+  for retry_tag, retry_spec_path in fm036_retries:
+      retry_raw = read_raw_rpt(retry_tag)
+      for stage in ["Synthesize", "PrePlace", "Route"]:
+          if stage_has_qualifying_cells(retry_raw, stage):
+              spec_sources[stage] = f"{BASE_DIR}/data/{retry_tag}_spec"
+              break
+
+  # Mark stages with no FM results as FALLBACK
+  for stage in ["Synthesize", "PrePlace", "Route"]:
+      initial_raw = read_raw_rpt(fenets_tag)
+      if not stage_has_qualifying_cells(initial_raw, stage) and spec_sources[stage] == initial_spec:
+          spec_sources[stage] = "FALLBACK"
+  ```
+
+  Where `stage_has_qualifying_cells(raw_rpt, stage)` = True if the raw rpt for that stage returns at least one `(+)` impl cell/pin pair (not FM-036 and not No Equivalent Nets).
+
+  Pass the final mapping:
   ```
   SPEC_SOURCES:
-    Synthesize: <fenets_tag>_spec  (or <noequiv_retry1_tag>_spec if retry resolved it)
-    PrePlace:   <fenets_tag>_spec  (or <noequiv_retry1_tag>_spec if retry resolved it, else FALLBACK)
-    Route:      <fenets_tag>_spec  (or <fm036_retry1_tag>_spec if FM-036 retry resolved it)
+    Synthesize: <resolved_spec_path_or_FALLBACK>
+    PrePlace:   <resolved_spec_path_or_FALLBACK>
+    Route:      <resolved_spec_path_or_FALLBACK>
   ```
   This prevents Step 3 from reading the wrong spec for a given stage — each stage uses the spec from the run that actually resolved its results.
 - Task: For each impl cell in FM output, find instantiation in PreEco netlist, extract port connections, confirm old_net on expected pin
 - Output: `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`
 
-Format of output:
+Format of output (each stage array may contain both wire_swap rewire entries AND new_logic_insertion entries):
 ```json
 {
   "Synthesize": [
     {
+      "change_type": "rewire",
       "cell_name": "<from FM output>",
       "pin": "<pin from FM output>",
       "old_net": "<from RTL diff>",
       "new_net": "<from RTL diff>",
+      "new_net_alias": null,
       "line_context": "<surrounding verilog lines>",
+      "confirmed": true
+    },
+    {
+      "change_type": "new_logic_dff",
+      "target_register": "<signal_name>",
+      "instance_scope": "<INST_A>/<INST_B>",
+      "cell_type": "<DFF_cell_type>",
+      "instance_name": "eco_<jira>_<seq>",
+      "output_net": "n_eco_<jira>_<seq>",
+      "port_connections": {"CK": "<clk>", "D": "<data>", "RN": "<reset>", "Q": "n_eco_<jira>_<seq>"},
+      "input_from_change": null,
+      "confirmed": true
+    },
+    {
+      "change_type": "new_logic_gate",
+      "target_register": "<output_signal>",
+      "instance_scope": "<INST_A>/<INST_B>",
+      "cell_type": "<gate_cell_type>",
+      "instance_name": "eco_<jira>_<seq>",
+      "output_net": "n_eco_<jira>_<seq>",
+      "gate_function": "<NAND2|NOR2|AND2|...>",
+      "port_connections": {"A": "<input1>", "B": "<input2>", "ZN": "n_eco_<jira>_<seq>"},
+      "input_from_change": null,
       "confirmed": true
     }
   ],
@@ -453,7 +519,7 @@ Wait for eco_applier sub-agent to complete.
 
 ## STEP 4b — SVF Entries for new_logic Insertions
 
-Read `data/<TAG>_eco_applied_round<ROUND>.json`. Check if any entry has `"change_type": "new_logic"` and `"status": "INSERTED"`.
+Read `data/<TAG>_eco_applied_round<ROUND>.json`. Check if any entry has `"status": "INSERTED"` and `change_type` in `["new_logic", "new_logic_dff", "new_logic_gate"]`.
 
 If yes — **spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_svf_updater.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number), `AI_ECO_FLOW_DIR`

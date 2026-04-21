@@ -38,23 +38,44 @@ For each diff hunk, classify as ONE of:
 | Type | Description | Example |
 |------|-------------|---------|
 | `wire_swap` | Existing signal replaced by different signal | `old_sig` → `new_sig` in expression |
+| `and_term` | New AND condition added to existing expression | `A & ~B` → `A & ~B & ~C` |
 | `new_port` | New `input`/`output` port declaration added | `input new_port_name` |
+| `port_promotion` | Existing local `reg` promoted to `output reg` | `reg X` → `output reg X` |
 | `new_logic` | New wire/always/assign/instance added | New always block |
-| `port_connection` | Port connection changed on module instance | `.port(old_sig)` → `.port(new_sig)` |
+| `port_connection` | Port connection added on module instance | `.new_port(net)` added |
+
+**`port_promotion` classification (Gap 1):**
+When a diff shows BOTH:
+- Old line: `reg <signal>;` (local register declaration)
+- New line: `output reg <signal>;` (promoted to output port)
+
+Classify as `port_promotion`. The key property: **the gate-level net ALREADY EXISTS in the flat PreEco netlist** (it was a reg driving internal logic). No new cell insertion is needed. The promotion only affects port connectivity at module boundaries — in a flat netlist, the net is already accessible everywhere. Record `flat_net_exists: true`.
+
+**`and_term` classification (Gap 4):**
+When a `wire_swap` diff adds an extra `& ~<NewSignal>` term to an existing expression but does NOT change the core logic:
+- Old: `<expr_A> & ~<expr_B>`
+- New: `<expr_A> & ~<expr_B> & ~<NewSignal>`
+
+Classify as `and_term` (NOT `wire_swap`). `old_token` = the final output net of the existing expression, `new_token` = `<NewSignal>` (the new term being added). The applier will: find the existing gate driving the output net, insert a new AND/NAND gate in series with `~<NewSignal>` as additional input.
 
 For each change record:
 ```json
 {
   "file": "<rtl_file.v>",
-  "module_name": "<module_name_from_changed_file>",
-  "change_type": "<wire_swap|new_port|new_logic|port_connection>",
+  "module_name": "<declaring_module>",
+  "change_type": "<wire_swap|and_term|new_port|port_promotion|new_logic|port_connection>",
   "old_token": "<old_signal_name>",
   "new_token": "<new_signal_name>",
   "context_line": "<full RTL line containing the change>",
   "target_register": "<register_name>",
-  "target_bit": "<[N] or null>"
+  "target_bit": "<[N] or null>",
+  "flat_net_exists": "<true if port_promotion — net already in flat PreEco netlist | false otherwise>",
+  "flat_net_name": "<actual net name in flat netlist for new_port inputs — resolved in Step C | null>",
+  "instances": ["<INST_A>", "<INST_B>"]
 }
 ```
+
+**`instances` field (Gap 2):** If the declaring module has multiple instances in the parent (e.g., two `umcdcqarb` instances `DCQARB0` and `DCQARB1`), list ALL instance names. Step C detects this and Step D generates separate `nets_to_query` entries for each instance. Leave as `null` if only one instance.
 
 **`target_register` and `target_bit` extraction (MANDATORY for wire_swap):**
 
@@ -143,7 +164,54 @@ grep -n "<module_name> <instance_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent
 If the `reg`/`wire` declaration is NOT found in the module you identified → you stopped too high — go one level deeper.
 If `net_path` starts with `<TILE>` → you went one level too far up — remove the first component.
 
-**6. Update `module_name` in JSON and RPT if declaring module differs from changed file:**
+**6. Detect multiple instances of the same module (Gap 2):**
+
+After identifying the declaring module and its instance name, check if the parent module instantiates the same module MORE THAN ONCE:
+
+```bash
+grep -c "<declaring_module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
+```
+
+If count > 1, extract ALL instance names:
+```bash
+grep -n "<declaring_module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
+```
+
+This returns lines like:
+```
+<declaring_module_name> <INST_A> (
+<declaring_module_name> <INST_B> (
+```
+
+Record ALL instance names in the `instances` field of the JSON change entry: `["<INST_A>", "<INST_B>"]`. Step D will generate separate `nets_to_query` entries for each instance using its own hierarchy path.
+
+**7. Resolve flat net name for new_port inputs (Gap 3):**
+
+For each `new_port` change where the port is an `input` (a new signal being received), find what net in the parent scope actually drives this port for each instance. Look at the parent module's instantiation block for the declaring module:
+
+```bash
+grep -A 50 "<declaring_module_name> <INST_X>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v | grep "<new_port_name>"
+```
+
+If the port doesn't appear in the PreEco instantiation (it's a NEW port connection added in the ECO diff), look at the PostEco RTL instantiation:
+
+```bash
+grep -A 50 "<declaring_module_name> <INST_X>" <REF_DIR>/data/SynRtl/rtl_<parent_module>.v | grep "<new_port_name>"
+```
+
+Extract the actual connected net: `.new_port_name(<actual_net>)` → `flat_net_name = "<actual_net>"`.
+
+Record per-instance flat_net_name (may differ between instances for cross-connections):
+```json
+"flat_net_name_per_instance": {
+  "<INST_A>": "<net_connected_to_INST_A>",
+  "<INST_B>": "<net_connected_to_INST_B>"
+}
+```
+
+This is critical for `and_term` changes where the new AND term is a new port that maps to an existing signal — the applier needs the actual flat net name to insert the new gate.
+
+**8. Update `module_name` in JSON and RPT if declaring module differs from changed file:**
 
 If Step C found that the declaring module is different from the changed file's module (i.e., the signals are only ports in the changed file), you MUST:
 - Update `"module_name"` in `<TAG>_eco_rtl_diff.json` to the declaring module
@@ -160,10 +228,21 @@ For EACH change, determine which gate-level nets will reveal WHERE to make the E
 
 **General principles:**
 - For `wire_swap`: query both old_token and new_token — find current driver of old_token and confirm new_token exists in gate level
-- For `new_port`: query the new port signal and the register/logic it gates
+- For `and_term`: query `old_token` (the output net of the existing expression) to find the gate driving it; `new_token` (`flat_net_name` from Step C) already exists in PreEco — confirm with a single grep, no FM query needed
+- For `new_port`: **skip FM query** — new input ports connect to existing nets (resolved as `flat_net_name` in Step C); no gate-level net to find equivalents for
+- For `port_promotion`: **skip FM query entirely** — the net ALREADY EXISTS in the flat PreEco netlist under the signal's original name; `flat_net_exists: true`; the studier will verify existence directly
 - For `new_logic`: query the enable signal and the D-input of the affected register
-- For `port_connection`: query both old and new connection signals
+- For `port_connection`: **skip FM query** — port connections are wiring changes handled by the studier using `flat_net_name` resolved from RTL
 - **Avoid querying flip-flop Q outputs** — focus on driving nets and inputs
+
+**Per-instance net generation (Gap 2):** When `instances` field has multiple values, generate SEPARATE `nets_to_query` entries for each instance. Each entry uses the instance-specific hierarchy path:
+
+```json
+{ "net_path": "<INST_A>/<signal>", "hierarchy": ["<INST_A>"], "instance": "<INST_A>", "reason": "..." }
+{ "net_path": "<INST_B>/<signal>", "hierarchy": ["<INST_B>"], "instance": "<INST_B>", "reason": "..." }
+```
+
+The `instance` field allows Step 3 to process each instance's cells independently and apply different `flat_net_name` values (e.g., different cross-connections per instance).
 
 **Bus signals:** If `old_token` or `new_token` is declared as `reg [N:0] SignalName`, generate BOTH variants for that signal:
 - `<INST_A>/<INST_B>/SignalName` (may work in some FM targets)
@@ -185,36 +264,54 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
     {
       "file": "<rtl_file.v>",
       "module_name": "<declaring_module>",
-      "change_type": "<wire_swap|new_port|new_logic|port_connection>",
+      "change_type": "<wire_swap|and_term|new_port|port_promotion|new_logic|port_connection>",
       "old_token": "<old_signal_name>",
       "new_token": "<new_signal_name>",
       "context_line": "<full RTL line containing the change>",
       "target_register": "<register_name from LHS of context_line>",
-      "target_bit": "<[0] or null>"
+      "target_bit": "<[0] or null>",
+      "flat_net_exists": false,
+      "flat_net_name": null,
+      "flat_net_name_per_instance": null,
+      "instances": null
     }
   ],
   "nets_to_query": [
     {
       "net_path": "<INST_A>/<INST_B>/<old_signal_name>",
       "hierarchy": ["<INST_A>", "<INST_B>"],
+      "instance": null,
       "reason": "wire_swap: find current gate-level driver of old signal",
       "is_bus_variant": false
     },
     {
-      "net_path": "<INST_A>/<INST_B>/<old_signal_name>_0_",
-      "hierarchy": ["<INST_A>", "<INST_B>"],
-      "reason": "wire_swap: bus variant of <old_signal_name> (bit 0)",
-      "is_bus_variant": true
+      "net_path": "<INST_A>/<old_signal_name>",
+      "hierarchy": ["<INST_A>"],
+      "instance": "<INST_A>",
+      "reason": "and_term: find gate implementing existing expression output — per-instance",
+      "is_bus_variant": false
     },
     {
-      "net_path": "<INST_A>/<INST_B>/<new_signal_name>",
-      "hierarchy": ["<INST_A>", "<INST_B>"],
-      "reason": "wire_swap: confirm new signal exists at gate level",
+      "net_path": "<INST_B>/<old_signal_name>",
+      "hierarchy": ["<INST_B>"],
+      "instance": "<INST_B>",
+      "reason": "and_term: same expression in second instance of same module",
       "is_bus_variant": false
     }
   ]
 }
 ```
+
+**Field notes:**
+- `flat_net_exists`: `true` for `port_promotion` — net already in flat netlist under original signal name
+- `flat_net_name`: resolved actual net name in flat netlist for:
+  - `new_port` inputs (single instance) — the net driving this new port in parent scope
+  - `and_term` — the actual flat net name of the new AND term signal (resolved from the port connection in parent; this is the net eco_netlist_studier uses as the second input to the new AND/NAND gate)
+- `flat_net_name_per_instance`: map of `{instance_name: flat_net_name}` for multi-instance modules where each instance has a different connection. Applies to both `new_port` and `and_term` when `instances` is non-null.
+- `instances`: list of instance names when the declaring module is instantiated multiple times in the parent
+- `instance`: in `nets_to_query`, identifies which instance this entry belongs to (null for single-instance)
+
+**`flat_net_name` for `and_term` MUST be populated in Step C.7** — without it, eco_netlist_studier Phase 0 cannot create the `new_logic_gate` entry for the AND-term addition. If Step C.7 cannot resolve the connection (e.g., the new port connection is not yet in PreEco RTL), use the PostEco RTL parent module as the source.
 
 All `net_path` values must be verified hierarchy paths using instance names. Do NOT include unverified paths.
 
