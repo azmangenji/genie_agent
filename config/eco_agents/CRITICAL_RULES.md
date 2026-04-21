@@ -152,18 +152,35 @@ If any stage's md5 matches its backup — the ECO was not applied to that stage.
 
 ---
 
+## RULE 13 — Orchestrator Generates RPTs, Sub-Agents Write JSON Only
+
+**Sub-agents (eco_netlist_studier, eco_applier) write their JSON output only and exit. The ORCHESTRATOR or ROUND_ORCHESTRATOR generates all RPT files from the JSON.**
+
+This prevents context pressure from causing sub-agents to exit before completing the RPT. The orchestrator reads the JSON (which it must do anyway for checkpointing) and generates the RPT immediately after the checkpoint passes.
+
+**After each sub-agent completes:**
+1. Checkpoint: verify JSON exists and is valid
+2. Generate RPT from JSON (you, the orchestrator, do this — not the sub-agent)
+3. Copy RPT to `AI_ECO_FLOW_DIR/`
+4. Verify copy succeeded
+5. Only then proceed to the next step
+
+> **Root cause of confirmed bug (DEUMCIPRTL-9868 Round 2):** eco_applier sub-agent exited after writing JSON due to context pressure. RPT was never written. ORCHESTRATOR checkpoint only checked JSON — missed the missing RPT. Round 2 RPT never appeared in AI_ECO_FLOW_DIR.
+
+---
+
 ## Quick Checklist — Before Each Step Transition
 
-| Before entering... | Verify on disk |
-|--------------------|---------------|
-| Step 2 | `data/<TAG>_eco_rtl_diff.json` exists, `changes[]` non-empty |
-| Step 3 | `data/<TAG>_eco_step2_fenets.rpt` exists, all fenets raw RPTs copied to AI_ECO_FLOW_DIR |
-| Step 4 | `data/<TAG>_eco_preeco_study.json` exists, confirmed cells present |
-| Step 4b | `data/<TAG>_eco_applied_round<N>.json` exists, summary field present, backups exist |
-| Step 5 | `data/<TAG>_eco_svf_entries.tcl` exists (if new_logic), all 3 stages md5-differ from backup |
-| After Step 5 | `data/<TAG>_round_handoff.json` exists — then spawn — then STOP |
-| Step 7b | `data/<TAG>_eco_summary.rpt` exists and non-empty |
-| Step 8 | `data/<TAG>_eco_report.html` exists and non-empty |
+| Before entering... | Verify on disk (JSON + RPT) |
+|--------------------|---------------------------|
+| Step 2 | `data/<TAG>_eco_rtl_diff.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step1_rtl_diff.rpt` ✓ |
+| Step 3 | `data/<TAG>_eco_step2_fenets.rpt` ✓ + all fenets raw RPTs in AI_ECO_FLOW_DIR ✓ |
+| Step 4 | `data/<TAG>_eco_preeco_study.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step3_netlist_study.rpt` ✓ |
+| Step 4b | `data/<TAG>_eco_applied_round<N>.json` ✓ + `AI_ECO_FLOW_DIR/<TAG>_eco_step4_eco_applied_round<N>.rpt` ✓ + all 3 stages md5-differ from backup ✓ |
+| Step 5 | `data/<TAG>_eco_svf_entries.tcl` ✓ (if new_logic) |
+| After Step 5 | `data/<TAG>_round_handoff.json` ✓ — then spawn — then STOP |
+| Step 7b | `data/<TAG>_eco_summary.rpt` ✓ |
+| Step 8 | `data/<TAG>_eco_report.html` ✓ |
 
 ---
 
