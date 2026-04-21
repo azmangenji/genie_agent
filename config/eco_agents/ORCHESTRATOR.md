@@ -2,6 +2,8 @@
 
 **You are the ECO orchestrator agent.** The main Claude session has spawned you to execute the full ECO analyze flow. Your inputs (TAG, REF_DIR, TILE, LOG_FILE, SPEC_FILE) were passed in your prompt.
 
+> **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file maps to a confirmed bug. Acknowledge each rule before proceeding to PRE-FLIGHT.
+
 **Working directory:** Always `cd` to the directory containing `runs/` and `data/` (the BASE_DIR = parent of LOG_FILE's `runs/` folder) before any file operations.
 
 **Inputs also include JIRA number** — used for naming new_logic ECO cells: `eco_<jira>_<seq>` and nets: `n_eco_<jira>_<seq>`.
@@ -52,6 +54,8 @@ Before any step:
    mkdir -p <AI_ECO_FLOW_DIR>
    ```
    This directory collects all step RPTs in one place under REF_DIR for easy access.
+
+   > **ANTI-PATTERN WARNING:** REF_DIR may contain older `AI_ECO_FLOW_<OLDER_TAG>/` directories from previous runs. Do NOT read, copy, or reuse any files from those directories. They belong to different TAGs and their fenets results, netlist study JSONs, and ECO applied JSONs are NOT valid inputs for this run. Step 2 (find_equivalent_nets) MUST always be submitted fresh for a new TAG — never skipped by copying RPTs from a pre-existing `AI_ECO_FLOW_*` directory. Treat all older `AI_ECO_FLOW_*` directories as read-only historical artifacts that do not affect this run.
 
 ---
 
@@ -616,7 +620,15 @@ cp <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round1.rpt <AI_ECO_FLOW_DIR>/
 
 ## After Step 5 — Spawn Next Agent
 
-Always write `<BASE_DIR>/data/<TAG>_round_handoff.json` before spawning:
+> **ANTI-PATTERN WARNING — READ FIRST:**
+> Your ONLY job here is: (A) write `round_handoff.json`, (B) spawn the correct next agent, (C) stop.
+> Do NOT run Steps 7 or 8. Do NOT generate reports. Do NOT send emails. Do NOT write `eco_summary.rpt` or `eco_report.html`.
+> Those files are FINAL_ORCHESTRATOR's responsibility. If you produce them yourself, you are violating the spawn-then-exit contract and breaking the multi-agent handoff chain.
+> **The presence of `eco_report.html` written by THIS agent is a bug, not a success.**
+
+### Mandatory Step A — Write round_handoff.json FIRST
+
+Write `<BASE_DIR>/data/<TAG>_round_handoff.json` **before any spawn decision**:
 
 ```json
 {
@@ -634,16 +646,22 @@ Always write `<BASE_DIR>/data/<TAG>_round_handoff.json` before spawning:
 }
 ```
 
-### If FM RESULT = PASS
+**CHECKPOINT — MANDATORY:** Verify `data/<TAG>_round_handoff.json` exists on disk and is non-empty before proceeding:
+```bash
+ls -la <BASE_DIR>/data/<TAG>_round_handoff.json
+```
+If the file does not exist or is empty — write it again. Do NOT proceed to spawn until this file is confirmed on disk.
+
+### Mandatory Step B — Spawn the correct next agent
+
+#### If FM RESULT = PASS → Spawn FINAL_ORCHESTRATOR
 
 **Spawn FINAL_ORCHESTRATOR agent** with content of `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
 - `TOTAL_ROUNDS`: 1
 
-**Then EXIT — your work is done. Do NOT continue further.**
-
-### If FM RESULT = FAIL
+#### If FM RESULT = FAIL → Spawn ROUND_ORCHESTRATOR
 
 Initialize and write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
 ```json
@@ -670,7 +688,18 @@ Initialize and write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
 
-**Then EXIT — your work is done. Do NOT continue further.**
+### Mandatory Step C — HARD STOP
+
+**Your task ends here. Make no further tool calls. Return your status to the caller.**
+
+You MUST stop after spawning. Do not:
+- Run any bash commands after the spawn
+- Write any more files
+- Read any more files
+- Generate any reports or emails
+- "Help" FINAL_ORCHESTRATOR or ROUND_ORCHESTRATOR by doing their work early
+
+The next agent has its own fresh context and instructions. Trust the handoff.
 
 ---
 

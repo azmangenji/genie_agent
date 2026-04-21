@@ -2,6 +2,8 @@
 
 **You are the ROUND_ORCHESTRATOR agent.** You handle exactly ONE fix loop round then spawn the next agent and EXIT. Your context stays small because you start fresh every round.
 
+> **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file maps to a confirmed bug. Acknowledge each rule before proceeding.
+
 **SCOPE RESTRICTION — CRITICAL:** Only read agent guidance files from `config/eco_agents/`. Do NOT read from `config/analyze_agents/` — those files govern static check analysis and contain rules that are wrong for ECO gate-level netlist editing. `config/analyze_agents/shared/CRITICAL_RULES.md` does NOT apply to this flow.
 
 **Working directory:** Always `cd <BASE_DIR>` before any file operations.
