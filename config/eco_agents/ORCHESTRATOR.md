@@ -19,7 +19,7 @@
 3. **Study PreEco before touching PostEco** — always read PreEco netlist first to confirm cell+pin
 4. **Single-occurrence rule** — if old_net appears >1 time on a pin in PostEco, skip and report AMBIGUOUS
 5. **Backup always** — `cp PostEco/${stage}.v.gz PostEco/${stage}.v.gz.bak_${tag}_round${round}` before any edit (round-specific backup so each round can be independently reverted)
-6. **new_logic = cell insertion** — when new_net doesn't exist in PostEco, insert a new cell: inverter (Step 4c) for simple inversion, DFF (Step 4c-DFF) for sequential registers, or combinational gate (Step 4c-GATE) for multi-input logic; follow with eco_svf_updater to register all inserted cells in EcoChange.svf
+6. **new_logic = cell insertion** — when new_net doesn't exist in PostEco, insert a new cell: inverter (Step 4c) for simple inversion, DFF (Step 4c-DFF) for sequential registers, or combinational gate (Step 4c-GATE) for multi-input logic. FM auto-matches inserted cells by instance path name — do NOT call eco_svf_updater for cell insertions. eco_svf_updater is only called (Step 4b) when pre-existing FM failures require `set_dont_verify` suppression.
 7. **Polarity rule** — only use `+` (non-inverted) impl nets for rewiring, never `-` (inverted); for inverted signals use new_logic insert
 8. **Bus dual-query** — for bus signals `reg [N:0] X`, query both `X` and `X_0_` to find gate-level name
 9. **PostEco FM verification** — always run all 3 PostEco targets after applying ECO
@@ -98,8 +98,8 @@ Full implementation is in `eco_fenets_runner.md`. Key rules for the sub-agent:
 - Validate nets (filter port_promotion/new_port/port_connection types)
 - Do NOT reuse previous run scope — submit fresh if paths differ
 - No-Equiv-Nets retry: always DEEPER (not shallower)
-- FM-036 retry: classify first — port-level → strip shallower; internal wire → pivot to target register query
-- Use single Bash blocking call for all polls (no repeated tool calls)
+- FM-036 retry: classify first using `grep -rn "^\s*(input|output)\b.*<old_token>" PreEco/SynRtl/` — if matches found → port-level signal → strip one hierarchy level per retry (going shallower, max 3 retries); if zero matches → internal wire → pivot immediately to target register query (single pivot attempt, no level-stripping)
+- Poll every 5 minutes with individual Bash tool calls (one tool call per poll interval — keeps main session responsive, showing "Running..." instead of "Sublimating..." for hours)
 - Copy all rpts to AI_ECO_FLOW_DIR before exiting
 
 The following detail is for sub-agent reference. **Validate `nets_to_query` before submitting.** Whether Step 1 was just run or reused from a previous tag, always check the JSON before building the net list:
@@ -357,10 +357,10 @@ This typically happens when:
    ```
    Read results from `<BASE_DIR>/data/<noequiv_retry1_tag>_spec`. If results found → use them and stop retrying.
 
-2. **Retry with parent hierarchy** — strip one level from original path (e.g., `<INST_A>/<INST_B>/<signal>` → `<INST_A>/<signal>`):
+2. **Retry with yet deeper hierarchy (retry 2)** — add one more sub-instance level beyond retry 1's path. Going shallower (stripping a level) is NEVER valid for No-Equiv-Nets — it moves further from the declaring module, which makes FM's scope wider and less precise, not more:
    ```bash
    python3 script/genie_cli.py \
-     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<parent_net_path>" \
+     -i "find equivalent nets at <REF_DIR> for <TILE> netName:<even_deeper_net_path>" \
      --execute --xterm
    ```
    Read new `<noequiv_retry2_tag>` from CLI output. Same output handling as retry 1:
@@ -398,10 +398,12 @@ If any net returns `Error: Unknown name ... (FM-036)`:
    | **Wrong hierarchy level** — net IS a module port, just queried at wrong depth | FM-036 fires at this level but net exists as a port at another level | Strip/add levels (step 2 below) |
    | **Internal wire** — net is a submodule-internal wire, NOT a module port | FM-036 fires at ALL hierarchy levels — the net is never exposed in FM's reference namespace | Skip level-stripping; **PIVOT to target register query** (step 2b below) |
 
-   **How to classify — check the RTL diff JSON:**
-   - Read `eco_rtl_diff.json` for this net's `change_type` and `context_line`
-   - If `change_type = "wire_swap"` and the `old_token` is an internal combinational net (not declared as `input`/`output` in any module port list in the RTL) → it is an **internal wire** — pivot to step 2b
-   - Confirm by checking if stripping one level from the net path gives FM-036 too (if so, it's an internal wire, not a hierarchy problem)
+   **How to classify — grep the PreEco RTL files:**
+   ```bash
+   grep -rn "^\s*\(input\|output\)\b.*<old_token>" <REF_DIR>/data/PreEco/SynRtl/
+   ```
+   - If this grep returns at least one match → `old_token` is declared as `input` or `output` in some module's port list → it is a **port-level signal** → use step 2 (strip one hierarchy level per retry, max 3 retries)
+   - If this grep returns zero matches → `old_token` is never declared as a module port (only as `reg`/`wire` inside a module) → it is an **internal wire** → use step 2b immediately (pivot to target register query — do NOT submit any level-stripping retries)
 
 2b. **Pivot to target register query (when net is an internal wire):**
 
@@ -640,20 +642,22 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 
 ---
 
-## STEP 4b — SVF Entries for new_logic Insertions
+## STEP 4b — SVF Entries for Pre-Existing FM Failures (not for inserted cells)
 
-Read `data/<TAG>_eco_applied_round<ROUND>.json`. Check if any entry has `"status": "INSERTED"` and `change_type` in `["new_logic", "new_logic_dff", "new_logic_gate"]`.
+Read `data/<TAG>_eco_fm_verify.json` (written by Step 5 in subsequent rounds) and `data/<TAG>_eco_applied_round<ROUND>.json`. Check if any pre-existing FM failures need suppression (LATCG mismatches or FM-unmatched points that existed before this ECO).
 
-If yes — **spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_svf_updater.md` prepended. Pass:
+> **CRITICAL distinction:** `guide_eco_change -type insert_cell` is NOT a valid SVF command (RULE 11). FM auto-matches ECO-inserted cells by instance path — no SVF entry is needed or valid for inserted cells. Step 4b is ONLY for writing `set_dont_verify` or `set_user_match` entries to suppress pre-existing failures.
+
+For pure new_logic insertions with no pre-existing FM failures: set `svf_update_needed = false`, skip Step 4b. The Step 4b RPT is still written noting "not applicable".
+
+If pre-existing FM failures exist — **spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_svf_updater.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number), `AI_ECO_FLOW_DIR`
-- Task: Write `eco_change -type insert_cell` entries to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl` (do NOT append to EcoChange.svf yet — FmEcoSvfGen will regenerate it and must run first)
+- Task: Write `set_dont_verify` / `set_user_match` entries (NEVER `guide_eco_change -type insert_cell`) to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 - Output: `<BASE_DIR>/data/<TAG>_eco_svf_update.json` + `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 
-Set `svf_update_needed = true` for use in Step 5.
+Set `svf_update_needed = true` for use in Step 5 only when the TCL file was actually written with entries.
 
-**CHECKPOINT (if new_logic):** Verify `data/<TAG>_eco_svf_entries.tcl` exists and contains at least one `eco_change` entry before proceeding.
-
-If no new_logic insertions: set `svf_update_needed = false`, skip Step 4b.
+**CHECKPOINT (if spawned):** Verify `data/<TAG>_eco_svf_entries.tcl` exists and contains at least one `set_dont_verify` or `set_user_match` entry (no `guide_eco_change` entries) before proceeding.
 
 ---
 
@@ -678,7 +682,7 @@ Also read `data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_tag` — save it to 
 
 ### Step 5 Notes (reference — do NOT execute yourself)
 
-Full implementation is in `eco_fm_runner.md`. Key rules: write eco_fm_config with fixed filename (not tag-based), use single Bash blocking call for FM wait (timeout 21600s = 6h), merge results with previous round, write tmp file with eco_fm_tag.
+Full implementation is in `eco_fm_runner.md`. Key rules: write eco_fm_config with fixed filename (not tag-based), poll every 5 minutes with individual Bash tool calls (max 72 polls = 6h), merge results with previous round, write tmp file with eco_fm_tag.
 
 ### Step 5a — Write FM config file
 
@@ -721,19 +725,9 @@ The script reads `<REF_DIR>/data/eco_fm_config` automatically (fixed filename, n
 3. Resets + runs only the specified `ECO_TARGETS`
 4. Polls until all targets complete (180-min timeout)
 
-Read the tag from the CLI output (`Tag: <eco_fm_tag>`). **Save `eco_fm_tag` to `eco_fixer_state` immediately** — it's needed later for eco_fm_analyzer. Poll `<BASE_DIR>/data/<eco_fm_tag>_spec` every 5 minutes until it contains `OVERALL ECO FM RESULT:`.
+**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner reads the tag from CLI output, saves it to `<BASE_DIR>/data/<TAG>_eco_fm_tag_round<ROUND>.tmp`, polls `data/<eco_fm_tag>_spec` every 5 minutes until `OVERALL ECO FM RESULT:` appears.
 
-Parse results. For round 1, write all 3 targets. For subsequent rounds, **merge with previous round's results** — carry forward PASS results from earlier rounds, update only the re-run targets:
-
-```python
-# Pseudo-code: merge FM results
-cumulative = load previous _eco_fm_verify.json (or start with all "NOT_RUN")
-for each target in ECO_TARGETS:
-    cumulative[target] = new result (PASS or FAIL)
-# targets NOT in ECO_TARGETS keep their previous result
-```
-
-Write merged results to `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`:
+**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner parses results, merges with previous round's results (carry forward PASS results, update only re-run targets), and writes `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`:
 ```json
 {
   "FmEqvEcoSynthesizeVsSynRtl": "PASS",
@@ -745,12 +739,9 @@ Write merged results to `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`:
 }
 ```
 
-**OVERALL PASS** = all 3 targets show PASS in the merged JSON.
+**OVERALL PASS** (as determined by the ORCHESTRATOR after the sub-agent completes) = all 3 targets show PASS in the merged `eco_fm_verify.json`.
 
-After writing `data/<TAG>_eco_step5_fm_verify_round1.rpt`, copy to AI_ECO_FLOW_DIR:
-```bash
-cp <BASE_DIR>/data/<TAG>_eco_step5_fm_verify_round1.rpt <AI_ECO_FLOW_DIR>/
-```
+**[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner writes `data/<TAG>_eco_step5_fm_verify_round1.rpt` and copies it to `AI_ECO_FLOW_DIR/`.
 
 **CHECKPOINT:** Verify both `data/<TAG>_eco_fm_verify.json` and `data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` exist and are non-empty. Verify `eco_fm_tag` is saved in `eco_fixer_state.fm_results_per_round`. Do NOT enter Step 6 without these files in place.
 

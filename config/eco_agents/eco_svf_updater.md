@@ -48,31 +48,30 @@ For `FmEqvEcoPrePlaceVsEcoSynthesize` and `FmEqvEcoRouteVsEcoPrePlace` (gate-to-
 
 ## When to Run
 
-Only run when the FM verify step (Step 5) reports **pre-existing failures** that need suppression:
+Only run when the ORCHESTRATOR or ROUND_ORCHESTRATOR spawns you with specific pre-existing failure points to suppress. You are spawned from Step 4b, which runs AFTER Step 5 FM results are already available from a previous round. You are never spawned in the first round's Step 4b (because no FM results exist yet in round 1) — in round 1, Step 4b is skipped.
 
-| FM Failure Type | Action |
+In rounds 2+, the ROUND_ORCHESTRATOR spawns you when `eco_fm_analyzer` produced `revised_changes` entries with `action: set_dont_verify` (Mode E or Mode G). The specific failing points to suppress are passed to you via the `eco_fm_analysis_round<ROUND>.json` file.
+
+| Trigger condition | Action |
 |-----------------|--------|
-| LATCG (latch clock gate) mismatch on a pre-existing cell | `set_dont_verify` in setup partition |
-| FM cannot auto-match an ECO cell (unexpected instance path) | `set_user_match` in setup partition |
-| New_logic cell insertion only, no FM failures | **SKIP — `svf_update_needed=false`, write nothing** |
+| `eco_fm_analysis_round<N>.json` has `action: set_dont_verify` entries (Mode E or G) | Write `set_dont_verify` entries to TCL file |
+| `eco_fm_analysis_round<N>.json` has `action: set_user_match` entries (ECO cell unmatched by FM) | Write `set_user_match` entries to TCL file |
+| No `set_dont_verify` or `set_user_match` entries in analysis | Do NOT write TCL file; set `svf_update_needed=false` and write `eco_svf_update.json` with `entries: []` |
 
-If `eco_applied_round<ROUND>.json` has INSERTED entries but FM PASSED on all 3 targets — skip this step entirely. No TCL file needed.
+Do NOT check `eco_fm_verify.json` to classify failures yourself — the eco_fm_analyzer has already done this and its `revised_changes` entries are your authoritative input.
 
 ---
 
-## STEP 1 — Determine What Is Needed
+## STEP 1 — Read Entries from eco_fm_analyzer Output
 
-Read the FM verify result for the current round:
+Read `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`. Extract all entries from `revised_changes` where `action` is `"set_dont_verify"` or `"set_user_match"`. These are the ONLY entries you will act on.
 
-```bash
-cat <BASE_DIR>/data/<TAG>_eco_fm_verify.json
-```
+Do NOT re-read `eco_fm_verify.json` to re-classify failures — the eco_fm_analyzer has already done this classification and its `revised_changes` entries are authoritative. Re-classifying from raw FM output risks contradicting the analyzer's diagnosis.
 
-Scan `failing_points` for each target. Classify each failure:
+For each `set_dont_verify` entry in `revised_changes`: the `cell_name` field contains the FM point path to suppress.
+For each `set_user_match` entry: the `cell_name` field contains the RTL path and `new_net` contains the impl path.
 
-- **Pre-existing LATCG mismatch** — cell exists in PreEco netlist, was not part of this ECO, FM cannot verify it. Action: `set_dont_verify`.
-- **ECO cell unmatched** — FM cannot find the inserted cell by instance path. Action: `set_user_match`.
-- **RTL logic mismatch on ECO-inserted logic** — this is a real ECO error; do NOT suppress with `set_dont_verify`. Report it as a Step 4 bug.
+If `revised_changes` contains no `set_dont_verify` or `set_user_match` entries: write `eco_svf_update.json` with `svf_update_needed: false` and `entries: []`, then exit. No TCL file needed.
 
 ---
 

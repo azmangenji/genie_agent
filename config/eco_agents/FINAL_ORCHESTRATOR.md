@@ -24,8 +24,9 @@
 
 Read `<ROUND_HANDOFF_PATH>` (passed in your prompt) to get:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`, `ai_eco_flow_dir`
-- `TOTAL_ROUNDS` — total number of rounds run
-- `status` — `FM_PASSED`, `FM_FAILED`, or `MAX_ROUNDS`
+- `status` — `FM_PASSED`, `FM_FAILED`, `MANUAL_LIMIT`, or `MAX_ROUNDS` (read from the JSON `status` field)
+
+`TOTAL_ROUNDS` is passed directly in your prompt as a parameter (NOT inside the handoff JSON — the JSON only has `round` which is the last completed round number). Use the `TOTAL_ROUNDS` value from your prompt for the summary RPT and HTML. If your prompt does not specify `TOTAL_ROUNDS`, read the `round` field from `ROUND_HANDOFF_PATH` and use that value.
 
 Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 
@@ -37,7 +38,7 @@ Read all `data/<TAG>_eco_applied_round<ROUND>.json` files (ROUND = 1 to TOTAL_RO
 
 **Statistics calculation:**
 - **Cells Added**: count unique `instance_name` values where `change_type` in `["new_logic", "new_logic_dff", "new_logic_gate"]` AND `status=INSERTED`, deduplicated across stages (same logical cell appears in 3 stages — count once; field is `instance_name` for all 3 types)
-- **Cells Removed**: count SKIPPED entries where `reason` contains "not found in PostEco"
+- **Cells Removed**: count SKIPPED entries where `status = "SKIPPED"` AND `reason` contains either `"not found in PostEco"` OR `"cell not found in PostEco"` — these are cells that existed in PreEco but were optimized away by P&R and do not appear in the PostEco netlist
 - **Pins Disconnected / Nets Connected**: count APPLIED + INSERTED entries per stage per round (cumulative)
 
 Write `<BASE_DIR>/data/<TAG>_eco_summary.rpt`:
@@ -241,18 +242,28 @@ pre  { background: #f4f4f4; padding: 10px; font-family: monospace; font-size: 12
 
 ## STEP 8 — Send Final Email and Cleanup
 
+Read `status` from `<ROUND_HANDOFF_PATH>`. Run exactly ONE of the following commands based on status — not multiple:
+
 ```bash
 cd <BASE_DIR>
-
-# FM PASSED
-python3 script/genie_cli.py --send-eco-email <TAG> --eco-result PASS
-
-# Max rounds reached (FM still failing)
-python3 script/genie_cli.py --send-eco-email <TAG> --eco-result MAX_ROUNDS_REACHED
-
-# No changes were applied at all
-python3 script/genie_cli.py --send-eco-email <TAG>
 ```
+
+- If `status = "FM_PASSED"`:
+  ```bash
+  python3 script/genie_cli.py --send-eco-email <TAG> --eco-result PASS
+  ```
+- If `status = "MAX_ROUNDS"` (5 rounds attempted, FM still failing):
+  ```bash
+  python3 script/genie_cli.py --send-eco-email <TAG> --eco-result MAX_ROUNDS_REACHED
+  ```
+- If `status = "MANUAL_LIMIT"` (all remaining failing points are manual_only):
+  ```bash
+  python3 script/genie_cli.py --send-eco-email <TAG> --eco-result MAX_ROUNDS_REACHED
+  ```
+- If `status` is absent or `"FM_FAILED"` (unexpected — should not reach FINAL_ORCHESTRATOR in this state):
+  ```bash
+  python3 script/genie_cli.py --send-eco-email <TAG>
+  ```
 
 **MANDATORY CHECKPOINT — Do NOT proceed to cleanup until this succeeds.**
 Verify output contains: `Email sent successfully`

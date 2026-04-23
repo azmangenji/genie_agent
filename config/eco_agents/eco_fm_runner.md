@@ -14,7 +14,11 @@
 
 Read `<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json`. Check `summary.applied + summary.inserted`.
 
-If both are 0 → write `data/<TAG>_eco_fm_verify.json` with `"skipped": true` and exit immediately. No FM run needed.
+If both are 0 → no ECO changes were made in this round (all entries were SKIPPED). Write `data/<TAG>_eco_fm_verify.json` with:
+```json
+{"skipped": true, "reason": "no applied or inserted changes in eco_applied_round<ROUND>.json — FM not run", "FmEqvEcoSynthesizeVsSynRtl": "NOT_RUN", "FmEqvEcoPrePlaceVsEcoSynthesize": "NOT_RUN", "FmEqvEcoRouteVsEcoPrePlace": "NOT_RUN"}
+```
+Also write `data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` noting "FM skipped — no changes applied". Copy to `AI_ECO_FLOW_DIR/`. Then exit. The calling orchestrator treats "skipped" as FM FAIL (no progress was made) and increments the round; if this was the last round, FINAL_ORCHESTRATOR will report as MAX_ROUNDS with no FM result.
 
 ---
 
@@ -60,10 +64,11 @@ grep -c "OVERALL ECO FM RESULT:" <BASE_DIR>/data/<eco_fm_tag>_spec 2>/dev/null |
 - If count ≥ 1 → FM complete, proceed to STEP E
 - If count = 0 → wait 5 minutes (`sleep 300` in one Bash call) then repeat
 - Max 72 retries (6 hours total timeout)
-- If timeout reached → write `eco_fm_verify.json` with `"status": "TIMEOUT"` and exit
-```
-
-If output is `FM_TIMEOUT` → write `data/<TAG>_eco_fm_verify.json` with `"status": "TIMEOUT"` and exit. The calling orchestrator handles timeout.
+- If 72 polls exhausted without completion → write `data/<TAG>_eco_fm_verify.json` with:
+  ```json
+  {"status": "TIMEOUT", "FmEqvEcoSynthesizeVsSynRtl": "FAIL", "FmEqvEcoPrePlaceVsEcoSynthesize": "FAIL", "FmEqvEcoRouteVsEcoPrePlace": "FAIL", "failing_points": [], "timeout": true}
+  ```
+  Also write `data/<TAG>_eco_step5_fm_verify_round<ROUND>.rpt` noting "FM TIMEOUT after 6 hours". Copy to `AI_ECO_FLOW_DIR/`. Then exit. The calling orchestrator treats TIMEOUT as FM FAIL — it will attempt another round if rounds remain, or spawn FINAL_ORCHESTRATOR with MAX_ROUNDS status if this was the last round.
 
 ---
 

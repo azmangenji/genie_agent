@@ -167,7 +167,7 @@ Use the results from Step 2 checks to classify:
 | Failing DFF ≠ any RTL target (Check C) | B or E | Wrong cell rewired OR pre-existing |
 | Gate polarity wrong (Check D) | A | Replace gate with correct type |
 | Mode F condition (d_input_decompose_failed) | F | Manual only — report; do not retry |
-| Route PASS + PrePlace FAIL large count (Check C result) | G | Structural mismatch — set_dont_verify |
+| `FmEqvEcoRouteVsEcoPrePlace` PASS (0 failures) AND `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL count ≥ 10 AND none of the failing DFFs are the RTL diff `target_register` (Check C) | G | Structural HFS mismatch — set_dont_verify on the common scope |
 
 **Multiple modes can coexist** — if some failing points are Mode A and others are Mode F, classify each separately.
 
@@ -205,18 +205,27 @@ zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -n "\.Z[N]\? ( <d_input_net> 
 grep "<driver_cell_name>" <BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json
 ```
 
-4. If the driver is an ECO-applied cell → that cell is out of scope → mark `action: exclude`
-5. If not → continue tracing one more level. Stop at 5 hops. If still not found → Mode E candidate (verify with RULE 6 pre-existing check).
+4. If the driver cell appears in `eco_applied_round<ROUND>.json` → the ECO rewired this cell to a net that also connects to unrelated DFFs. Rewiring was correct for the target register but has collateral effect on sibling consumers. The fix is to NOT rewire this cell (exclude it) and instead find a different cell closer to the target register whose rewire does not affect the sibling. Set `action: exclude` for this cell in `revised_changes` — eco_applier will skip it in the next round. Also set `eco_preeco_study_update: {action: "mark_excluded", entry_key: "<cell_name>"}` so the studier result is marked `confirmed: false`.
+5. If the driver cell does NOT appear in eco_applied → continue tracing one more level. Stop at 5 hops. If still not found → Mode E candidate — apply the two-condition proof from the Mode E section before setting `set_dont_verify`.
 
 ### Mode C — Partial progress: count reduced but not zero
 
 **Diagnosis:** Some ECO changes worked, some didn't. Remaining failures are a subset of Round 1 failures.
 
-Check `eco_preeco_study.json` — are there confirmed entries that were NOT in eco_applied (missing from a stage)?
-```bash
-# Count confirmed entries per stage in preeco_study vs eco_applied
+Check if `eco_preeco_study.json` has confirmed entries that are absent from `eco_applied_round<ROUND>.json`:
+```python
+import json
+study = json.load(open('<BASE_DIR>/data/<TAG>_eco_preeco_study.json'))
+applied = json.load(open('<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json'))
+
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    study_confirmed = {e.get("cell_name","") for e in study.get(stage, []) if e.get("confirmed")}
+    applied_cells   = {e.get("cell_name","") for e in applied.get(stage, [])}
+    missing = study_confirmed - applied_cells
+    if missing:
+        print(f"{stage}: confirmed in study but absent from eco_applied: {missing}")
 ```
-If study has confirmed entries that eco_applied doesn't have → those are missing changes → apply them.
+Any cell in `missing` was confirmed by the studier but eco_applier did not process it — add it as a `rewire` or `insert_cell` action in `revised_changes`. The `eco_preeco_study_update` field should set that entry's `confirmed: True` to ensure it is not skipped again.
 
 ### Mode D — FM stage mismatch: fails in one target, passes in others
 
@@ -230,13 +239,23 @@ If not found → P&R renamed the cell. Find the actual name in this stage and up
 
 ### Mode E — Pre-existing failure (unrelated to ECO)
 
-**PROOF required:** The failing DFF's D-input cone must have NO contact with any old_net or new_net from the RTL diff. Check the eco_rtl_diff.json signals against PostEco cone (max 5 hops back). Only classify Mode E after completing this trace.
+**PROOF required:** Two conditions must both be satisfied before classifying Mode E:
+
+**Condition 1 — No ECO contact:** Trace the failing DFF's D-input backward (max 5 hops) through the PostEco Synthesize netlist. At each hop, check if the net name matches any `old_net`, `new_net`, `old_token`, or `new_token` from `eco_rtl_diff.json`. If any match is found: this is NOT Mode E — it is Mode A or B. Only if all 5 hops have zero matches may Condition 2 be checked.
+
+**Condition 2 — Existed in PreEco:** Confirm the failing DFF instance appears in the PreEco Synthesize netlist:
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -c "<failing_dff_instance_name>"
+```
+If count ≥ 1: the failure is pre-existing (existed before this ECO). If count = 0: the DFF was inserted by this ECO — it cannot be pre-existing; re-examine Mode A.
+
+Only after both conditions are confirmed: classify Mode E and write `set_dont_verify` entry targeting this specific DFF path. Do NOT write a wildcard scope — scope it to exactly the failing DFF hierarchy path.
 
 ### Mode F — d_input_decompose_failed
 
 Check `fallback_strategy` in `eco_rtl_diff.json` before classifying:
 
-- **`fallback_strategy: "intermediate_net_insertion"`** → Mode F1: pivot net approach is applicable. Check if `eco_preeco_study.json` has `source: "intermediate_net_fallback"` entries. If missing, set `eco_preeco_study_update: {action: "trigger_fallback"}` to request Step 0c from the studier. Do NOT mark as MANUAL_ONLY.
+- **`fallback_strategy: "intermediate_net_insertion"`** → Mode F1: pivot net approach is applicable. Check if `eco_preeco_study.json` has any entry with `source: "intermediate_net_fallback"`. If such entries ARE present: the studier already ran Step 0c and produced the gate chain — the issue is in eco_applier's execution, classify as Mode A (re-apply). If such entries are ABSENT: the studier did NOT run Step 0c. Set `action: "manual_only"` in revised_changes for this register and add a `rationale` explaining that the intermediate_net_fallback entries are missing from eco_preeco_study.json — the engineer must manually re-run the studier with Step 0c enabled for this change. Do NOT mark as MANUAL_ONLY for the whole flow — only for this register's entry.
 - **`fallback_strategy: null`** → Mode F2: no intermediate net approach possible. Set all revised_changes for this register to `action: manual_only`. ROUND_ORCHESTRATOR exits loop early if all points are manual_only.
 
 ### Mode G — Structural stage mismatch

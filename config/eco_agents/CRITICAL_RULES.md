@@ -255,8 +255,8 @@ If a signal from `port_connections_per_stage` is not found in the current stage'
 **How to find auxiliary pin values:**
 1. Read the full port list of the chosen DFF cell type from an existing instance in the same module scope in the PreEco netlist for that stage.
 2. Copy the auxiliary pin net values from that neighbour DFF — this wires the ECO DFF into the existing scan chain consistently.
-3. Do NOT assume auxiliary pins are constants (`1'b0`) in PrePlace and Route — they are typically connected to real scan chain nets in P&R stages.
-4. Only in Synthesize (before scan insertion) are auxiliary pins commonly tied to constants — confirm by reading the neighbour DFF.
+3. Do NOT assume auxiliary pins are constants (`1'b0`) in PrePlace and Route. Scan insertion happens between Synthesize and PrePlace — after scan insertion, auxiliary pins are connected to real scan chain nets (SI, SE, etc.), not constants. Using Synthesize constants for PrePlace/Route auxiliary pins produces a DFF that is disconnected from the scan chain, causing DRC and LEC failures.
+4. Only in Synthesize (before scan insertion) are auxiliary pins tied to constants — confirm by reading the neighbour DFF. If the neighbour DFF's auxiliary pin connects to a real net (not `1'b0`) even in Synthesize, use that net — do NOT override it with a constant assumption.
 
 **eco_netlist_studier** records all pins (functional + auxiliary) in `port_connections_per_stage` per stage.
 **eco_applier** uses the full `port_connections_per_stage[<Stage>]` map when building the DFF instantiation string — every pin, every stage.
@@ -349,9 +349,9 @@ Entirely new logic with no old expression preserved. Cannot use intermediate net
 Root cause: P&R tools insert HFS buffer trees for high-fanout signals. After new gating logic is added to a high-fanout net, the structural representation of that net differs between Synthesize (simple gate) and PrePlace (buffer tree). FM stage-to-stage comparison fails structurally even though the logic is functionally equivalent.
 
 **eco_fm_analyzer classification (Mode G):**
-- Detect: Route-vs-PrePlace PASS (0), PrePlace-vs-Synthesize FAIL (large count)
-- Verify: failing DFFs are downstream consumers of the rewired net, not the ECO target registers
-- Action: `set_dont_verify -type { register } /<common_scope>/*` in SVF setup partition
+- Detect: `FmEqvEcoRouteVsEcoPrePlace` PASS (0 failures), `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL (≥ 10 failures)
+- Verify: for each failing DFF path, check if its name appears in `eco_rtl_diff.json` as a `target_register`. If none of the failing DFF paths match any `target_register`, these are downstream consumers of the rewired net (HFS buffer tree consumers), not the ECO change itself. This confirms Mode G. If any failing DFF IS a `target_register` — this is NOT Mode G; re-classify as Mode A or C.
+- Action: `set_dont_verify -type { register } /<common_scope>/*` in SVF setup partition, where `<common_scope>` is the longest common hierarchy prefix shared by all failing DFF paths
 
 **NEVER apply Mode G suppression when Route-vs-PrePlace also fails** — that indicates a real ECO error, not a structural mismatch.
 

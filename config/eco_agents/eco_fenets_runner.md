@@ -94,10 +94,14 @@ Retry file naming:
 
 Copy each retry rpt to `AI_ECO_FLOW_DIR/` immediately after writing. Verify copy.
 
-**No-Equiv-Nets:** max 2 retries, always DEEPER hierarchy. Retry direction: add sub-instance level.
-**FM-036:** max 3 retries, strip one hierarchy level per retry.
+**No-Equiv-Nets:** max 2 retries, always DEEPER hierarchy. Add one sub-instance level per retry — NEVER strip a level (shallower queries move away from the declaring module, making FM's scope wider and less precise, which does not resolve No-Equiv-Nets).
 
-After all retries exhausted for a stage → apply Stage Fallback (documented in ORCHESTRATOR.md retry sections).
+**FM-036 — MUST classify before retrying:**
+First determine if the net is a port-level signal or an internal wire:
+- Read `eco_rtl_diff.json` for this net's `change_type`. If `change_type = "wire_swap"` and the net has no `input`/`output` declaration in any RTL module (only `reg`/`wire`), it is an **internal wire** — FM will return FM-036 at every hierarchy level because the net is never exposed in FM's reference namespace. Do NOT strip levels. Instead, pivot immediately to querying `target_register` (the DFF output Q signal), which IS visible to FM. Submit one genie_cli call with `netName:<hierarchy_path>/<target_register>` — this is the internal wire pivot (max 1 pivot attempt per net).
+- If the net IS declared as `input`/`output` in any RTL module, it is a **port-level signal** — FM-036 means the hierarchy level is wrong. Strip one level per retry, max 3 retries.
+
+After all retries exhausted for a stage (including the internal wire pivot attempt when the net was classified as internal wire) → apply Stage Fallback: grep confirmed cell names from another stage's FM results and use them for this stage (documented in ORCHESTRATOR.md retry sections). Stage Fallback is applied only when ALL retry options for that stage are exhausted — not before.
 
 ---
 

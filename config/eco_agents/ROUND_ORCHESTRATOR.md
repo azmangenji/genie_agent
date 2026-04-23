@@ -97,7 +97,7 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 
 - `failure_mode: UNKNOWN` → NOT a reason to stop — continue to next round
 - `failure_mode: E` (pre-existing) → NOT a reason to stop — revised_changes contains `set_dont_verify`; apply and continue
-- `failure_mode: G` (structural stage mismatch) → NOT a reason to stop — revised_changes contains `set_dont_verify` for the affected scope; apply via eco_svf_updater and continue
+- `failure_mode: G` (structural stage mismatch) → NOT a reason to stop — revised_changes contains `set_dont_verify` entries for the affected scope. Write these entries to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl` using the eco_svf_updater sub-agent (Step 4b), then set `svf_update_needed=true` for Step 5. Do NOT modify `eco_preeco_study.json` — Mode G failures are suppressed in FM, not fixed by ECO rewiring. Continue to next round.
 - `failure_mode: F` (manual_only — `d_input_decompose_failed`) → **check if ALL remaining failing points are `action: manual_only`**:
   - If YES (every failing point is manual_only) → spawn FINAL_ORCHESTRATOR with `status: MANUAL_LIMIT`. These points cannot be fixed by any number of rounds. Report them to the engineer.
   - If NO (some are manual_only, others have fixable actions) → continue to next round; apply the fixable changes, leave manual_only points for engineer report
@@ -234,19 +234,22 @@ Do NOT proceed to Step 4b until the RPT is confirmed in both data/ and AI_ECO_FL
 
 ---
 
-## STEP 4b — SVF Entries (if new_logic)
+## STEP 4b — SVF Entries (if pre-existing FM failures require suppression)
 
-Read `data/<TAG>_eco_applied_round<NEXT_ROUND>.json`. If any entry has `change_type=new_logic` and `status=INSERTED`:
+> **CRITICAL:** `guide_eco_change -type insert_cell` is NOT a valid SVF command and must NEVER be written (RULE 11). FM auto-matches inserted cells by instance path. Step 4b is ONLY for `set_dont_verify` / `set_user_match` entries suppressing pre-existing failures — it is NOT triggered by new_logic insertions alone.
 
-**Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_svf_updater.md` prepended. Pass:
+Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`. Check if `revised_changes` contains any entry with `action: set_dont_verify` (Mode E pre-existing, or Mode G structural mismatch).
+
+If yes — **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_svf_updater.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
-- Output: `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
+- Task: Write `set_dont_verify` / `set_user_match` entries (NEVER `guide_eco_change -type insert_cell`) to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
+- Output: `<BASE_DIR>/data/<TAG>_eco_svf_update.json` + `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 
-Set `svf_update_needed = true`.
+Set `svf_update_needed = true` only when the TCL file was written with entries.
 
-**CHECKPOINT (if new_logic):** Verify `_eco_svf_entries.tcl` exists and contains at least one `eco_change` entry.
+**CHECKPOINT (if spawned):** Verify `_eco_svf_entries.tcl` exists and contains only `set_dont_verify` or `set_user_match` entries.
 
-If no new_logic: set `svf_update_needed = false`, skip Step 4b.
+If no pre-existing failures requiring suppression: set `svf_update_needed = false`, skip Step 4b.
 
 ---
 
@@ -301,7 +304,7 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 
 ### If FM RESULT = FAIL and ALL remaining points are `action: manual_only` (Mode F)
 
-Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`. Check if every entry in `revised_changes` has `action: manual_only`. If yes:
+Read `data/<TAG>_eco_fm_analysis_round<NEXT_ROUND>.json` (the analysis file written by Step 6d for NEXT_ROUND, not for the older ROUND). Check if every entry in `revised_changes` has `action: manual_only`. If yes:
 
 Update handoff: `"status": "MANUAL_LIMIT"`
 
@@ -322,7 +325,7 @@ Update `eco_fixer_state.fm_results_per_round` with this round's result.
 
 **Then EXIT — your work is done.**
 
-### If NEXT_ROUND = 5 (max rounds reached)
+### If FM RESULT = FAIL and NEXT_ROUND = 5 (max rounds reached — FM still failing, not manual_only)
 
 Update handoff: `"status": "MAX_ROUNDS"`
 

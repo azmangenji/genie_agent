@@ -79,7 +79,10 @@ grep -cw "<effective_new_net>" /tmp/eco_apply_<TAG>_<Stage>.v
 ```
 
 - If count ≥ 1 → **rewire** (normal path, go to 4b)
-- If count = 0 → **new_logic** (new_net doesn't exist, go to 4c)
+- If count = 0 AND `change_type` is `"rewire"` → check `change_type` in the study entry:
+  - If `change_type` is `"new_logic_dff"` → go to 4c-DFF (DFF insertion)
+  - If `change_type` is `"new_logic_gate"` → go to 4c-GATE (combinational gate insertion)
+  - If `change_type` is `"rewire"` and new_net is absent → this is a simple inversion case; go to 4c (inverter insertion) only if `new_net` is derived from `~<source_net>`. If `new_net` is NOT an inversion of an existing net (no `~` prefix implied by the RTL diff), mark SKIPPED with reason "new_net not found in PostEco — not an inversion; check eco_netlist_studier output"
 
 #### 4b — Rewire path (new_net exists)
 
@@ -125,11 +128,15 @@ If no INV cell found in this stage, try another stage (Synthesize is most likely
 
 **Step 4c-2: Derive the source net**
 
-The `new_net` is the inverted form of some existing net. Determine `source_net`:
-- If RTL diff shows `~<signal>` → `source_net = <signal>` (strip the `~`)
-- Verify `source_net` exists in the PostEco temp file: `grep -cw "<source_net>"` ≥ 1
+The `new_net` does not exist in PostEco — it must be created by inverting an existing net. Derive `source_net` from the study JSON entry's `old_net` field: the old net is the signal currently on the target pin, and the new desired state is its logical inverse. Use `old_net` as `source_net`.
 
-If `source_net` not found: SKIPPED, reason="source_net not found in PostEco — cannot insert inverter"
+Do NOT read the RTL diff — the study JSON is the authoritative source for pin-level net names. The applier only reads `data/<TAG>_eco_preeco_study.json`.
+
+Verify `source_net` exists in the PostEco temp file:
+```bash
+grep -cw "<source_net>" /tmp/eco_apply_<TAG>_<Stage>.v
+```
+If count = 0: SKIPPED, reason="source_net (old_net from study JSON) not found in PostEco — cell may have been optimized away or renamed"
 
 **Step 4c-3: Generate instance and output net names**
 
@@ -244,7 +251,7 @@ If not found → find an existing DFF of the same cell type in the same module s
 grep -A6 "<dff_cell_type>" /tmp/eco_apply_<TAG>_<Stage>.v | grep "\.<aux_pin>" | head -3
 ```
 Use that neighbour's net for this auxiliary pin. Record `"aux_pin_from_neighbour": true`.
-If no neighbour DFF found → use the value from the Synthesize entry of `port_connections_per_stage` as a fallback. Record the fallback reason.
+If no neighbour DFF of the same cell type is found in the same module scope: search the entire PostEco stage file for any instance of `<dff_cell_type>` and read its auxiliary pin value. Record `"aux_pin_from_neighbour": true, "neighbour_scope": "global_fallback"`. Only if NO instance of the DFF cell type exists anywhere in the PostEco file: use the Synthesize-derived value from `port_connections_per_stage["Synthesize"]` as a last resort — this is only safe for Synthesize-stage runs (before scan insertion); for PrePlace and Route stages, if no DFF instance is found, mark SKIPPED with reason "no DFF cell instance found in PostEco — cannot determine auxiliary pin nets for this stage" rather than silently using wrong Synthesize constants.
 
 **Step 3 — Find DFF cell type from PreEco netlist (confirm it exists in this stage):**
 ```bash
@@ -293,8 +300,23 @@ If any input is a new_logic output (`n_eco_<jira>_<seq>`) — verify that new_lo
 
 **Step 2 — Find gate cell type from PreEco netlist matching `gate_function`:**
 ```bash
-zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -E "^[[:space:]]*(NAND2|ND2|NR2|NOR2|AND2|OR2)[A-Z0-9]* [a-z]" | head -3
+# Use gate_function as a prefix pattern — find first matching real library cell
+zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -E "^[[:space:]]*<gate_function>[A-Z0-9]* [a-z]" | head -3
 ```
+
+Replace `<gate_function>` with the actual value (e.g., `NAND2`, `AND2`, `OR2`, `MUX2`, `INV`, etc.). The pattern `<gate_function>[A-Z0-9]*` matches the full library cell name that starts with the gate function prefix.
+
+**For `MUX2` gate_function specifically:** The library cell will have a longer technology-specific name (e.g., `MUX2<drive_strength><tech_suffix>`). Never use the bare `MUX2` primitive — it is a generic Verilog behavioral construct not present in the technology library. FM will fail to elaborate any netlist containing bare `MUX2` instances. Always grep the PreEco netlist with the `MUX2[A-Z0-9]*` pattern to find the real cell name for this design.
+
+**Step 2b — Handle constant inputs (`1'b0`, `1'b1`) in gate port connections:**
+
+For gates from `new_condition_gate_chain`, inputs may include constant values (`1'b0`, `1'b1`). Gate-level netlists require these to be driven by tie-high/tie-low cells or connected directly as constants in the instantiation. Use the following approach:
+
+- **Direct constant connection:** Write `1'b0` or `1'b1` directly in the port connection — most synthesis tools and FM accept this in gate-level netlists: `.I1( 1'b0 )`
+- **Alternatively, find tie cells:** `grep -E "^[[:space:]]*(TIEH|TIEL)[A-Z0-9]* [a-z]" /tmp/eco_apply_<TAG>_<Stage>.v | head -3` — use tie cell output if required by the design style
+- If unsure, use the direct constant form — it is universally valid in Verilog gate-level netlists and Formality accepts it
+
+> **This rule prevents:** using bare `MUX2` as a cell type in the gate-level netlist. `MUX2` is not a library cell — it is a Verilog language primitive. FM reads the PostEco netlist and cannot elaborate undefined cell types, causing all FM targets to return N/A. Always resolve `gate_function` to a real library cell name from the PreEco netlist using the prefix pattern above.
 Use the `cell_type` from the study JSON `port_connections`.
 
 **Step 3 — Build port connection string from study JSON:**
@@ -328,25 +350,52 @@ For entries with `change_type: "port_declaration"` (new input or output port, NO
 grep -n "^module <module_name> \|^module <module_name>(" /tmp/eco_apply_<TAG>_<Stage>.v | head -3
 ```
 
-**Step 2 — Add signal to module port list (handles multi-line port lists):**
+**Step 2 — Add signal to module port list using parenthesis depth tracking:**
 
 ```python
-mod_idx = next(i for i, l in enumerate(lines) if 'module <module_name>' in l)
-# Find the closing ');' of the port list — may be many lines after 'module' line
-close_idx = next(
-    i for i in range(mod_idx + 1, len(lines))
-    if lines[i].strip() in (');', ') ;', ');  // end of port list')
+mod_idx = next(
+    i for i, l in enumerate(lines)
+    if re.match(rf'^module\s+{re.escape(module_name)}\s*[(\s]', l)
 )
-# Insert signal name before the closing ')'
-lines[close_idx] = lines[close_idx].replace(');', f', <signal_name>\n);')
+# Use parenthesis depth tracking to find the TRUE closing ')' of the port list
+# Same approach as RULE 20 (PORT_CONN) — do NOT use simple string matching
+depth = 0
+port_list_close_idx = None
+for i in range(mod_idx, len(lines)):
+    for ch in lines[i]:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                port_list_close_idx = i
+                break
+    if port_list_close_idx is not None:
+        break
+
+# Insert signal name before the last ')' on port_list_close_idx
+close_line = lines[port_list_close_idx]
+last_paren = close_line.rfind(')')
+lines[port_list_close_idx] = close_line[:last_paren] + f', <signal_name>\n)' + close_line[last_paren+1:]
 ```
 
-**Step 3 — Add declaration in module body:**
+> **This rule prevents:** inserting the port NAME inside the port list before it closes, which can happen when the first standalone `);` pattern is found too early (e.g., inside a multi-line port list with comment lines). Always use depth tracking.
 
-Add declaration line after existing declarations (before the first cell instantiation):
-```verilog
-  input/output  <signal_name> ;
+**Step 3 — Add declaration in module body AFTER the port list closes:**
+
+The declaration (`input/output <signal_name>;`) must be inserted AFTER the port list `);` — not before it. Use `port_list_close_idx` from Step 2 to determine where the module body starts:
+
+```python
+# Insert declaration on the line AFTER port_list_close_idx
+# Find first blank line or non-comment line after port list close — insert there
+insert_idx = port_list_close_idx + 1
+# Skip any blank lines or comments immediately after the port list
+while insert_idx < len(lines) and lines[insert_idx].strip() in ('', '//'):
+    insert_idx += 1
+lines.insert(insert_idx, f'  input/output  <signal_name> ;\n')
 ```
+
+> **This rule prevents:** inserting the declaration inside the still-open port list. The port list must be fully closed (depth=0 confirmed in Step 2) before Step 3 inserts the declaration. Using `mod_idx+1` as the insertion point without checking the port list closure causes the declaration to land inside `(port1, port2, ...)` where only port names are valid.
 
 Record: `status=APPLIED`, `change_type=port_declaration`.
 
@@ -531,8 +580,8 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 | Case | Action |
 |------|--------|
 | `change_type=rewire`, `new_net` exists in PostEco | Rewire path (4b) |
-| `change_type=rewire`, `new_net` absent, source_net found | Inverter path (4c) — auto-insert INV cell |
-| `change_type=rewire`, `new_net` absent, source_net also absent | SKIPPED — "source_net not found" |
+| `change_type=rewire`, `new_net` absent, `old_net` found (implies inversion of old_net) | Inverter path (4c) — auto-insert INV cell using `old_net` as source_net |
+| `change_type=rewire`, `new_net` absent, `old_net` also absent | SKIPPED — "source_net (old_net) not found in PostEco" |
 | `change_type=new_logic_dff` | DFF insertion path (4c-DFF) — Pass 1 |
 | `change_type=new_logic_gate` | Gate insertion path (4c-GATE) — Pass 1 |
 | `change_type=port_declaration` | Port list + declaration update (4c-PORT_DECL) — Pass 2 |

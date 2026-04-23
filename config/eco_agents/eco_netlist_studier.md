@@ -135,7 +135,7 @@ Classify each pin: **Functional** (clock, data, Q) — values from RTL context; 
 awk '/^module <module_name>/{found=1} found && /<dff_cell_type>/{print; for(i=0;i<6;i++){getline;print}; exit}' \
     /tmp/eco_study_<TAG>_<Stage>.v
 ```
-In Synthesize (before scan insertion), auxiliary pins are typically tied to constants — read the neighbour to confirm. If no neighbour found: search parent scope, then fall back to constants as last resort.
+In Synthesize (before scan insertion), auxiliary pins are connected to constants (e.g., `1'b0`) — confirm by reading the neighbour DFF. If no neighbour DFF of the same cell type is found in the same module scope: widen the search to the parent module scope (search the lines between the parent's `module` line and its `endmodule` line). Do NOT fall back to hardcoded constant values without finding a neighbour — the correct constant value must be read from the actual netlist for this design and stage, because some designs tie auxiliary pins to signals even in Synthesize.
 
 **Step D — Write `port_connections_per_stage`** combining functional (Step B) and auxiliary (Step C) pins. Use exact pin names from the cell's port map — do NOT hardcode:
 ```json
@@ -181,7 +181,7 @@ zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*<CELL_PATTERN
 
 Run for every `new_logic` change where `d_input_decompose_failed: true` AND `fallback_strategy: "intermediate_net_insertion"`. This handles priority mux chains extended with new conditions prepended before the old expression — the DFF D-input is NOT modified; instead insert at a "pivot net" in the existing combinational logic.
 
-**Step 0c-1 — Find the pivot net** by backward tracing from `target_register.D` (up to 5 hops). Stop at a net with multiple fanout consumers driven by a cell implementing the old expression structure. Multiple fanout identifies the true junction in the priority logic chain.
+**Step 0c-1 — Find the pivot net** by backward tracing from `target_register.D` (up to 5 hops). At each hop: find the driver cell of the current net, read its output net, then trace to that output net's driver. Stop when you reach the first net whose driver cell has a fanout count ≥ 2 (i.e., `grep -c "( <net> )" /tmp/eco_study_<TAG>_Synthesize.v` returns ≥ 2). That net is the pivot — it feeds multiple paths in the existing priority logic, so inserting new condition gates at this point is sufficient to implement the new conditions without modifying the DFF D-input directly. Record this net as `<pivot_net>` and its driver cell as `<driver_cell_name>` — both are used in Steps 0c-2 and 0c-4.
 
 **Step 0c-2 — Verify pivot net and find driver per stage:**
 
@@ -427,7 +427,11 @@ If no alias: `"new_net_reachable": false`, `"confirmed": false`, reason: "new_ne
 
 Read `target_register` and `target_bit` from `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`. If `target_register` is null, skip.
 
-**Step 1 — Find target register D-input net:** `grep -n "<target_register>" /tmp/eco_study_<TAG>_<Stage>.v | head -10`. Find the D-port matching `target_bit`; record as `<target_d_net>`.
+**Step 1 — Find target register D-input net:**
+```bash
+grep -n "<target_register>" /tmp/eco_study_<TAG>_<Stage>.v | head -10
+```
+The gate-level instance name for `target_register` bit `[N]` may appear as `<target_register>_reg_<N>_` (synthesis appends `_reg_<N>_`). If `target_bit` is null (scalar register), search for `<target_register>_reg` without a bit suffix. In the matching cell instance block, locate the `.D(<net>)` line — that net is `<target_d_net>`. If multiple instances match, use the one whose `.Q` or `.QN` output net name contains the register name (confirming it is the right flip-flop).
 
 **Step 2 — Trace backward (max 8 hops):** Find driver of `<target_d_net>` (pin ZN/Z/Q/CO/S), read its input nets, repeat backward until `old_net` (or HFS alias) appears on an input pin (FOUND) or you reach a primary input/clock net (NOT FOUND).
 
@@ -580,7 +584,11 @@ grep -c "\.<pin>(<old_net>)" /tmp/eco_study_<TAG>_<MissingStage>.v
 - count = 0 → `"confirmed": false`, reason recorded, do NOT abort
 - count > 1 → `"confirmed": false`, `"reason": "AMBIGUOUS — multiple occurrences"`
 
-**Step F4 — Handle net name differences:** If old_net not found, try partial match on signal root. If different net name found: update `old_net` for this stage, mark `"net_name_differs": true`.
+**Step F4 — Handle net name differences:** If `grep -c "\.<pin>(<old_net>)" /tmp/eco_study_<TAG>_<MissingStage>.v` returns 0, search for the signal root (the signal name without any `_0_` bus suffix or `_reg` synthesis suffix):
+```bash
+grep -n "<signal_root>" /tmp/eco_study_<TAG>_<MissingStage>.v | grep "<cell_name>" | head -5
+```
+Read the actual net name on the expected pin from the cell instance block. If a different net name is found on that pin: record it as `old_net` for this stage and mark `"net_name_differs": true`. This accounts for P&R renaming of nets between stages while preserving cell instance names.
 
 **Step F5 — Cleanup:** `rm -f /tmp/eco_study_<TAG>_<MissingStage>.v`
 
@@ -658,7 +666,7 @@ eco_applier processes arrays in order — unsorted entries cause rewires to run 
 - Cell not found in PreEco: `"confirmed": false, "reason": "cell not found in PreEco netlist"`
 - Old net not on expected pin: `"confirmed": false, "reason": "pin <pin> has net <actual_net> not expected <old_net>"`
 - Multiple instances with same name: `"confirmed": false, "reason": "AMBIGUOUS — multiple occurrences"`
-- Handle synthesis name mangling: cell name from FM may have `_reg` suffix — try partial match
+- Handle synthesis name mangling: cell name from FM may have `_reg` suffix appended by the synthesizer. If `grep -n "<cell_name>" /tmp/eco_study_<TAG>_<Stage>.v` returns zero results, retry with `grep -n "<cell_name>_reg" /tmp/eco_study_<TAG>_<Stage>.v`. If the `_reg` variant is found, use it as the actual cell name in the study JSON. If neither is found: `"confirmed": false, "reason": "cell not found in PreEco netlist (tried both <cell_name> and <cell_name>_reg)"`
 - If ALL stages have no FM results: mark all `"confirmed": false`, report for manual review
 
 Your final output is `<BASE_DIR>/data/<TAG>_eco_preeco_study.json`. After writing, verify it is non-empty with at least one confirmed entry, then exit. **RPT is generated by ORCHESTRATOR, not this agent.**

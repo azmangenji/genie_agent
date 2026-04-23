@@ -251,33 +251,49 @@ grep -A8 "<mux_cell_name>" /tmp/preeco_study_rtldiff_Synthesize.v | head -10
 ```
 Record: `i0_net = <net_on_I0_pin>`, `i1_net = <net_on_I1_pin>`
 
-**Step D-MUX-3 — Trace I0 and I1 backward one level to identify which RTL branch each carries:**
+**Step D-MUX-3 — Determine what the old select value is when the old condition is TRUE:**
+
 ```bash
-grep -n "\.Z[N]\?\s*(\s*<i0_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -3
-grep -n "\.Z[N]\?\s*(\s*<i1_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -3
+grep -n "\.Z[N]\?\s*(\s*<old_select_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -3
 ```
-Match the signal semantics from the RTL `context_line` to determine:
-- Which MUX input (I0 or I1) carries `branch_true` (the value selected when the RTL condition is true)
 
-**Step D-MUX-4 — Compute the required gate function:**
+Read the driver cell type. Now answer this question from first principles:
 
-The MUX truth table: S=0 selects I0, S=1 selects I1.
+**Q: When the old RTL condition is TRUE, what does the old select driver output?**
 
-- If `branch_true` → **I1**: S must be 1 when condition is true → **S = condition** → implement condition as a gate
-- If `branch_true` → **I0**: S must be 0 when condition is true → **S = NOT(condition)** → implement NOT(condition) as a gate
+- Read the old RTL condition from `context_line` (e.g., `(|signal)` = TRUE when signal has bits set)
+- A gate whose inputs are driven by the condition signal: if all input signals are HIGH (condition TRUE), does the gate output HIGH or LOW?
+  - Inverting gates (NOR, INV, NAND, NR, INR, ND): output goes LOW when inputs are HIGH → **old S=0 when condition TRUE**
+  - Non-inverting gates (AND, OR, BUF): output goes HIGH when inputs are HIGH → **old S=1 when condition TRUE**
 
-Parse the RTL condition from `context_line` (`<condition> ? branch_true : branch_false`).
-Express condition in terms of ECO input signals.
-Map the boolean expression for S to a standard gate using:
+Record: `old_S_when_condition_true = 0` (inverting) or `1` (non-inverting).
 
-| S expression | Gate |
-|-------------|------|
-| `A & B` | AND2 |
-| `~(A & B)` | NAND2 |
-| `A \| B` | OR2 |
-| `~(A \| B)` | NOR2 |
-| `~A` | INV |
-| More inputs | AND3/NAND3/OR3/NOR3/etc. |
+**Why this matters:** Because the MUX truth table (S=0→I0, S=1→I1) tells us which input was selected when the old condition was TRUE. That input is the true-branch. The new select must produce the same S value (0 or 1) when the new condition is TRUE — so we can derive what gate to use.
+
+**Step D-MUX-4 — Determine which MUX input is the true-branch:**
+
+Using `old_S_when_condition_true` from Step D-MUX-3:
+- If `old_S_when_condition_true = 0` → S=0 → MUX selects I0 → **I0 = true-branch**
+- If `old_S_when_condition_true = 1` → S=1 → MUX selects I1 → **I1 = true-branch**
+
+This derivation is objective: the old driver gate type is a physical property of the cell, and the MUX truth table is fixed. There is exactly one correct answer.
+
+**Step D-MUX-5 — Derive the new gate function from first principles:**
+
+Now answer: **what boolean expression of the new ECO input signals must produce `old_S_when_condition_true` when the new condition is TRUE?**
+
+Step 5a — Write the new RTL condition as a boolean expression of ECO signals from `context_line`. Examples: `~E | ~A` = NAND(E,A); `E & A` = AND(E,A).
+
+Step 5b — The new gate must produce S such that:
+- S = `old_S_when_condition_true` when new condition = TRUE
+- If `old_S_when_condition_true = 0`: the gate must output 0 when condition=TRUE → gate output = NOT(condition) → invert the condition expression
+- If `old_S_when_condition_true = 1`: the gate must output 1 when condition=TRUE → gate output = condition → implement the condition expression directly
+
+Step 5c — Map the resulting boolean expression to a standard gate:
+- `E & A` → AND2; `~(E & A)` → NAND2; `E | A` → OR2; `~(E | A)` → NOR2; `~E` → INV
+- For 3+ inputs: AND3, NAND3, OR3, NOR3, etc.
+
+**Why this derivation is reliable:** Each step follows mechanically from the previous. Step D-MUX-3 reads a physical property (gate type) that is unambiguous. Step D-MUX-4 applies the fixed MUX truth table (S=0→I0). Step D-MUX-5 inverts or passes through the condition based on the required S value. No semantic interpretation of net names is involved at any point.
 
 **Step D-MUX-5 — Store result in JSON:**
 
@@ -300,7 +316,7 @@ rm -f /tmp/preeco_study_rtldiff_Synthesize.v
 - For `and_term`: query `old_token` (the output net of the existing expression) to find the gate driving it; `new_token` (`flat_net_name` from Step C) already exists in PreEco — confirm with a single grep, no FM query needed
 - For `new_port`: **skip FM query** — new input ports connect to existing nets (resolved as `flat_net_name` in Step C); no gate-level net to find equivalents for
 - For `port_promotion`: **skip FM query entirely** — the net ALREADY EXISTS in the flat PreEco netlist under the signal's original name; `flat_net_exists: true`; the studier will verify existence directly
-- For `new_logic`: query the enable signal and the D-input of the affected register
+- For `new_logic`: skip the FM query for the NEW register itself — its output net does not exist in the PreEco netlist and FM cannot find equivalents for it. Instead, query any EXISTING signal that the new register's D-input depends on (the enable signal or the driving data signal from the RTL context_line). This gives eco_netlist_studier the gate-level scope so it can find where to insert the new DFF. If the D-input expression is entirely new with no existing signal reference, leave `nets_to_query` empty for this change — the studier will use the declaring module's gate-level scope directly.
 - For `port_connection`: **skip FM query** — port connections are wiring changes handled by the studier using `flat_net_name` resolved from RTL
 - **Avoid querying flip-flop Q outputs** — focus on driving nets and inputs
 
@@ -425,15 +441,29 @@ Parse each new condition from `context_line` independently (these are the cases 
 3. The final gate of the condition sub-chain produces a 1-bit signal: condition is true or false
 4. The condition value (`<val>`: `1'b0` or `1'b1`) determines what the MUX should output when this condition matches
 
-**Combining all conditions with the old expression:**
+**Combining all conditions with the old expression — MANDATORY:**
 
-The combined logic at the pivot net is a priority MUX: each condition gates the pivot net's value override. The overall gate structure:
-- Highest priority condition first: if true → override to `<val_1>`
-- Next condition: if true (and first was false) → override to `<val_2>`
-- ...
-- Default (all conditions false): pass through the existing pivot net value (`<pivot_net>_orig`)
+The `new_condition_gate_chain` MUST include BOTH the condition logic gates AND the priority combination gates that connect them to the pivot net. Stopping at just the condition outputs is incomplete — without the combination gates, nothing drives the pivot net and the ECO is non-functional.
 
-Implement as a cascaded MUX2 or priority gate chain using the condition outputs and constant values (`1'b0`, `1'b1`) or the pivot net fallback. The last gate in the chain outputs to `<pivot_net>` (restoring the original net name so all downstream cells are unchanged).
+The overall gate structure is a cascaded MUX2 priority chain:
+- Highest priority condition first: if `c_cond_N` is true → output `<val_N>` (constant 1'b0 or 1'b1)
+- Otherwise fall through to next condition
+- Default (all conditions false): pass through `<pivot_net>_orig` (the old expression)
+
+**MANDATORY: include the MUX cascade gates in the chain:**
+
+```
+c_mux1: MUX2 — selects between val_1 (1'b0/1'b1) and pivot_net_orig based on condition 1 output
+c_mux2: MUX2 — selects between val_2 and c_mux1 output based on condition 2 output
+c_mux3: MUX2 — selects between val_3 and c_mux2 output based on condition 3 output
+c_mux4: MUX2 — selects between val_4 and c_mux3 output, outputs to <pivot_net>
+```
+
+The last MUX gate MUST output to `<pivot_net>` (not to a new net) — this restores the original net name so all downstream cells in the existing priority chain are unchanged.
+
+**Note on MUX2 gate type:** Use `gate_function: "MUX2"` in the chain entries. The eco_applier will resolve this to the correct library cell by grepping the PreEco netlist for `MUX2[A-Z0-9]*` cells. Do NOT omit the MUX cascade gates to avoid a generic primitive — the eco_applier fix handles the cell type resolution. A chain without MUX gates is functionally incomplete.
+
+**Constant inputs (`1'b0`, `1'b1`):** Include them directly as inputs in the MUX gate entries. The eco_applier accepts constants in gate port connections (`.I1(1'b0)`).
 
 Record as `new_condition_gate_chain` in the JSON — a flat array of all gates needed:
 
@@ -504,7 +534,12 @@ if not all_inputs_resolvable:
 
 #### E4c — When fallback is not possible
 
-If the new conditions do NOT extend an existing expression (entirely new logic with no old condition preserved), or the condition decomposition failed (E4d), or the expression is an arithmetic/multi-cycle change → set `fallback_strategy: null`. The eco_netlist_studier will mark this as MANUAL_ONLY.
+Set `fallback_strategy: null` when ANY of the following is true:
+- The old always block's default case (`else <target> <= <old_expression>`) is ABSENT from the new RTL — meaning the new RTL replaced the entire expression with new logic that does not preserve the old expression as any branch. There is no pivot net to redirect because the old gate chain no longer drives the register at all.
+- The condition decomposition failed in E4d (arithmetic, function calls, or unsupported operators).
+- The expression is an arithmetic (`+`, `-`, `*`, `/`) or multi-cycle change that cannot be expressed as a gate chain.
+
+When `fallback_strategy: null`, the eco_netlist_studier marks this change as MANUAL_ONLY — an engineer must synthesize the full D-input expression from scratch using synthesis tools.
 
 ### E5 — Record in JSON
 
