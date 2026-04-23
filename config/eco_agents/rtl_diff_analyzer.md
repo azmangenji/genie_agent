@@ -574,9 +574,30 @@ if not all_inputs_resolvable:
 
 **Why use FM instead of setting null:** FM find_equivalent_nets is the authoritative way to map RTL signal names to gate-level net names — it's what Step 2 uses for all other signal resolutions. When synthesis renames a signal to an unpredictable internal name, FM can still find the gate-level equivalent by analyzing the logical cone. Using FM keeps the chain complete and avoids MANUAL_ONLY for signals that synthesis simply renamed.
 
-**Only set `new_condition_gate_chain: null`** when decomposition itself fails (arithmetic operators, function calls, unsupported RTL constructs) — NOT when signals are renamed by synthesis. Renamed signals are handled by FM.
+**CRITICAL — The chain structure MUST be preserved even when inputs have PENDING_FM_RESOLUTION placeholders.**
 
-**If the condition decomposition fails** (arithmetic, function calls, unsupported operators) → set `new_condition_gate_chain: null` and `fallback_strategy: null`. eco_netlist_studier will mark as MANUAL_ONLY.
+The chain is built in two phases:
+1. **First: build the full gate structure** — create all gate entries (seq, gate_function, output_net) from the RTL condition decomposition
+2. **Then: verify inputs** — for each gate input, run V1→V4 checks; unresolvable inputs get `"PENDING_FM_RESOLUTION:<signal>"` as placeholder
+
+**Do NOT skip building the chain because some inputs are pending.** The studier needs the chain structure (which gates exist, in what order, what they output) to apply the ECO. Without the chain structure, there is nothing to substitute FM-resolved names into. Setting `new_condition_gate_chain: null` when inputs are merely pending destroys the structure and forces MANUAL_ONLY even though FM can resolve the inputs.
+
+The output JSON must always contain the chain structure when decomposition succeeded, even if some inputs are pending:
+```json
+"new_condition_gate_chain": [
+  {"seq": "c<N>", "gate_function": "<gate_type>",
+   "inputs": ["PENDING_FM_RESOLUTION:<unresolvable_signal>", "<other_input>"],
+   "output_net": "n_eco_<jira>_c<N>"},
+  {"seq": "c<N+1>", "gate_function": "<gate_type>",
+   "inputs": ["n_eco_<jira>_c<N>", "<resolved_signal>"],
+   "output_net": "n_eco_<jira>_c<N+1>"},
+  ...
+]
+```
+
+**Only set `new_condition_gate_chain: null`** when the decomposition itself failed (arithmetic operators, function calls, unsupported RTL constructs that prevent building the gate structure). Signal name resolution failures (PENDING_FM_RESOLUTION) are NOT a reason to set null.
+
+**If decomposition fails** (arithmetic, function calls) → `new_condition_gate_chain: null`, `fallback_strategy: null`. eco_netlist_studier will mark as MANUAL_ONLY.
 
 #### E4c — When fallback is not possible
 
