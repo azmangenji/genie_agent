@@ -304,9 +304,30 @@ For combinational gate: same structure with `"change_type": "new_logic_gate"`, a
 
 For each `wire_swap` whose `new_token` matches a `new_logic` output net (`n_eco_<jira>_<seq>`), add `"new_logic_dependency": [<seq>]`.
 
-**CRITICAL — Do NOT create a `new_logic_gate` entry for wire_swap changes with `mux_select_polarity_pending: true`:**
+**For wire_swap changes that require a new MUX select gate:**
 
-If a wire_swap change in the RTL diff JSON has `mux_select_polarity_pending: true`, **do not create any `new_logic_gate` entry in Phase 0**. The gate function can only be determined in **Phase 1 Step 4c-POLARITY** by reading the actual PreEco netlist I0/I1 mapping of the target MUX. Any gate function hint in the RTL diff JSON must be ignored for these entries.
+Read `mux_select_gate_function` from the RTL diff JSON for this change:
+
+```python
+change = load_rtl_diff_change_for(wire_swap_target)
+gate_fn = change.get("mux_select_gate_function")  # pre-computed by rtl_diff_analyzer Step D-MUX
+
+if gate_fn is not None:
+    # Gate function is pre-computed — create new_logic_gate entry directly
+    create_new_logic_gate_entry(
+        gate_function=gate_fn,
+        i0_net=change["mux_select_i0_net"],
+        i1_net=change["mux_select_i1_net"],
+        reasoning=change["mux_select_reasoning"]
+    )
+    # Step 4c-POLARITY in Phase 1 is NOT needed — skip it for this entry
+else:
+    # Gate function not resolved by analyzer (MUX cell not found in Step 1)
+    # Do NOT create entry in Phase 0 — let Phase 1 Step 4c-POLARITY determine it
+    pass
+```
+
+**Do NOT derive the gate function from the RTL condition text.** The gate function is always read from `mux_select_gate_function` in the JSON (set by rtl_diff_analyzer Step D-MUX) or deferred to Phase 1 Step 4c-POLARITY if that field is null. Never compute the gate function independently in Phase 0.
 
 The RTL condition text gives the wrong gate function whenever the true-branch maps to I0 (requires NOT(condition), not condition itself). Reading the RTL condition alone → always produces the condition gate (e.g., NAND2) → always wrong when true-branch is on I0.
 
@@ -430,7 +451,9 @@ Repeat forward until `<target_d_net>` reached (UPGRADED) or terminates at unrela
 - UPGRADED: `"in_backward_cone": true`, `"confirmed": true`, `"forward_trace_verified": true`, `"forward_trace_result": "UPGRADED — output reaches <target_register><target_bit> via <hop_chain>"`
 - CONFIRMED EXCLUDED: `"in_backward_cone": false`, `"confirmed": false`, `"forward_trace_verified": true`, `"forward_trace_result": "CONFIRMED EXCLUDED — output feeds <actual_destination>"`
 
-### 4c-POLARITY — MUX Select Pin Polarity Check (MANDATORY when confirmed pin is a select pin)
+### 4c-POLARITY — MUX Select Pin Polarity Check (FALLBACK when `mux_select_gate_function` is null)
+
+**Run this step ONLY when `mux_select_gate_function` in the RTL diff JSON is null** (rtl_diff_analyzer could not find the MUX cell in the PreEco netlist). If `mux_select_gate_function` is already set, use it directly — do NOT re-run this step.
 
 **Purpose:** Prevent using the wrong gate polarity for a MUX select pin, which produces inverted logic and causes FM failure on the target register across all rounds.
 

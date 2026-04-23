@@ -229,16 +229,74 @@ For EACH change, determine which gate-level nets will reveal WHERE to make the E
 **General principles:**
 - For `wire_swap`: query both old_token and new_token — find current driver of old_token and confirm new_token exists in gate level
 
-**Special case — `wire_swap` where `new_token` does not yet exist in the gate-level netlist (requires new gate insertion):**
+**Special case — `wire_swap` where `new_token` does not yet exist in the gate-level netlist (requires new MUX select gate insertion):**
 
-When `new_token` is a net that will be produced by a new gate (not currently present in PreEco), the gate function for that new gate **must NOT be pre-determined here**. The correct gate function depends on the MUX cell's actual I0/I1 port mapping in the PreEco netlist, which can only be read by the eco_netlist_studier in Phase 1 Step 4c-POLARITY.
+When the old_token is an internal wire driving a MUX select pin, and the new_token is a gate output to be inserted, the correct gate function MUST be determined by reading the PreEco Synthesize netlist here in Step 1 — NOT deferred to the studier. This eliminates the persistent failure mode where the studier derives the gate function from the RTL condition text instead of the actual MUX I0/I1 port mapping.
 
-Set `mux_select_polarity_pending: true` in the change JSON entry. This signals to the studier:
-- Do NOT create a `new_logic_gate` entry for this gate in Phase 0
-- The gate function MUST be determined by Step 4c-POLARITY from the PreEco netlist
-- Only the eco_netlist_studier, after reading the MUX I0/I1 connections, can produce the correct gate function
+**Perform the MUX select polarity analysis NOW:**
 
-**Never write a gate function hint** (e.g., `"New Logic Gate: NAND2"`) in the JSON for this case — any hint derived from the RTL condition text alone will be wrong whenever the true-branch maps to I0 (requires NOT(condition), not condition itself).
+**Step D-MUX-1 — Find the MUX cell in the PreEco Synthesize netlist:**
+```bash
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz > /tmp/preeco_study_rtldiff_Synthesize.v
+grep -n "<target_register>_reg\b" /tmp/preeco_study_rtldiff_Synthesize.v | head -5
+```
+Read the target register's `.D` pin net → trace backward to find the MUX cell whose output feeds the D-input chain:
+```bash
+grep -n "\.Z\b\s*(\s*<d_input_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -5
+```
+
+**Step D-MUX-2 — Read the MUX cell's I0 and I1 port connections:**
+```bash
+grep -A8 "<mux_cell_name>" /tmp/preeco_study_rtldiff_Synthesize.v | head -10
+```
+Record: `i0_net = <net_on_I0_pin>`, `i1_net = <net_on_I1_pin>`
+
+**Step D-MUX-3 — Trace I0 and I1 backward one level to identify which RTL branch each carries:**
+```bash
+grep -n "\.Z[N]\?\s*(\s*<i0_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -3
+grep -n "\.Z[N]\?\s*(\s*<i1_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -3
+```
+Match the signal semantics from the RTL `context_line` to determine:
+- Which MUX input (I0 or I1) carries `branch_true` (the value selected when the RTL condition is true)
+
+**Step D-MUX-4 — Compute the required gate function:**
+
+The MUX truth table: S=0 selects I0, S=1 selects I1.
+
+- If `branch_true` → **I1**: S must be 1 when condition is true → **S = condition** → implement condition as a gate
+- If `branch_true` → **I0**: S must be 0 when condition is true → **S = NOT(condition)** → implement NOT(condition) as a gate
+
+Parse the RTL condition from `context_line` (`<condition> ? branch_true : branch_false`).
+Express condition in terms of ECO input signals.
+Map the boolean expression for S to a standard gate using:
+
+| S expression | Gate |
+|-------------|------|
+| `A & B` | AND2 |
+| `~(A & B)` | NAND2 |
+| `A \| B` | OR2 |
+| `~(A \| B)` | NOR2 |
+| `~A` | INV |
+| More inputs | AND3/NAND3/OR3/NOR3/etc. |
+
+**Step D-MUX-5 — Store result in JSON:**
+
+```json
+"mux_select_gate_function": "<AND2|NAND2|OR2|NOR2|...>",
+"mux_select_i0_net": "<net_on_I0_pin>",
+"mux_select_i1_net": "<net_on_I1_pin>",
+"mux_select_branch_true_on": "I0|I1",
+"mux_select_reasoning": "<one sentence: branch_true on I0/I1, S=condition/NOT(condition), gate=result>"
+```
+
+Set `mux_select_polarity_pending: false` — the gate function is fully resolved here.
+
+**Cleanup:**
+```bash
+rm -f /tmp/preeco_study_rtldiff_Synthesize.v
+```
+
+**If the MUX cell cannot be found** (trace fails after 5 hops): set `mux_select_polarity_pending: true` and `mux_select_gate_function: null` — the studier will attempt Step 4c-POLARITY as fallback. Do NOT write any gate function hint based on RTL condition text alone.
 - For `and_term`: query `old_token` (the output net of the existing expression) to find the gate driving it; `new_token` (`flat_net_name` from Step C) already exists in PreEco — confirm with a single grep, no FM query needed
 - For `new_port`: **skip FM query** — new input ports connect to existing nets (resolved as `flat_net_name` in Step C); no gate-level net to find equivalents for
 - For `port_promotion`: **skip FM query entirely** — the net ALREADY EXISTS in the flat PreEco netlist under the signal's original name; `flat_net_exists: true`; the studier will verify existence directly
@@ -402,29 +460,47 @@ Record as `new_condition_gate_chain` in the JSON — a flat array of all gates n
 ]
 ```
 
-**After decomposing all condition gates, verify each input signal:**
+**After decomposing all condition gates, verify each input signal — classify as resolvable or unresolvable:**
 
 For every input net referenced in `new_condition_gate_chain`:
 
 ```python
+all_inputs_resolvable = True
 for gate in new_condition_gate_chain:
     for inp in gate["inputs"]:
         if inp in ("1'b0", "1'b1"):
             continue  # constants — always valid
+
+        # Check 1: exists in SynRtl (PostEco RTL) — will exist in gate-level netlist
         if signal_exists_in_synrtl(inp):
-            continue  # exists in PostEco RTL — will exist in gate-level netlist
-        if inp in [c["new_token"] for c in changes if c["change_type"] == "new_port"]:
-            # Input is a new port being added by this same ECO
-            gate["input_from_change"] = find_change_index(inp)  # RULE 23
-        else:
-            # Signal genuinely missing — chain is invalid
-            gate["decompose_warning"] = f"input '{inp}' not found in RTL or new_port list"
-            # If any gate has this warning → set new_condition_gate_chain: null
+            continue
+
+        # Check 2: is a new_port/new_signal being added by this same ECO (RULE 23)
+        eco_new_ports = [c["new_token"] for c in changes
+                         if c["change_type"] in ("new_port", "new_logic", "port_promotion")]
+        if inp in eco_new_ports or any(inp in str(c.get("context_line","")) for c in changes):
+            # Signal is new but will exist after this ECO is applied
+            change_idx = next((i for i, c in enumerate(changes)
+                               if c.get("new_token") == inp), None)
+            gate["input_from_change"] = change_idx  # RULE 23
+            continue
+
+        # Check 3: exists in PreEco netlist directly
+        if signal_exists_in_preeco_synrtl(inp):
+            continue
+
+        # Signal is unresolvable — partial chain would produce wrong logic
+        gate["decompose_warning"] = f"input '{inp}' unresolvable — not in RTL, new_port list, or PreEco"
+        all_inputs_resolvable = False
+
+if not all_inputs_resolvable:
+    new_condition_gate_chain = null
+    fallback_strategy = null
 ```
 
-If any gate has a missing input that is not a new_port from this ECO → set `new_condition_gate_chain: null` and `fallback_strategy: null`. Do NOT produce a partial chain — a partial chain will produce wrong logic that is harder to debug than a clean MANUAL_ONLY.
+**Only set `new_condition_gate_chain: null` when an input signal is genuinely unresolvable** — not found in SynRtl, not a new_port/new_signal from this ECO, and not in PreEco. Signals that are new ports from this ECO are valid via RULE 23 (`input_from_change`) and must NOT trigger null.
 
-**If the condition decomposition fails** (arithmetic, function calls, unsupported operators, or unresolvable inputs) → set `new_condition_gate_chain: null` and `fallback_strategy: null`. eco_netlist_studier will mark as MANUAL_ONLY.
+**If the condition decomposition fails** (arithmetic, function calls, unsupported operators) → set `new_condition_gate_chain: null` and `fallback_strategy: null`. eco_netlist_studier will mark as MANUAL_ONLY.
 
 #### E4c — When fallback is not possible
 
@@ -462,6 +538,11 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
       "fallback_strategy": null,
       "new_condition_gate_chain": null,
       "mux_select_polarity_pending": false,
+      "mux_select_gate_function": null,
+      "mux_select_i0_net": null,
+      "mux_select_i1_net": null,
+      "mux_select_branch_true_on": null,
+      "mux_select_reasoning": null,
       "has_sync_reset": false,
       "reset_signal": null
     }
