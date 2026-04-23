@@ -228,6 +228,17 @@ For EACH change, determine which gate-level nets will reveal WHERE to make the E
 
 **General principles:**
 - For `wire_swap`: query both old_token and new_token — find current driver of old_token and confirm new_token exists in gate level
+
+**Special case — `wire_swap` where `new_token` does not yet exist in the gate-level netlist (requires new gate insertion):**
+
+When `new_token` is a net that will be produced by a new gate (not currently present in PreEco), the gate function for that new gate **must NOT be pre-determined here**. The correct gate function depends on the MUX cell's actual I0/I1 port mapping in the PreEco netlist, which can only be read by the eco_netlist_studier in Phase 1 Step 4c-POLARITY.
+
+Set `mux_select_polarity_pending: true` in the change JSON entry. This signals to the studier:
+- Do NOT create a `new_logic_gate` entry for this gate in Phase 0
+- The gate function MUST be determined by Step 4c-POLARITY from the PreEco netlist
+- Only the eco_netlist_studier, after reading the MUX I0/I1 connections, can produce the correct gate function
+
+**Never write a gate function hint** (e.g., `"New Logic Gate: NAND2"`) in the JSON for this case — any hint derived from the RTL condition text alone will be wrong whenever the true-branch maps to I0 (requires NOT(condition), not condition itself).
 - For `and_term`: query `old_token` (the output net of the existing expression) to find the gate driving it; `new_token` (`flat_net_name` from Step C) already exists in PreEco — confirm with a single grep, no FM query needed
 - For `new_port`: **skip FM query** — new input ports connect to existing nets (resolved as `flat_net_name` in Step C); no gate-level net to find equivalents for
 - For `port_promotion`: **skip FM query entirely** — the net ALREADY EXISTS in the flat PreEco netlist under the signal's original name; `flat_net_exists: true`; the studier will verify existence directly
@@ -268,9 +279,9 @@ From the `context_line` always block:
 ```
 Example always block (generic):
   if (<rst_signal>) <target_reg> <= 1'b0;
-  else              <target_reg> <= <sig_A> & ~<sig_B> & ((<sig_C>[2:0] == 3'b000) | (<sig_C>[2:0] == 3'b011));
+  else              <target_reg> <= <sig_A> & ~<sig_B> & ((<sig_C>[N:0] == <const_K1>) | (<sig_C>[N:0] == <const_K2>));
 
-D-input expression = ~<rst_signal> & <sig_A> & ~<sig_B> & ((<sig_C>[2:0] == 3'b000) | (<sig_C>[2:0] == 3'b011))
+D-input expression = ~<rst_signal> & <sig_A> & ~<sig_B> & ((<sig_C>[N:0] == <const_K1>) | (<sig_C>[N:0] == <const_K2>))
 ```
 
 ### E2 — Resolve macro constants
@@ -301,11 +312,11 @@ Parse the expression recursively. For each sub-expression, assign a gate type:
 **Assign seq numbers** starting from `d001` per JIRA per DFF target register.
 **Assign names:** `eco_<jira>_d<seq>` for instances, `n_eco_<jira>_d<seq>` for output nets.
 
-**Example decomposition for `~<rst> & <sig_A> & ~<sig_B> & ((<sig_C>[2:0] == 3'b000) | (<sig_C>[2:0] == 3'b011))`:**
+**Example decomposition for `~<rst> & <sig_A> & ~<sig_B> & ((<sig_C>[N:0] == <const_K1>) | (<sig_C>[N:0] == <const_K2>))`:**
 ```
-d001: NOR3(<sig_C>[2], <sig_C>[1], <sig_C>[0])      → <sig_C> == 3'b000
-d002: INV(<sig_C>[2])                                → ~<sig_C>[2]
-d003: AND3(n_d002, <sig_C>[1], <sig_C>[0])           → <sig_C> == 3'b011
+d001: NOR<N+1>(<sig_C>[N], ..., <sig_C>[0])         → <sig_C> == <const_K1>  (all-zero constant: NOR of all bits)
+d002: INV(<sig_C>[i])                                → ~<sig_C>[i]            (bit i of <const_K2> is 0)
+d003: AND<M>(n_d002, <sig_C>[j], ...)               → <sig_C> == <const_K2>  (per-bit AND/INV per E3 table)
 d004: OR2(n_d001, n_d003)                            → comparison result
 d005: INV(<sig_B>)                                   → ~<sig_B>
 d006: INV(<rst>)                                     → ~<rst> (sync reset)
@@ -343,13 +354,85 @@ Add a fenets query on `target_register` (the DFF output Q signal) to `nets_to_qu
 }
 ```
 
+#### E4d — Decompose the new prepended conditions into a gate chain (MANDATORY when E4a succeeds)
+
+When `fallback_strategy: "intermediate_net_insertion"` is set, the new conditions that are prepended before the old expression must be synthesized as a gate chain. The eco_netlist_studier Step 0c-4 Entry B inserts these gates at the pivot net — but it needs a concrete gate chain to insert.
+
+Parse each new condition from `context_line` independently (these are the cases BEFORE the last/default old expression) and decompose each into a sub-gate chain using the same E3 table rules. Assign sequence numbers starting from `c001` (condition gates), separate from the D-input chain `d001` numbering.
+
+**For each new condition `<cond_expr> ? <val> : <next_condition>`:**
+
+1. Decompose `<cond_expr>` into a gate chain using the E3 table (`~A` → INV, `A & B` → AND2, `A | B` → OR2, `A[N:0] == K` → per-bit logic, etc.)
+2. Each gate gets instance name `eco_<jira>_c<seq>` and output net `n_eco_<jira>_c<seq>`
+3. The final gate of the condition sub-chain produces a 1-bit signal: condition is true or false
+4. The condition value (`<val>`: `1'b0` or `1'b1`) determines what the MUX should output when this condition matches
+
+**Combining all conditions with the old expression:**
+
+The combined logic at the pivot net is a priority MUX: each condition gates the pivot net's value override. The overall gate structure:
+- Highest priority condition first: if true → override to `<val_1>`
+- Next condition: if true (and first was false) → override to `<val_2>`
+- ...
+- Default (all conditions false): pass through the existing pivot net value (`<pivot_net>_orig`)
+
+Implement as a cascaded MUX2 or priority gate chain using the condition outputs and constant values (`1'b0`, `1'b1`) or the pivot net fallback. The last gate in the chain outputs to `<pivot_net>` (restoring the original net name so all downstream cells are unchanged).
+
+Record as `new_condition_gate_chain` in the JSON — a flat array of all gates needed:
+
+```json
+"new_condition_gate_chain": [
+  {
+    "seq": "c001",
+    "instance_name": "eco_<jira>_c001",
+    "output_net": "n_eco_<jira>_c001",
+    "gate_function": "<INV|AND2|AND3|OR2|NOR2|NAND2|...>",
+    "inputs": ["<input_net_1>", "<input_net_2>"],
+    "role": "condition_<N>_term_<M>",
+    "input_from_change": null
+  },
+  ...
+  {
+    "seq": "c_mux_final",
+    "instance_name": "eco_<jira>_c_mux_final",
+    "output_net": "<pivot_net>",
+    "gate_function": "MUX2|priority_gate",
+    "inputs": ["<condition_output>", "<pivot_net>_orig", "1'b0|1'b1"],
+    "role": "pivot_net_output"
+  }
+]
+```
+
+**After decomposing all condition gates, verify each input signal:**
+
+For every input net referenced in `new_condition_gate_chain`:
+
+```python
+for gate in new_condition_gate_chain:
+    for inp in gate["inputs"]:
+        if inp in ("1'b0", "1'b1"):
+            continue  # constants — always valid
+        if signal_exists_in_synrtl(inp):
+            continue  # exists in PostEco RTL — will exist in gate-level netlist
+        if inp in [c["new_token"] for c in changes if c["change_type"] == "new_port"]:
+            # Input is a new port being added by this same ECO
+            gate["input_from_change"] = find_change_index(inp)  # RULE 23
+        else:
+            # Signal genuinely missing — chain is invalid
+            gate["decompose_warning"] = f"input '{inp}' not found in RTL or new_port list"
+            # If any gate has this warning → set new_condition_gate_chain: null
+```
+
+If any gate has a missing input that is not a new_port from this ECO → set `new_condition_gate_chain: null` and `fallback_strategy: null`. Do NOT produce a partial chain — a partial chain will produce wrong logic that is harder to debug than a clean MANUAL_ONLY.
+
+**If the condition decomposition fails** (arithmetic, function calls, unsupported operators, or unresolvable inputs) → set `new_condition_gate_chain: null` and `fallback_strategy: null`. eco_netlist_studier will mark as MANUAL_ONLY.
+
 #### E4c — When fallback is not possible
 
-If the new conditions do NOT extend an existing expression (entirely new logic with no old condition preserved), or the expression is an arithmetic/multi-cycle change → set `fallback_strategy: null`. The eco_netlist_studier will mark this as MANUAL_ONLY.
+If the new conditions do NOT extend an existing expression (entirely new logic with no old condition preserved), or the condition decomposition failed (E4d), or the expression is an arithmetic/multi-cycle change → set `fallback_strategy: null`. The eco_netlist_studier will mark this as MANUAL_ONLY.
 
 ### E5 — Record in JSON
 
-Add `d_input_gate_chain`, `d_input_net`, `d_input_decompose_failed`, and `fallback_strategy` to the `new_logic` change entry. Eco_netlist_studier Phase 0 reads this to plan gate insertions (chain or intermediate net).
+Add `d_input_gate_chain`, `d_input_net`, `d_input_decompose_failed`, `fallback_strategy`, and `new_condition_gate_chain` to the `new_logic` change entry. Eco_netlist_studier Phase 0 reads this to plan gate insertions (D-input chain or intermediate net with condition gates).
 
 ---
 
@@ -377,6 +460,8 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
       "d_input_net": null,
       "d_input_decompose_failed": false,
       "fallback_strategy": null,
+      "new_condition_gate_chain": null,
+      "mux_select_polarity_pending": false,
       "has_sync_reset": false,
       "reset_signal": null
     }

@@ -123,19 +123,34 @@ For each failing DFF path:
 
 This single check answers 90% of cases before any netlist tracing.
 
-### Check D — Polarity verification for inserted gate cells
+### Check D — Polarity verification for inserted gate cells (MUX select gates)
 
-For any `new_logic_gate` entries in eco_applied (especially MUX select gates):
+For any `new_logic_gate` entries in eco_applied where the change is a `wire_swap` targeting a MUX select pin:
 
+**Step D1 — Read the inserted gate type from PostEco:**
 ```bash
-# Read the inserted gate from PostEco Synthesize
 zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -A3 "<inst_name>"
 ```
+Extract the cell type (e.g., AND2, NAND2, OR2, NOR2).
 
-Compare the gate type (AND2 vs NAND2, OR2 vs NOR2) against what the RTL diff requires:
-- Read the RTL diff `context_line` for the wire_swap change
-- Verify the gate implements the correct polarity per Step 4c-POLARITY in eco_netlist_studier.md
-- If polarity is wrong → **Mode A (wrong gate function)** — replace with the correct gate type
+**Step D2 — Re-derive the correct gate function from the PreEco netlist (do NOT use RTL diff hint):**
+
+The RTL diff JSON may contain a wrong gate function hint. The correct gate function can only be determined by reading the PreEco netlist I0/I1 port mapping. Re-run the Step 4c-POLARITY algorithm (from eco_netlist_studier.md):
+
+```bash
+# Read the MUX cell's I0 and I1 connections from PreEco Synthesize
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -A6 "<mux_cell_name>"
+```
+
+1. Identify `i0_net` and `i1_net`
+2. Trace which carries `branch_true` (from RTL diff `context_line`)
+3. Apply Steps 4a→4b→4c from eco_netlist_studier.md to compute `correct_gate_function`
+
+**Step D3 — Compare:**
+- If inserted gate type = `correct_gate_function` → polarity is correct → no Mode A from polarity
+- If inserted gate type ≠ `correct_gate_function` → **Mode A (wrong gate function)**:
+  - Set `eco_preeco_study_update: {action: "update_gate_function", instance_name: "<inst_name>", gate_function: "<correct_gate_function>"}`
+  - eco_applier will replace the gate in the next round
 
 ---
 
@@ -297,7 +312,7 @@ Write `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`.
 1. **FM abort first** — if FM didn't run comparison (N/A/ABORTED), the fix is a tool error, not an ECO change. Never propose ECO rewires when FM aborted.
 2. **SKIPPED entries are the first clue** — always check eco_applied for SKIPPED before any cone tracing. A SKIPPED target change is almost always the FM failure cause.
 3. **Cross-reference failing DFF against RTL diff `target_register` immediately** — this single step classifies 90% of cases without netlist tracing.
-4. **Polarity check for inserted gates** — verify AND2 vs NAND2 etc. matches RTL diff context before proposing any new gate.
+4. **Polarity check re-derives from PreEco netlist** — do NOT compare against the RTL diff gate function hint (it may be wrong). Always re-run Step 4c-POLARITY from the actual PreEco MUX I0/I1 connections to determine the correct gate function independently.
 5. **NEVER use `set_dont_verify` as fallback for unknown failures** — only use it for proven Mode E or Mode G. Using it for unclassified failures masks real functional errors.
 6. **eco_preeco_study_update is mandatory for Mode B, D, A** — without updating the study JSON, the next round re-applies the same wrong change.
 7. **Stage-specific analysis** — for stage-to-stage targets (PrePlace-vs-Synth, Route-vs-PrePlace), grep the CORRECT stage's PostEco netlist, not always Synthesize.

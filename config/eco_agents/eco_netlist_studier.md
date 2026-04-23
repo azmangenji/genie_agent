@@ -183,13 +183,69 @@ Run for every `new_logic` change where `d_input_decompose_failed: true` AND `fal
 
 **Step 0c-1 — Find the pivot net** by backward tracing from `target_register.D` (up to 5 hops). Stop at a net with multiple fanout consumers driven by a cell implementing the old expression structure. Multiple fanout identifies the true junction in the priority logic chain.
 
-**Step 0c-2 — Verify pivot net exists in all stages** using Priority 1/2 lookup per stage.
+**Step 0c-2 — Verify pivot net and find driver per stage:**
 
-**Step 0c-3 — Find driver of pivot net:** `grep -n "\.Z[N]\?\s\+(\s\+<pivot_net>\s\+)" /tmp/eco_study_<TAG>_Synthesize.v | head -5` — read its full instantiation block.
+For each stage (Synthesize, PrePlace, Route):
+
+**Step 0c-2a — Try Priority 1 (direct pivot net name):**
+```bash
+grep -cw "<pivot_net>" /tmp/eco_study_<TAG>_<Stage>.v
+```
+If count ≥ 1 → pivot net found. Find its driver: `grep -n "\.Z[N]\?\s\+(\s\+<pivot_net>\s\+)" /tmp/eco_study_<TAG>_<Stage>.v | head -5`
+
+**Step 0c-2b — If not found, try driver cell fallback (MANDATORY for P&R stages):**
+
+P&R tools may rename combinational nets between stages while preserving cell instance names. If the pivot net name is not found in PrePlace or Route:
+1. Take the **driver cell name** found in Synthesize (from Step 0c-2a)
+2. Grep for that same cell name in the P&R stage:
+   ```bash
+   grep -n "<driver_cell_name>" /tmp/eco_study_<TAG>_<Stage>.v | head -5
+   ```
+3. Read the driver cell's output pin to find the pivot net's renamed equivalent in this stage
+4. Use that renamed net as the pivot net for this stage
+
+**Step 0c-2c — If driver cell also not found:**
+- Apply Stage Fallback: use confirmed Synthesize pivot net + driver as reference; mark entries for this stage with `source: "synthesize_fallback"` and proceed with Synthesize net names — eco_applier will attempt the edit and report SKIPPED if the net is genuinely absent
+
+**NEVER mark as MANUAL_ONLY just because the pivot net name changed in a P&R stage.** Instance names are preserved; net names are not. Always try the driver cell lookup before giving up.
+
+**Step 0c-3 — Find driver of pivot net per stage** (already done in Step 0c-2a/2b above — reuse that result).
 
 **Step 0c-4 — Build entries:**
-- **Entry A (rewire):** Redirect driver output from `<pivot_net>` → `<pivot_net>_orig`
-- **Entry B (new_logic_gate chain):** Insert new condition gates; last gate outputs back to `<pivot_net>` so all downstream cells are unchanged. Use `input_from_change` for gate dependencies.
+
+**Entry A (rewire):** Redirect driver output from `<pivot_net>` → `<pivot_net>_orig`
+
+**Entry B (new_logic_gate chain from `new_condition_gate_chain`):**
+
+Read `new_condition_gate_chain` from `eco_rtl_diff.json` for this change. This field contains the pre-decomposed gate chain for the new prepended conditions, produced by rtl_diff_analyzer Step E4d.
+
+```python
+change = load_rtl_diff_change_for(target_register)
+condition_chain = change.get("new_condition_gate_chain")
+
+if condition_chain is None:
+    # rtl_diff_analyzer could not decompose the conditions
+    # → mark as MANUAL_ONLY, skip Entry B
+    create_manual_only_entry(target_register, reason="new_condition_gate_chain not available")
+else:
+    # Use the pre-decomposed gate chain directly
+    for gate in condition_chain:
+        create_new_logic_gate_entry(
+            instance_name=gate["instance_name"],
+            gate_function=gate["gate_function"],
+            inputs=gate["inputs"],
+            output_net=gate["output_net"],
+            input_from_change=gate.get("input_from_change")
+        )
+    # Last gate in chain outputs to <pivot_net> — all downstream cells unchanged
+```
+
+For each gate entry in `new_condition_gate_chain`:
+- Verify input signals exist in the current stage (Priority 1/2 lookup, and RULE 23 for new_port inputs)
+- Apply the same per-stage net verification as Step 0b-STAGE-NETS (P&R tools may rename signal nets)
+- Record with `source: "intermediate_net_fallback"`
+
+**If `new_condition_gate_chain` is null** → mark the target register change as MANUAL_ONLY (rtl_diff_analyzer could not decompose the new conditions — engineer synthesis required).
 
 **Step 0c-5 — Per-stage net verification for each new condition signal:**
 
@@ -247,6 +303,14 @@ For combinational gate: same structure with `"change_type": "new_logic_gate"`, a
 ### 0f — Mark wire_swap entries that depend on new_logic outputs
 
 For each `wire_swap` whose `new_token` matches a `new_logic` output net (`n_eco_<jira>_<seq>`), add `"new_logic_dependency": [<seq>]`.
+
+**CRITICAL — Do NOT create a `new_logic_gate` entry for wire_swap changes with `mux_select_polarity_pending: true`:**
+
+If a wire_swap change in the RTL diff JSON has `mux_select_polarity_pending: true`, **do not create any `new_logic_gate` entry in Phase 0**. The gate function can only be determined in **Phase 1 Step 4c-POLARITY** by reading the actual PreEco netlist I0/I1 mapping of the target MUX. Any gate function hint in the RTL diff JSON must be ignored for these entries.
+
+The RTL condition text gives the wrong gate function whenever the true-branch maps to I0 (requires NOT(condition), not condition itself). Reading the RTL condition alone → always produces the condition gate (e.g., NAND2) → always wrong when true-branch is on I0.
+
+**Any `new_logic_gate` entry for a wire_swap MUX select must be created in Phase 1 Step 4c-POLARITY with the gate_function derived from Steps 4a-4c. If such an entry was already created (e.g., from a previous phase or from the RTL diff hint), override its `gate_function` with the Step 4c-POLARITY result.**
 
 ### 0g — Process `new_port` changes → `port_declaration` study entries
 
@@ -378,24 +442,68 @@ Repeat forward until `<target_d_net>` reached (UPGRADED) or terminates at unrela
 
 **Step 3 — Match RTL branches to MUX inputs:** Trace driver of I0_net and I1_net to determine which carries `branch_true`.
 
-**Step 4 — Determine required polarity:**
+**Step 4 — Compute the gate function for the new select explicitly:**
 
-| RTL branch_true maps to | Required .S | Gate function for new select |
-|------------------------|-------------|------------------------------|
-| `I1_net` | 1 when condition is true | **Non-inverting**: AND2, OR2, etc. |
-| `I0_net` | 0 when condition is true | **Inverting**: NAND2, NOR2, INV, etc. |
+Do NOT use a polarity label (inverting/non-inverting) — derive the gate function directly from the boolean expression.
 
-**Step 5 — Record in study JSON:**
-```json
-"mux_select_polarity": {
-  "i0_net": "<net_on_I0_pin>", "i1_net": "<net_on_I1_pin>",
-  "branch_true_maps_to": "I0|I1",
-  "required_select_polarity": "inverting|non-inverting",
-  "gate_function_for_new_select": "<AND2|NAND2|OR2|NOR2|...>",
-  "reasoning": "<one sentence>"
-}
+**Step 4a — Express the RTL condition in terms of ECO input signals:**
+
+From the RTL diff `context_line`, identify the condition expression: e.g., `~E | ~A` or `E & A` or similar. This is the condition whose truth selects the true-branch.
+
+**Step 4b — Determine what S must equal:**
+
+- If true-branch maps to **I1**: the MUX selects I1 when S=1 → **S must equal the condition** → the gate implements the condition directly
+- If true-branch maps to **I0**: the MUX selects I0 when S=0 → **S must equal NOT(condition)** → the gate implements the logical complement of the condition
+
+**Step 4c — Map the boolean expression for S to a standard gate:**
+
+| Boolean expression for S | Standard gate |
+|--------------------------|---------------|
+| `E & A` | AND2 |
+| `~(E & A)` = `~E \| ~A` | NAND2 |
+| `E \| A` | OR2 |
+| `~(E \| A)` = `~E & ~A` | NOR2 |
+| `~E` | INV |
+| `E` | buffer (or direct wire) |
+| More inputs | AND3, NAND3, OR3, NOR3, etc. |
+
+**Example A (true-branch on I0, condition = `~E \| ~A`):**
+- S = NOT(condition) = NOT(`~E \| ~A`) = `E & A` → **AND2**
+
+**Example B (true-branch on I1, condition = `~E \| ~A`):**
+- S = condition = `~E \| ~A` → **NAND2**
+
+**Example C (true-branch on I0, condition = `E & A`):**
+- S = NOT(condition) = NOT(`E & A`) = `~E \| ~A` → **NAND2**
+
+The same condition expression produces different gates depending on which MUX input carries the true-branch.
+
+> **Critical:** Never read the gate function from the RTL condition text alone without completing Steps 4a-4c. The condition expression and the gate function for S are NOT the same — they are only equal when the true-branch maps to I1. When the true-branch maps to I0, the gate must implement NOT(condition), which is a different gate. Always complete Step 3 (I0/I1 mapping) before Step 4.
+
+**Step 5 — Create or override the `new_logic_gate` entry with the correct gate function:**
+
+This is the authoritative step for determining the MUX select gate. Any gate function set earlier (from Phase 0 or from the RTL diff hint) MUST be overridden here:
+
+```python
+# Find or create the new_logic_gate entry for the MUX select cell
+mux_gate_entry = find_entry(study_json, instance_name="eco_<jira>_mux_sel")
+if mux_gate_entry:
+    # Override — Phase 0 may have created this with wrong gate_function from RTL hint
+    mux_gate_entry["gate_function"] = gate_function_for_new_select  # from Step 4c above
+    mux_gate_entry["mux_select_polarity"] = {
+        "i0_net": "<net_on_I0_pin>",
+        "i1_net": "<net_on_I1_pin>",
+        "branch_true_maps_to": "I0|I1",
+        "s_expression": "condition|NOT(condition)",
+        "gate_function_for_new_select": "<AND2|NAND2|OR2|NOR2|...>",
+        "reasoning": "<derivation: true-branch on I0|I1 → S=condition|NOT(condition) → gate type>"
+    }
+else:
+    # Create new entry
+    create_new_logic_gate_entry(gate_function=gate_function_for_new_select, ...)
 ```
-Also update the associated `new_logic_gate` entry's `gate_function` to match.
+
+**Verify the gate_function in the study JSON matches Step 4c output before proceeding to Step 5 (output count check).** If there is a discrepancy (gate_function still shows the RTL hint value), correct it now.
 
 > **This rule prevents:** Using an inverting gate when a non-inverting gate is required (or vice versa) — the MUX selects the wrong input every cycle and FM fails across all rounds.
 
