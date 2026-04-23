@@ -80,6 +80,7 @@ When invoked with `RE_STUDY_MODE=true`, you are running as `eco_netlist_studier_
 - `FM_ANALYSIS_PATH` — path to `<TAG>_eco_fm_analysis_round<ROUND>.json`
 - `ROUND` — the round that just failed
 - `RE_STUDY_MODE=true`
+- `FENETS_RERUN_PATH` — path to `<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6f-FENETS ran, otherwise null
 
 ### Re-study Step 1 — Read eco_fm_analyzer output
 
@@ -111,7 +112,7 @@ After reading the fm_analysis, check `failure_mode`:
 
 - **re_study_targets is empty AND failure_mode is not ABORT_LINK/A/B/D/UNKNOWN** → Write rpt noting "No re-study targets — study JSON unchanged." Copy. **EXIT.**
 
-Only proceed to Re-study Step 3 for: `ABORT_LINK`, `A`, `B`, `C`, `D`, `UNKNOWN`, or mixed modes with non-empty `re_study_targets`.
+Only proceed to Re-study Step 3 for: `ABORT_LINK`, `A`, `B`, `C`, `D`, `H`, `UNKNOWN`, or mixed modes with non-empty `re_study_targets`.
 
 ### Re-study Step 3 — Handle each failure mode
 
@@ -167,6 +168,109 @@ For each stage-specific entry in `revised_changes`:
    ```
 2. Update the study entry `cell_name` for that specific stage
 3. Re-verify old_net is on the correct pin in that stage
+
+**For `rerun_fenets` actions (condition inputs that were re-queried to FM in Step 6f-FENETS):**
+
+If `FENETS_RERUN_PATH` is non-null, load the rerun JSON:
+```python
+rerun = json.load(open(FENETS_RERUN_PATH))
+# Build resolution map from rerun FM results
+fm_resolution = {
+    r["original_signal"]: r
+    for r in rerun.get("condition_input_resolutions", [])
+    if r.get("resolved_gate_level_net")
+}
+```
+
+For each gate entry in `eco_preeco_study.json` where any input is `PENDING_FM_RESOLUTION:<signal>`:
+```python
+for stage, entries in study.items():
+    if stage == 'summary': continue
+    for entry in entries:
+        for key in ['port_connections', 'port_connections_per_stage']:
+            pcs_map = entry.get(key, {})
+            if key == 'port_connections_per_stage':
+                items = pcs_map.items()
+            else:
+                items = [('all', pcs_map)]
+            for stage_key, pcs in items:
+                for pin, net in list(pcs.items()):
+                    if isinstance(net, str) and net.startswith('PENDING_FM_RESOLUTION:'):
+                        signal = net.split(':', 1)[1]
+                        resolution = fm_resolution.get(signal)
+                        if resolution:
+                            resolved_net = resolution["resolved_gate_level_net"]
+                            if resolution.get("needs_named_wire") or resolution.get("has_direct_driver") is False:
+                                # FM found it but it's only in a hierarchical port bus
+                                pcs[pin] = f"NEEDS_NAMED_WIRE:{resolved_net}"
+                                entry["needs_named_wire"] = True
+                                entry["port_bus_source_net"] = resolved_net
+                            else:
+                                # FM found a properly driven net — use directly
+                                pcs[pin] = resolved_net
+                            entry.setdefault("re_study_note", "")
+                            entry["re_study_note"] += (
+                                f" PENDING_FM_RESOLUTION:{signal} resolved to '{resolved_net}'"
+                                f" (needs_named_wire={resolution.get('needs_named_wire', False)})"
+                            )
+                        # else: still unresolved — leave as PENDING_FM_RESOLUTION
+                        # (will trigger another rerun_fenets if it persists)
+```
+
+After resolving PENDING inputs via rerun FM results, the gate entry is either:
+- **Fully resolved** with a direct driver → ready for eco_applier insertion
+- **Resolved but needs_named_wire** → eco_applier Step 0 handles it (declares named wire, rewires port bus)
+- **Still PENDING** → FM could not find it even with rerun → mark SKIPPED with reason "FM could not resolve after rerun — manual investigation required"
+
+**For `failure_mode: H` (gate input driven only through hierarchical port bus):**
+
+For each `fix_named_wire` entry in `revised_changes`:
+- `gate_instance` — the ECO gate whose input needs the named wire (e.g., `eco_9868_e002`)
+- `input_pin` — which input pin (e.g., `A1`)
+- `source_net` — the net currently in the port bus at that position
+- `stage` — which stage(s) need the fix (usually PrePlace and/or Route, not Synthesize)
+
+**Step H1 — Confirm the structural issue in the failing stage(s):**
+```bash
+for stage in <stages_from_revised_changes>; do
+  echo "=== $stage ==="
+  # Confirm gate instance exists
+  zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep "<gate_instance>" | head -3
+  # Confirm input pin is connected to source_net
+  zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep "<gate_instance>" | grep "<source_net>"
+  # Confirm no direct primitive driver for source_net
+  zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep "\.<pin>( <source_net> )" | grep -v "{" | head -5
+  # Confirm source_net in hierarchical port bus
+  zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep "<source_net>" | grep "{" | head -3
+done
+```
+
+**Step H2 — Update the study JSON for the affected stages:**
+
+Find the gate entry in `eco_preeco_study.json` matching `gate_instance`:
+```python
+for stage in affected_stages:
+    for entry in study[stage]:
+        if entry.get("instance_name") == gate_instance:
+            # Update the input pin to flag it as needing named wire
+            pcs = entry.get("port_connections_per_stage", {}).get(stage, {})
+            pcs[input_pin] = f"NEEDS_NAMED_WIRE:{source_net}"
+            entry.setdefault("port_connections_per_stage", {})[stage] = pcs
+            entry["needs_named_wire"] = True
+            entry["port_bus_source_net"] = source_net
+            entry["re_study_note"] = (
+                f"Mode H: gate input '{source_net}' on pin '{input_pin}' has no direct "
+                f"primitive driver in {stage} — only in hierarchical port bus. "
+                f"Named wire required. eco_applier will declare wire + rewire bus."
+            )
+```
+
+**Step H3 — Verify Synthesize is NOT affected:**
+```bash
+# Confirm source_net has a direct primitive driver in Synthesize
+zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep "\.<pin>( <source_net> )" | grep -v "{" | head -5
+```
+If Synthesize has a direct driver → do NOT set `needs_named_wire` for Synthesize stage. The fix applies only to the P&R stages where the source module is a hard macro.
 
 **For `failure_mode: UNKNOWN` (deep investigation needed):**
 
@@ -376,29 +480,79 @@ For each gate entry in `new_condition_gate_chain`:
 Before iterating over `new_condition_gate_chain`, check if any gate input starts with `"PENDING_FM_RESOLUTION:"`. If so, resolve each pending input using the FM fenets results from Step 2:
 
 ```python
+def needs_named_wire(net_name, stage_lines):
+    """
+    Returns True if this net's only driver is a hierarchical submodule output port bus.
+    Such nets are NOT traceable by FM in P&R stages (hard macro black-boxing) —
+    FM sees them as undriven regardless of what they are actually named.
+
+    A net requires named-wire treatment when ALL of the following hold:
+      1. It has no direct cell driver: no line matches '.<pin>( <net> )' where the
+         calling cell is a primitive (single-instance cell, not a module declaration)
+      2. It IS connected in a module output port bus: a line matches
+         '.<PORT>( {... <net> ...} )' or '.<PORT>( <net> )' inside a hierarchical instance
+
+    This is general — it does not depend on net naming conventions.
+    """
+    import re
+    # Check 1: does any primitive cell directly drive this net as an output?
+    # Output pins are typically: Z, ZN, Q, QN, CO, S, Y — pattern: .<out_pin>( <net> )
+    # A primitive driver line looks like: .ZN( <net> ) with no bus concatenation
+    direct_driver = any(
+        re.search(rf'\.\w+\(\s*{re.escape(net_name)}\s*\)', line)
+        and '{' not in line  # not a bus concat — direct scalar connection
+        and not line.strip().startswith('//')  # not a comment
+        for line in stage_lines
+    )
+    if direct_driver:
+        return False  # net has a direct primitive driver — safe to use as-is
+
+    # Check 2: is the net in a port bus connection of a hierarchical instance?
+    # Port bus pattern: .<PORT>( { ... <net> ... } ) — appears inside a module inst block
+    in_port_bus = any(
+        re.search(rf'\.\w+\s*\(\s*\{{[^}}]*\b{re.escape(net_name)}\b[^}}]*\}}\s*\)', line)
+        or re.search(rf'\.\w+\s*\(\s*{re.escape(net_name)}\s*\)', line)
+        for line in stage_lines
+        if not line.strip().startswith('//')
+    )
+    return in_port_bus  # True → FM cannot trace through the port bus in P&R
+
 # Build resolution map from FM results for condition inputs
 fm_resolution = {}
 for entry in fenets_spec.get("condition_input_resolutions", []):
     original = entry["original_signal"]
-    resolved = entry.get("resolved_gate_level_net")  # FM-returned impl net name
+    resolved = entry.get("resolved_gate_level_net")
     if resolved:
         fm_resolution[original] = resolved
 
 # Substitute pending inputs in the chain
+stage_lines = open(f"/tmp/eco_study_{TAG}_{Stage}.v").readlines()
 for gate in new_condition_gate_chain:
     for idx, inp in enumerate(gate["inputs"]):
         if inp.startswith("PENDING_FM_RESOLUTION:"):
             original_signal = inp.split(":", 1)[1]
             resolved = fm_resolution.get(original_signal)
             if resolved:
-                gate["inputs"][idx] = resolved  # Use FM-resolved gate-level name
+                if needs_named_wire(resolved, stage_lines):
+                    gate["inputs"][idx] = f"NEEDS_NAMED_WIRE:{resolved}"
+                    gate["needs_named_wire"] = True
+                    gate["port_bus_source_net"] = resolved
+                else:
+                    gate["inputs"][idx] = resolved  # direct primitive driver — safe
             else:
-                # FM also could not find this signal — mark gate as SKIPPED
-                gate["confirmed"] = False
-                gate["reason"] = f"FM could not resolve gate-level name for '{original_signal}'"
+                # FM has no result — fall back to netlist search (Check B below)
+                gate["inputs"][idx] = f"PENDING_NETLIST_SEARCH:{original_signal}"
 ```
 
 **Why FM can resolve what text search cannot:** FM find_equivalent_nets analyzes the logical equivalence between RTL and gate-level netlists — it finds the impl net that is logically equivalent to the RTL signal, even when synthesis completely renamed it. This is the same mechanism used to find old_net equivalents for wire_swap changes.
+
+**CRITICAL — Nets driven only through hierarchical submodule output port buses must never be used directly as gate inputs in P&R stages:**
+
+In Synthesize (flat gate-level netlist), FM can trace any net backward through the module hierarchy because all logic is explicitly instantiated. In PrePlace and Route, hierarchical submodules (register files, memory macros, large functional blocks) are treated as **black boxes** by FM — it cannot trace into their internals. A net that is only driven by such a black-boxed module's output port bus will appear **undriven** to FM, causing downstream DFFs to be classified as `DFF0X` (constant 0).
+
+This is detected structurally: if the net has **no direct primitive cell driver** (no `.<Z|ZN|Q|Y>(<net>)` output connection from a leaf cell) and appears **only in a hierarchical module port bus**, FM in P&R cannot see its value.
+
+**The correct fix:** declare a new named wire, explicitly connect it in the hierarchical port bus (replacing the original net at that position), and use the named wire as the gate input. FM now sees the named wire driven by the module port — traceable even through a black box boundary. The eco_applier handles this automatically when `needs_named_wire: true` is set (see eco_applier.md 4c-GATE Step 0).
 
 **Step 0c-5 — Per-stage net verification for each new condition signal:**
 
@@ -419,10 +573,25 @@ if signal_name in new_ports:
 ```
 If the signal is a new_port from this ECO: record `input_from_change` referencing its `port_declaration` change entry. The signal will be present in the PostEco netlist after Pass 2 runs. Do NOT fail or skip — eco_applier handles the ordering because port_declaration (Pass 2) runs before its consumers are wired in.
 
-**Check B — If not a new_port, apply Priority 1/2 lookup per stage:**
-- Priority 1: `grep -cw "<signal>" /tmp/eco_study_<TAG>_<Stage>.v` — if ≥ 1, use directly
+**Check B — If not a new_port (including PENDING_NETLIST_SEARCH fallback), apply Priority 1/2 lookup per stage:**
+
+For inputs that still have `PENDING_NETLIST_SEARCH:<signal>` after the FM step:
+
+- Priority 1: `grep -cw "<signal>" /tmp/eco_study_<TAG>_<Stage>.v` — if ≥ 1, use the net name
 - Priority 2: P&R alias search — `grep -n "<signal_root>" /tmp/eco_study_<TAG>_<Stage>.v | grep -v "^\s*\(wire\|input\|output\|reg\)"` — if alias found, record alias
-- If neither: record SKIPPED with reason "signal not found in PreEco — not a new_port from this ECO"
+- If neither: record SKIPPED with reason "signal not found in PreEco — not a new_port from this ECO and FM had no result"
+
+**CRITICAL — After any Priority 1/2 lookup, apply the `needs_named_wire` check:**
+```python
+if needs_named_wire(found_net, stage_lines):
+    gate["inputs"][idx] = f"NEEDS_NAMED_WIRE:{found_net}"
+    gate["needs_named_wire"] = True
+    gate["port_bus_source_net"] = found_net
+else:
+    gate["inputs"][idx] = found_net  # direct primitive driver — safe to use directly
+```
+
+Apply this check to any net found by any means (FM result, Priority 1 grep, Priority 2 alias). The check is structural — it does not depend on net naming. A net that looks perfectly normal by name can still require named-wire treatment if its only driver is a hierarchical submodule port bus.
 
 > **Why this matters:** New condition gates in the intermediate net insertion chain may depend on signals that are simultaneously being added as new input ports by other changes in the same ECO. These signals do not exist in PreEco by definition — checking only the PreEco netlist without consulting the RTL diff will incorrectly skip the insertion. The port_declaration Pass 2 ensures the signal is declared before the gate chain is wired in the same decompress/recompress cycle.
 

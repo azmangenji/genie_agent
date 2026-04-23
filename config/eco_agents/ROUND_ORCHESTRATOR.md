@@ -12,7 +12,7 @@
 
 ## CRITICAL RULES
 
-1. **You handle ONE round only** — do not loop. After Step 5, spawn the next agent and EXIT.
+1. **You handle ONE round only — ONE FM run only.** Do not loop. After Step 5 completes (whether FM passes or fails), spawn the next agent and EXIT. Never re-run FM within the same ROUND_ORCHESTRATOR instance regardless of the result.
 2. **Read state from disk, not memory** — all inputs come from `ROUND_HANDOFF_PATH` and `_eco_fixer_state`. Do not assume anything from previous context.
 3. **Every step must complete and checkpoint must pass** before proceeding to the next step.
 4. **Email before revert** — Step 6a (email) always runs before Step 6b (revert). Never skip.
@@ -98,6 +98,8 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 - `failure_mode: UNKNOWN` → NOT a reason to stop — eco_fm_analyzer MUST have run Step 3b deep investigation before returning UNKNOWN. If `revised_changes` is non-empty, apply them and continue. If empty, treat same as MAX_ROUNDS.
 - `failure_mode: ABORT_SVF` → NOT a reason to stop — fix SVF issue (set `svf_update_needed=false`), continue to next round
 - `failure_mode: ABORT_LINK` → NOT a reason to stop — `revised_changes` contains `force_port_decl` entries; apply them in Step 6e (`force_reapply: true` in study JSON), continue to next round
+- `failure_mode: H` (hierarchical port bus input) → NOT a reason to stop — `revised_changes` contains `fix_named_wire` entries; eco_netlist_studier_round_N sets `needs_named_wire: true` in study JSON, eco_apply_fix_round_N declares named wire and rewires port bus, continue to next round
+- `needs_rerun_fenets: true` → NOT a reason to stop — Step 6f-FENETS re-queries the missing signals; eco_netlist_studier_round_N resolves PENDING_FM_RESOLUTION inputs from the rerun results; continue to next round
 - `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
 - `failure_mode: E` (pre-existing) → NOT a reason to stop — revised_changes contains `set_dont_verify`; apply and continue
 - `failure_mode: G` (structural stage mismatch) → NOT a reason to stop — revised_changes contains `set_dont_verify` entries for the affected scope. Write these entries to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl` using the eco_svf_updater sub-agent (Step 4b), then set `svf_update_needed=true` for Step 5. Do NOT modify `eco_preeco_study.json` — Mode G failures are suppressed in FM, not fixed by ECO rewiring. Continue to next round.
@@ -140,6 +142,30 @@ Update `eco_fixer_state`:
 
 ---
 
+## STEP 6f-FENETS — Re-run find_equivalent_nets for missing signals (conditional)
+
+**Run this step ONLY if `eco_fm_analysis_round<ROUND>.json` has `"needs_rerun_fenets": true` and a non-empty `rerun_fenets_signals` list.** Skip to Step 6f directly if not needed.
+
+This step submits the condition input signals that were never queried in the original Step 2 run to FM find_equivalent_nets. The results allow eco_netlist_studier_round_N to resolve `PENDING_FM_RESOLUTION` inputs in the gate chain.
+
+**Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_fenets_runner.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
+- `RERUN_MODE=true`
+- `ROUND=<ROUND>` (the round that just failed)
+- `RERUN_SIGNALS=<list from eco_fm_analysis rerun_fenets_signals>`
+- Task: submit missing signals to FM, poll until complete, resolve condition inputs, write rerun rpt + JSON
+
+Wait for sub-agent to complete.
+
+**CHECKPOINT:**
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets_rerun_round<ROUND>.rpt
+```
+Verify JSON contains `condition_input_resolutions` array. Do NOT proceed to Step 6f without this.
+
+---
+
 ## STEP 6f — Re-Study (eco_netlist_studier_round_N)
 
 **ALWAYS spawn eco_netlist_studier in RE_STUDY_MODE regardless of failure mode.** The studier reads the eco_fm_analyzer output, inspects the actual PostEco netlist, and updates `eco_preeco_study.json` with corrected/forced entries. This replaces the previous approach of manually patching the study JSON in ROUND_ORCHESTRATOR.
@@ -149,6 +175,7 @@ Update `eco_fixer_state`:
 - `RE_STUDY_MODE=true`
 - `ROUND=<ROUND>` (the round that just failed — studier reads `<TAG>_eco_fm_analysis_round<ROUND>.json`)
 - `FM_ANALYSIS_PATH=<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
+- `FENETS_RERUN_PATH=<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6f-FENETS ran, otherwise `null`
 - Task: update `eco_preeco_study.json` for failing entries only; write `eco_step3_netlist_study_round<ROUND>.rpt`
 
 Wait for sub-agent to complete.
@@ -234,7 +261,9 @@ Do NOT proceed to Step 4b until the RPT is confirmed in both data/ and AI_ECO_FL
 Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`. Check if `revised_changes` contains any entry with `action: set_dont_verify` (Mode E pre-existing, or Mode G structural mismatch).
 
 If yes — **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_svf_updater.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
+- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `AI_ECO_FLOW_DIR`
+- `ROUND_FAILED=<ROUND>` — the round that just failed (eco_svf_updater reads `eco_fm_analysis_round<ROUND_FAILED>.json` for set_dont_verify commands)
+- `ROUND_NEXT=<NEXT_ROUND>` — used only for output file naming
 - Task: Write `set_dont_verify` / `set_user_match` entries (NEVER `guide_eco_change -type insert_cell`) to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 - Output: `<BASE_DIR>/data/<TAG>_eco_svf_update.json` + `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
 
@@ -248,14 +277,19 @@ If no pre-existing failures requiring suppression: set `svf_update_needed = fals
 
 ## STEP 5 — PostEco Formality Verification
 
+> **HARD RULE: Each ROUND_ORCHESTRATOR instance runs PostEco FM EXACTLY ONCE for its round.**
+> If FM fails after this one run: do NOT re-run FM. Do NOT spawn another eco_fm_runner.
+> Instead: update round_handoff.json → spawn next agent (FINAL_ORCHESTRATOR or new ROUND_ORCHESTRATOR) → EXIT.
+> The next ROUND_ORCHESTRATOR instance will handle the next fix cycle and its own single FM run.
+
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=<NEXT_ROUND>`
-- `ECO_TARGETS=<space-separated failing targets from previous round>` (only failing, not all 3)
+- `ECO_TARGETS=<space-separated failing targets from previous round>` (only failing targets, not all 3)
 - `svf_update_needed=<true|false>` (from Step 4b)
 - Path to existing `data/<TAG>_eco_fm_verify.json` (for merge with previous round results)
 - Task: write FM config, submit FM, block until complete, parse+merge results, write verify JSON + RPT
 
-Wait for the sub-agent to complete.
+Wait for the sub-agent to complete. **Do NOT spawn another eco_fm_runner if results are not what you expected — read them as-is and hand off.**
 
 **CHECKPOINT:** Verify ALL of the following:
 ```bash
@@ -278,6 +312,7 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
   "tile": "<TILE>",
   "jira": "<JIRA>",
   "base_dir": "<BASE_DIR>",
+  "ai_eco_flow_dir": "<AI_ECO_FLOW_DIR>",
   "round": "<NEXT_ROUND>",
   "fenets_tag": "<fenets_tag>",
   "eco_fm_tag": "<new eco_fm_tag>",
@@ -285,6 +320,8 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
   "status": "<FM_PASSED|FM_FAILED|MAX_ROUNDS>"
 }
 ```
+
+**CRITICAL: `ai_eco_flow_dir` MUST be in every round_handoff.json.** Every subsequent ROUND_ORCHESTRATOR and FINAL_ORCHESTRATOR reads `ai_eco_flow_dir` from this file. If it is missing, all file copies to AI_ECO_FLOW_DIR will fail in subsequent rounds. The value never changes across rounds — always `<REF_DIR>/AI_ECO_FLOW_<TAG>`.
 
 ### If FM RESULT = PASS
 
@@ -302,6 +339,7 @@ Update `eco_fixer_state.fm_results_per_round` with this round's result.
 **Spawn ROUND_ORCHESTRATOR agent** (fresh instance) with `config/eco_agents/ROUND_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
+- `AI_ECO_FLOW_DIR`: `<AI_ECO_FLOW_DIR>` (pass explicitly so the new instance has it without needing to read handoff first)
 
 **Then EXIT — your work is done.**
 
@@ -324,6 +362,8 @@ Update handoff: `"status": "MAX_ROUNDS"`
 |------|-----------|---------|
 | `data/<TAG>_eco_report_round<ROUND>.html` | ROUND_ORCHESTRATOR (Step 6a) | Per-round HTML summary before revert |
 | `data/<TAG>_eco_fm_analysis_round<ROUND>.json` | eco_fm_analyzer (Step 6d) | FM failure diagnosis + revised_changes |
+| `data/<TAG>_eco_fenets_rerun_round<ROUND>.json` | eco_fenets_runner RERUN_MODE (Step 6f-FENETS) | condition_input_resolutions from re-queried signals |
+| `data/<TAG>_eco_step2_fenets_rerun_round<ROUND>.rpt` | eco_fenets_runner RERUN_MODE (Step 6f-FENETS) | Per-signal FM results from rerun |
 | `data/<TAG>_eco_step3_netlist_study_round<ROUND>.rpt` | eco_netlist_studier_round_N (Step 6f) | What was re-studied, what was updated in study JSON |
 | `data/<TAG>_eco_preeco_study.json` | eco_netlist_studier_round_N (Step 6f) | Updated study — force_reapply flags, corrected nets |
 | `data/<TAG>_eco_fixer_state` | ROUND_ORCHESTRATOR (Step 6e) | Incremented round + strategies_tried |

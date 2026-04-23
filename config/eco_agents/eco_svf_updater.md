@@ -50,7 +50,9 @@ For `FmEqvEcoPrePlaceVsEcoSynthesize` and `FmEqvEcoRouteVsEcoPrePlace` (gate-to-
 
 Only run when the ORCHESTRATOR or ROUND_ORCHESTRATOR spawns you with specific pre-existing failure points to suppress. You are spawned from Step 4b, which runs AFTER Step 5 FM results are already available from a previous round. You are never spawned in the first round's Step 4b (because no FM results exist yet in round 1) — in round 1, Step 4b is skipped.
 
-In rounds 2+, the ROUND_ORCHESTRATOR spawns you when `eco_fm_analyzer` produced `revised_changes` entries with `action: set_dont_verify` (Mode E or Mode G). The specific failing points to suppress are passed to you via the `eco_fm_analysis_round<ROUND>.json` file.
+In rounds 2+, the ROUND_ORCHESTRATOR spawns you when `eco_fm_analyzer` produced `revised_changes` entries with `action: set_dont_verify` (Mode E or Mode G). The specific failing points to suppress are passed via the `eco_fm_analysis_round<ROUND_FAILED>.json` file.
+
+**Input variables:** `ROUND_FAILED` = the round that just failed (whose analysis file you read); `ROUND_NEXT` = the next round being set up (used only for output naming). Do NOT confuse these — always read `eco_fm_analysis_round<ROUND_FAILED>.json`, not `eco_fm_analysis_round<ROUND_NEXT>.json`.
 
 | Trigger condition | Action |
 |-----------------|--------|
@@ -64,7 +66,7 @@ Do NOT check `eco_fm_verify.json` to classify failures yourself — the eco_fm_a
 
 ## STEP 1 — Read Entries from eco_fm_analyzer Output
 
-Read `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`. Extract all entries from `revised_changes` where `action` is `"set_dont_verify"` or `"set_user_match"`. These are the ONLY entries you will act on.
+Read `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND_FAILED>.json`. Extract all entries from `revised_changes` where `action` is `"set_dont_verify"` or `"set_user_match"`. These are the ONLY entries you will act on.
 
 Do NOT re-read `eco_fm_verify.json` to re-classify failures — the eco_fm_analyzer has already done this classification and its `revised_changes` entries are authoritative. Re-classifying from raw FM output risks contradicting the analyzer's diagnosis.
 

@@ -145,6 +145,61 @@ Also read `eco_fixer_state` for `fm_results_per_round` — ALL previous rounds' 
 
 **Run these checks IN ORDER before any mode classification. Each check may immediately identify the root cause.**
 
+### Check F — Unresolved condition inputs (MANDATORY FIRST — before Checks A–E)
+
+**This check runs before all others** because unresolved condition inputs contaminate the entire gate chain and produce misleading failures (DFF0X, non-equivalent points) that would otherwise appear as Mode A or Mode H without the true upstream cause being obvious.
+
+```python
+import json
+
+# Load RTL diff and study JSON
+rtl_diff = json.load(open('<BASE_DIR>/data/<TAG>_eco_rtl_diff.json'))
+study    = json.load(open('<BASE_DIR>/data/<TAG>_eco_preeco_study.json'))
+fenets_rpt = open('<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt').read()
+
+unresolved = []
+
+# 1. Find all condition_inputs_to_query across all changes
+for change in rtl_diff.get('changes', []):
+    for ci in change.get('condition_inputs_to_query', []):
+        signal = ci['signal']
+        scope  = ci['scope']
+        # 2. Was this signal submitted to FM? Check if it appears in the fenets RPT
+        if signal not in fenets_rpt:
+            unresolved.append({'signal': signal, 'scope': scope,
+                               'change_type': change.get('change_type'),
+                               'new_token': change.get('new_token')})
+
+# 3. Also scan study JSON for PENDING_FM_RESOLUTION or NEEDS_NAMED_WIRE flags
+#    that trace back to unresolved condition inputs (not just hierarchical port bus)
+for stage, entries in study.items():
+    if stage == 'summary': continue
+    for e in entries:
+        for pcs in [e.get('port_connections', {}),
+                    *e.get('port_connections_per_stage', {}).values()]:
+            for pin, net in pcs.items():
+                if isinstance(net, str) and net.startswith('PENDING_FM_RESOLUTION:'):
+                    sig = net.split(':', 1)[1]
+                    if not any(u['signal'] == sig for u in unresolved):
+                        unresolved.append({'signal': sig, 'scope': '?',
+                                           'source': 'study_json_pending'})
+
+if unresolved:
+    print('UNRESOLVED condition inputs found — these need FM find_equivalent_nets:')
+    for u in unresolved:
+        print(f"  signal={u['signal']}  scope={u['scope']}")
+```
+
+**If any unresolved condition inputs are found:**
+- These signals were never submitted to FM (Step D-POST in rtl_diff_analyzer was missed or incomplete)
+- Their gate chains contain `PENDING_FM_RESOLUTION` or wrongly-resolved inputs
+- All downstream failures (DFF0X, non-equivalent DFFs) trace back to this root cause
+- Add to `revised_changes`: `action: "rerun_fenets"` for each unresolved signal
+- Set `needs_re_study: true` — after fenets completes, eco_netlist_studier_round_N must re-resolve those inputs
+- Also classify any resulting DFF0X failures as **Mode H** (hierarchical port bus) or **Mode A** depending on what FM returns
+
+**Do NOT skip this check.** An unresolved condition input is invisible at the FM-failure level — it manifests as DFF0X or non-equivalent which look like Mode A or H without this upstream root cause being apparent.
+
 ### Check A — eco_applied SKIPPED entries
 
 ```bash
@@ -209,6 +264,49 @@ For each failing DFF path:
 
 This single check answers 90% of cases before any netlist tracing.
 
+### Check E — DFF0X classification on ECO-inserted DFFs
+
+**Trigger:** Any failing DFF that FM classifies as `DFF0X` or `DFF0` (constant 0 or constrained 0) AND the DFF instance name matches an ECO-inserted DFF (`eco_<jira>_xxx` pattern).
+
+A `DFF0X` on an ECO-inserted DFF means FM cannot determine that the DFF's D input is non-constant. This is always a flow problem, not a real design problem — the DFF was just inserted so it cannot pre-exist as a constant.
+
+**Step E1 — Read the DFF D-input chain from PostEco for the FAILING stage:**
+```bash
+# Use the failing stage (not Synthesize unless Synthesize is the failing target)
+zcat <REF_DIR>/data/PostEco/<FailingStage>.v.gz | grep -A4 "<dff_instance_name>"
+# Find D-pin net: .D( <d_net> )
+```
+
+**Step E2 — Trace the D-input gate by gate until the root cause is found:**
+
+For each gate in the chain (e.g., eco_<jira>_e002):
+```bash
+zcat <REF_DIR>/data/PostEco/<FailingStage>.v.gz | grep "<gate_instance>" | head -3
+# Read all input nets (.A1, .A2, .I, etc.)
+```
+
+For each input net found, apply the structural driver check:
+
+```bash
+# Check 1: does any primitive cell directly drive this net as an output?
+grep -n "\.<pin>( <input_net> )" /tmp/eco_study_<TAG>_<FailingStage>.v | grep -v "^\s*//" | head -5
+# A direct primitive driver looks like: .Z( net ) or .ZN( net ) or .Q( net )
+# with no bus concatenation { } on the same line
+
+# Check 2: is the net only in a hierarchical port bus output?
+grep -n "\.<PORT>.*{.*<input_net>.*}" /tmp/eco_study_<TAG>_<FailingStage>.v | head -5
+```
+
+**If Check 1 finds a direct primitive driver** → the net IS properly driven → DFF0X cause is elsewhere → continue tracing.
+
+**If Check 1 finds NO direct primitive driver AND Check 2 finds the net in a hierarchical port bus** → **Mode H**: the gate input is driven only through a hierarchical submodule output port bus. FM black-boxes this submodule in P&R stages and cannot trace the net's value → FM classifies downstream DFFs as DFF0X.
+
+**Step E3 — Verify the same net in Synthesize (comparison point):**
+```bash
+zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -n "\.<pin>( <input_net> )" | head -5
+```
+If Synthesize has a direct primitive driver but the failing P&R stage does not → confirms Mode H: FM can trace in Synthesize (flat/synthesized module) but not in P&R (hard macro).
+
 ### Check D — Polarity verification for inserted gate cells (MUX select gates)
 
 For any `new_logic_gate` entries in eco_applied where the change is a `wire_swap` targeting a MUX select pin:
@@ -246,16 +344,17 @@ Use the results from Step 2 checks to classify:
 
 | Step 2 result | Mode | Action |
 |---------------|------|--------|
-| FM aborted (Step 0) | ABORT_SVF or ABORT_NETLIST | Fix tool error; do NOT propose ECO rewire |
+| FM aborted (Step 0) | ABORT_SVF, ABORT_LINK, or ABORT_NETLIST | Fix tool/structure error; do NOT propose ECO rewire |
 | SKIPPED entries found (Check A) | A | Re-apply the skipped change with corrected approach |
 | VERIFY_FAILED entries (Check B) | A | Debug why verify failed; re-apply |
 | Failing DFF = RTL target register (Check C) | A or C | ECO for that register didn't work |
 | Failing DFF ≠ any RTL target (Check C) | B or E | Wrong cell rewired OR pre-existing |
 | Gate polarity wrong (Check D) | A | Replace gate with correct type |
+| ECO-inserted DFF is DFF0X AND gate input has no direct primitive driver (Check E) | H | Gate input driven only through hierarchical port bus — needs named wire |
 | Mode F condition (d_input_decompose_failed) | F | Manual only — report; do not retry |
 | `FmEqvEcoRouteVsEcoPrePlace` PASS (0 failures) AND `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL count ≥ 10 AND none of the failing DFFs are the RTL diff `target_register` (Check C) | G | Structural HFS mismatch — set_dont_verify on the common scope |
 
-**Multiple modes can coexist** — if some failing points are Mode A and others are Mode F, classify each separately.
+**Multiple modes can coexist** — classify each failing point independently. A single ECO can have Mode H (DFF0X) on one DFF and Mode A (port missing) on another — both get separate revised_changes entries and are fixed in the same round.
 
 ### Mode A — ECO change not correctly applied to the target register
 
@@ -348,6 +447,36 @@ Check `fallback_strategy` in `eco_rtl_diff.json` before classifying:
 
 See detailed description in Modes section above. Apply `set_dont_verify` scoped to common hierarchy prefix.
 
+### Mode H — Gate input driven only through hierarchical submodule output port bus
+
+**Diagnosis:** An ECO-inserted DFF is classified as `DFF0X` or `DFF0` by FM in one or more P&R stages (PrePlace, Route), while the same DFF is non-constant in Synthesize. Check E confirmed that the DFF's D-input chain contains a gate whose input net has no direct primitive cell driver — it is only connected through a hierarchical submodule's output port bus.
+
+**Why this fails specifically in P&R stages:** FM black-boxes hierarchical submodules (register files, macros, large blocks) in P&R stages. It cannot trace through the black-boxed port bus to determine whether the output is driven or constant. The net appears undriven → downstream DFFs are DFF0X.
+
+**Why Synthesize passes:** In the Synthesize stage, the same submodule is a fully synthesized flat module — FM can trace through all internal DFF Q outputs. The net appears non-constant → no DFF0X.
+
+**Fix:** Declare a new named wire, replace the source net in the hierarchical port bus with the named wire, and use the named wire as the gate input. FM can trace the named wire through the port bus even when the source module is black-boxed. This is the structural equivalent of what eco_netlist_studier should have set `needs_named_wire: true` for initially.
+
+**Produce revised_changes entry:**
+```json
+{
+  "stage": "PrePlace|Route|ALL",
+  "action": "fix_named_wire",
+  "gate_instance": "<eco_jira_seq>",
+  "input_pin": "<A1|A2|I|...>",
+  "source_net": "<the_net_currently_in_port_bus>",
+  "rationale": "Gate input '<source_net>' has no direct primitive driver in <Stage> — only connected through hierarchical port bus of <submodule_instance>. FM black-boxes this submodule in P&R → DFF0X. Named wire needed.",
+  "eco_preeco_study_update": {
+    "action": "set_needs_named_wire",
+    "gate_instance": "<eco_jira_seq>",
+    "input_pin": "<A1|A2|I|...>",
+    "source_net": "<the_net_currently_in_port_bus>"
+  }
+}
+```
+
+**Which stages to flag:** Apply to ALL stages where the DFF is DFF0X. If Synthesize passes (DFF is non-constant), Mode H applies only to the failing P&R stages — do NOT flag Synthesize.
+
 ---
 
 ## STEP 3b — Deep Netlist Investigation (when cause is unclear after Steps 1–3)
@@ -437,7 +566,7 @@ If `needs_re_study: true` → ROUND_ORCHESTRATOR will re-run eco_netlist_studier
 ```json
 {
   "round": <ROUND>,
-  "failure_mode": "ABORT_SVF|ABORT_LINK|ABORT_NETLIST|A|B|C|D|E|F|G|UNKNOWN",
+  "failure_mode": "ABORT_SVF|ABORT_LINK|ABORT_NETLIST|A|B|C|D|E|F|G|H|UNKNOWN",
   "diagnosis": "<specific — which DFF, which port, which net, which check found it, what was checked in investigation 3b>",
   "failing_points_count": {
     "FmEqvEcoSynthesizeVsSynRtl": <N>,
@@ -447,6 +576,8 @@ If `needs_re_study: true` → ROUND_ORCHESTRATOR will re-run eco_netlist_studier
   "wrong_cells": ["<cell_name_if_mode_B>"],
   "needs_re_study": false,
   "re_study_targets": [],
+  "needs_rerun_fenets": false,
+  "rerun_fenets_signals": [],
   "revised_changes": [
     {
       "stage": "Synthesize|PrePlace|Route|ALL",
@@ -460,7 +591,7 @@ If `needs_re_study: true` → ROUND_ORCHESTRATOR will re-run eco_netlist_studier
       "declaration_type": "input|output",
       "rationale": "<which DFF/port this affects, why this specific change fixes it, what evidence was found>",
       "eco_preeco_study_update": {
-        "action": "mark_excluded|update_net|add_entry|mark_confirmed|force_reapply_port_decl",
+        "action": "mark_excluded|update_net|add_entry|mark_confirmed|force_reapply_port_decl|set_needs_named_wire",
         "entry_key": "<cell_name_or_change_type>",
         "field": "<field_to_update>",
         "value": "<new_value>"
@@ -482,6 +613,9 @@ If `needs_re_study: true` → ROUND_ORCHESTRATOR will re-run eco_netlist_studier
 - `revert_and_rewire` — previous rewire was wrong; apply corrected version
 - `exclude` — do NOT touch this cell again (Mode B wrong cell)
 - `set_dont_verify` — Mode E (pre-existing, proven) or Mode G (structural mismatch)
+- `force_port_decl` — Mode ABORT_LINK; port declaration was falsely ALREADY_APPLIED, force re-apply
+- `fix_named_wire` — Mode H; gate input driven only through hierarchical port bus, needs named wire
+- `rerun_fenets` — Check F; condition input signal was never FM-queried; must submit to find_equivalent_nets before re-study
 - `manual_only` — Mode F; cannot be automated
 
 ---

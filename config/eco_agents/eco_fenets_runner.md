@@ -214,3 +214,96 @@ If any is missing — copy before exiting.
 The ORCHESTRATOR reads `eco_step2_fenets.rpt` to extract SPEC_SOURCES and passes them to the Step 3 agent. **Do NOT write any JSON — ORCHESTRATOR reads the RPT directly.**
 
 **Exit after all files are verified on disk.**
+
+---
+
+## RERUN_MODE — Targeted Re-query for Missing Condition Input Signals
+
+When invoked with `RERUN_MODE=true`, you are running as part of a fix round (not the initial Step 2). The eco_fm_analyzer detected that one or more condition input signals were never submitted to FM find_equivalent_nets. Your job is to query those specific signals now and write the results so eco_netlist_studier_round_N can use them.
+
+**Additional inputs in RERUN_MODE:**
+- `RERUN_MODE=true`
+- `ROUND` — the current fix round
+- `RERUN_SIGNALS` — list of `{signal, scope, net_path}` entries from eco_fm_analysis `rerun_fenets_signals`
+
+### RERUN Step A — Build net list from rerun_fenets_signals
+
+```python
+rerun_signals = [...]  # from eco_fm_analysis rerun_fenets_signals list
+nets_to_query = []
+for s in rerun_signals:
+    nets_to_query.append({
+        "net_path": s["net_path"],   # e.g., "FEI/SDPINTF/REG_UmcCfgEco_1_"
+        "hierarchy": s["scope"].split("/"),
+        "is_condition_input_resolution": True,
+        "original_signal": s["signal"]
+    })
+```
+
+Do NOT re-query nets from the original Step 2 run. Only submit the signals listed in `rerun_fenets_signals`.
+
+### RERUN Step B — Submit, poll, write rpt (same blocking pattern as STEP B)
+
+Submit exactly as Step B but with only the rerun nets:
+```bash
+cd <BASE_DIR>
+python3 script/genie_cli.py \
+  -i "find equivalent nets at <REF_DIR> for <TILE> netName:<net1>,<net2>,..." \
+  --execute --xterm
+```
+
+Poll every 5 minutes. Write raw rpt with naming:
+```
+<rerun_fenets_tag>_find_equivalent_nets_raw_rerun_round<ROUND>.rpt
+```
+Copy to `AI_ECO_FLOW_DIR/`. Verify copy.
+
+### RERUN Step C — Parse and resolve condition inputs
+
+For each signal in rerun_signals, parse the FM spec (same as Step C2):
+1. Find the `(+)` impl nets for this signal in the correct hierarchy scope
+2. Select the best matching impl net — prefer nets with a direct primitive driver (check structural driver: `grep -n "\.<pin>( <net> )" netlist | grep -v "{"`) over nets only in port buses
+3. Record resolution:
+
+```python
+condition_input_resolutions = []
+for s in rerun_signals:
+    impl_nets = parse_fm_results(spec_file, signal_path=s["net_path"])
+    positive_nets = [n for n in impl_nets if n["polarity"] == "(+)"]
+    # Prefer nets with direct primitive driver over port-bus-only nets
+    direct_driven = [n for n in positive_nets if has_direct_driver(n["path"])]
+    chosen = direct_driven[0] if direct_driven else (positive_nets[0] if positive_nets else None)
+    condition_input_resolutions.append({
+        "original_signal": s["signal"],
+        "resolved_gate_level_net": extract_net_name(chosen["path"]) if chosen else None,
+        "has_direct_driver": bool(direct_driven),
+        "needs_named_wire": not bool(direct_driven) and bool(positive_nets)
+    })
+```
+
+### RERUN Step D — Write output
+
+Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets_rerun_round<ROUND>.rpt`:
+- List each queried signal, FM result, resolved net name
+- Include `condition_input_resolutions` section with same format as Step C2
+- Note `needs_named_wire: true` for any signal where FM only found port-bus-driven nets
+
+```
+CONDITION_INPUT_RESOLUTIONS (Round <ROUND> Rerun):
+  <signal>: resolved=<net_name>  has_direct_driver=<true|false>  needs_named_wire=<true|false>
+```
+
+Copy to `AI_ECO_FLOW_DIR/`. Verify copy.
+
+Write `<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json`:
+```json
+{
+  "round": <ROUND>,
+  "rerun_fenets_tag": "<rerun_fenets_tag>",
+  "condition_input_resolutions": [...]
+}
+```
+
+**eco_netlist_studier_round_N reads this JSON to resolve PENDING_FM_RESOLUTION inputs in Re-study Step 3-FENETS.**
+
+**Exit after all files verified on disk.**

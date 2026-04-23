@@ -56,15 +56,106 @@ cp <REF_DIR>/data/PostEco/<Stage>.v.gz \
 
 Example: `Synthesize.v.gz.bak_<TAG>_round1`, `Synthesize.v.gz.bak_<TAG>_round2`
 
-### Step 3 — Decompress (once per stage)
+### Step 3 — Module-grouped decompress strategy
 
-```bash
-zcat <REF_DIR>/data/PostEco/<Stage>.v.gz > /tmp/eco_apply_<TAG>_<Stage>.v
+PostEco netlists for P&R stages are large (often hundreds of MB decompressed). Working on the full file with sequential line-based edits causes:
+- **False positives** from grep matching the same signal in other modules
+- **Stale line numbers** — each edit shifts all subsequent line numbers
+- **Missed changes** — edits silently applied to the wrong module scope
+
+**Use the module-extraction approach instead of full-file sequential edits:**
+
+```python
+import gzip, re, os
+
+stage_file = f"<REF_DIR>/data/PostEco/{Stage}.v.gz"
+tmp_file   = f"/tmp/eco_apply_{TAG}_{Stage}.v"
+
+# Step 3a — Group all confirmed changes by module_name
+# This determines which modules need extraction
+from collections import defaultdict
+changes_by_module = defaultdict(list)
+for entry in stage_array:
+    if entry.get("confirmed"):
+        mod = entry.get("module_name") or entry.get("instance_scope","").split("/")[0]
+        changes_by_module[mod].append(entry)
+
+# Step 3b — Stream through the compressed file module by module
+# Extract each target module, apply ALL its changes, patch back inline
+# For modules with no changes: copy through unchanged (streaming, no load)
+
+with gzip.open(stage_file, 'rt') as f_in, \
+     open(tmp_file, 'w') as f_out:
+
+    current_module = None
+    module_lines   = []
+    in_target      = False
+
+    for line in f_in:
+        # Detect module start
+        m = re.match(r'^module\s+(\S+)[\s(]', line)
+        if m:
+            current_module = m.group(1).rstrip('(').strip()
+            in_target = current_module in changes_by_module
+            module_lines = [line] if in_target else []
+            if not in_target:
+                f_out.write(line)
+            continue
+
+        # Detect module end
+        if line.strip().split('//')[0].strip() == 'endmodule':
+            if in_target:
+                module_lines.append(line)
+                # Apply ALL changes for this module on the isolated buffer
+                edited = apply_all_changes_to_module(
+                    module_lines,
+                    changes_by_module[current_module],
+                    current_module
+                )
+                f_out.writelines(edited)
+                module_lines = []
+                in_target = False
+            else:
+                f_out.write(line)
+            current_module = None
+            continue
+
+        # Accumulate or pass through
+        if in_target:
+            module_lines.append(line)
+        else:
+            f_out.write(line)
 ```
 
-### Step 4 — Process each confirmed cell (loop over stage array)
+**`apply_all_changes_to_module(lines, changes, module_name)`** applies all change types (port_decl, port_conn, new_logic gate/DFF, rewire, named_wire) in the correct Pass order (1→2→3→4) on the isolated module line list. Since the module is isolated, line numbers are stable throughout all changes for that module.
 
-For each entry in the stage array where `"confirmed": true`, perform steps 4a–4e on the **same temp file**:
+**Why this is better:**
+- Each module is processed as a self-contained unit — no cross-module contamination
+- All changes for a module apply to a stable, small line buffer (not the 500k-line file)
+- Modules with no changes are streamed through without loading into memory
+- Grep and line-number tracking are accurate because the scope is bounded
+
+**For FLAT netlists** (single module — `grep -c "^module " netlist = 1`): the entire file IS one module — fall back to full-file load since there is no streaming advantage.
+
+```python
+# Flat netlist fallback
+if netlist_type == "flat":
+    with open(tmp_file, 'w') as f:
+        f.write(gzip.open(stage_file, 'rt').read())
+    # Apply all changes sequentially on the full file
+```
+
+### Step 4 — Process each confirmed change within `apply_all_changes_to_module`
+
+Process changes IN PASS ORDER within the isolated module buffer. Pass order is critical — port declarations must exist before port connections reference them, and new_logic cells must exist before rewires reference their outputs.
+
+**Pass order within each module:**
+1. Pass 1 — new_logic insertions (new_logic_gate, new_logic_dff, new_logic — insert cells)
+2. Pass 2 — port_declaration changes (port list + direction declaration)
+3. Pass 3 — port_connection changes (add connections to submodule instances)
+4. Pass 4 — rewire changes (change net on existing cell pin)
+
+For each entry in the stage array where `"confirmed": true` (already grouped by module), perform steps 4a–4e on the **isolated module line buffer**:
 
 #### 4a — Detect change type
 
@@ -291,6 +382,58 @@ Record: `status=INSERTED`, `change_type=new_logic_dff`, `instance_name`, `inv_in
 
 For entries with `change_type: "new_logic_gate"` from the PreEco study JSON:
 
+**Step 0 — Handle `needs_named_wire` inputs BEFORE any other steps:**
+
+If any input in `port_connections` starts with `NEEDS_NAMED_WIRE:`, resolve it first. This flag means the eco_netlist_studier determined the net has no direct primitive cell driver — its only driver is a hierarchical submodule output port bus. FM in P&R stages black-boxes hierarchical submodules and cannot trace the net's value through the port bus, causing downstream DFFs to be classified as `DFF0X`. A proper named wire must be declared and the source bus explicitly rewired so FM can see the connection.
+
+For each `NEEDS_NAMED_WIRE:<source_net>` input:
+
+```python
+source_net = input_value.split(":", 1)[1]   # the net currently in the port bus
+named_wire = f"eco_{JIRA}_{signal_alias}"   # new wire name — descriptive, unique within module
+```
+
+**Sub-step A — Declare the named wire in the module body:**
+```python
+# Find module scope (mod_idx to endmodule_idx)
+# Insert wire declaration after the last existing wire declaration in scope
+lines.insert(wire_insert_idx, f"  wire {named_wire} ;\n")
+```
+
+**Sub-step B — Find the source port bus and rewire it:**
+
+Find which hierarchical instance drives `source_net` in its output port bus:
+```bash
+grep -n "\b<source_net>\b" /tmp/eco_apply_<TAG>_<Stage>.v | head -5
+```
+
+The result will show a port connection on a hierarchical instance:
+```verilog
+.SomeOutputPort( { ..., <source_net>, ... } )
+```
+
+Replace `<source_net>` with `<named_wire>` at that exact position (scoped to the instance block — do NOT global replace):
+```python
+lines[bus_line_idx] = lines[bus_line_idx].replace(
+    f" {source_net} ", f" {named_wire} ", 1  # replace exactly once in the bus
+)
+```
+
+**Sub-step C — Update the gate input:**
+```python
+port_connections[input_pin] = named_wire  # use the new named wire
+```
+
+**Sub-step D — Verify both changes:**
+```bash
+grep -cw "<named_wire>" /tmp/eco_apply_<TAG>_<Stage>.v  # must be ≥ 2: wire decl + bus conn + gate input
+grep -cw "<source_net>" /tmp/eco_apply_<TAG>_<Stage>.v  # count should have decreased by 1 (removed from bus)
+```
+
+Record in JSON: `"named_wire_inserted": true, "named_wire": "<named_wire>", "source_net_rewired": "<source_net>"`.
+
+> **Why this is necessary:** A net driven only through a hierarchical submodule output port bus is not directly traceable by FM in P&R stages — the submodule is treated as a black box. FM cannot look inside the black box to determine whether the output is driven or constant. Declaring an explicit named wire and replacing the original net in the port bus creates a visible, traceable connection that FM can follow even across the black-box boundary. This is a structural requirement that applies regardless of net naming conventions.
+
 **Step 1 — Verify all input signals exist:**
 ```bash
 for each input_net in port_connections.values() (excluding output pin):
@@ -461,27 +604,29 @@ Record: `status=APPLIED`, `change_type=port_declaration`.
 
 ---
 
-#### Shared — Find Module Boundary
+#### Shared — Module Boundary in Isolated Buffer
 
-The following procedure is used identically by PORT_PROMO and PORT_CONN. Apply it as Step 1 in each:
+In the module-extraction approach (Step 3), each module's changes are applied to an **isolated line buffer** containing ONLY that module's text (from `module <name>` to `endmodule`). This means:
 
 ```python
-# Find start: exact module name match (full line, not substring)
+# The buffer already contains exactly one module — no search needed
+mod_idx       = 0              # buffer starts at the module declaration
+endmodule_idx = len(lines) - 1 # buffer ends at endmodule
+```
+
+There is no risk of matching a sibling module — the buffer is already scoped. All subsequent steps search `lines[0:len(lines)]` (the entire buffer = exactly this module).
+
+**For FLAT netlists only** (full file loaded): apply the explicit boundary search:
+```python
 mod_idx = next(
     i for i, l in enumerate(lines)
     if re.match(rf'^module\s+{re.escape(module_name)}\s*[(\s]', l)
 )
-
-# Find end: first 'endmodule' AFTER mod_idx
 endmodule_idx = next(
     i for i in range(mod_idx + 1, len(lines))
-    if lines[i].strip() == 'endmodule'
+    if lines[i].strip().split('//')[0].strip() == 'endmodule'
 )
 ```
-
-**CRITICAL — exact module name match:** Use `^module\s+<name>\s*[(\s]` — anchored at start of line, requiring whitespace or `(` after the module name. This prevents `<module_name>` from matching `<module_name>_submodule` or `<module_name>_variant`.
-
-**CRITICAL — endmodule boundary:** All subsequent steps MUST only search and replace within `lines[mod_idx:endmodule_idx]`. Never search the entire file — sibling modules may have identical wire names in completely different contexts, causing mass failures across unrelated module variants.
 
 ---
 
@@ -592,36 +737,50 @@ Record: `status=APPLIED`, `change_type=port_connection`, `port_name`, `net_name`
 
 ---
 
-### Step 5 — Recompress (once per stage, after ALL cells processed)
+### Step 5 — Recompress (once per stage, after ALL modules processed)
 
 ```bash
 gzip -c /tmp/eco_apply_<TAG>_<Stage>.v > <REF_DIR>/data/PostEco/<Stage>.v.gz
 ```
 
+Verify the output is non-zero and parseable:
+```bash
+ls -lh <REF_DIR>/data/PostEco/<Stage>.v.gz
+zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | grep -c "^module "   # must be ≥ 1
+```
+
 ### Step 6 — Verify all applied/inserted cells (once per stage)
 
-**IMPORTANT:** Verification must be **scoped to the specific cell instance block**, not a global file-wide grep. `old_net` may legitimately appear on other cells' pins.
+**Verify from the module-level buffers you already have in memory** — do NOT decompress again. All verification runs on the edited module lines that were returned by `apply_all_changes_to_module`, before Step 5 recompress. This is fast and zero-cost because the buffers are already in memory.
 
-For each APPLIED cell — verify the specific cell's pin no longer has old_net:
+For each APPLIED rewire — verify within the **cell instance block** (not file-wide):
 ```python
-zcat <REF_DIR>/data/PostEco/<Stage>.v.gz > /tmp/eco_verify_<TAG>_<Stage>.v
-cell_start = grep -n "<cell_name>" /tmp/eco_verify file → get line number
-# Read from cell_start to next ");" → extract instance block
-# Check ".<pin>(<old_net>)" is NOT in that block
-if ".<pin>(<old_net>)" in instance_block: VERIFY_FAILED
-else: verified=true
+# inst_block = lines from cell_start to next ');' in the module buffer
+inst_block_text = ''.join(inst_block)
+if f".<pin>({old_net})" in inst_block_text:
+    status = "VERIFY_FAILED"
+    reason = f"old_net '{old_net}' still on pin '{pin}' after edit"
+else:
+    verified = True
 ```
 
-For each INSERTED cell — verify the new inverter instance exists anywhere in the file:
-```bash
-zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | grep -c "<inv_inst>"
+For each INSERTED cell — verify the instance appears in the module buffer:
+```python
+module_text = ''.join(edited_module_lines)
+if instance_name not in module_text:
+    status = "VERIFY_FAILED"
+    reason = f"instance '{instance_name}' not found in module buffer after insert"
 ```
-Expected: ≥ 1. If 0: mark VERIFY_FAILED.
 
-Cleanup temp verify file:
-```bash
-rm -f /tmp/eco_verify_<TAG>_<Stage>.v
+For each PORT_DECL — verify signal appears in the port list range of the module buffer:
+```python
+port_list_text = ''.join(edited_module_lines[mod_start:port_list_close+1])
+if signal_name not in port_list_text:
+    status = "VERIFY_FAILED"
+    reason = f"port '{signal_name}' not found in port list after insert"
 ```
+
+**If any VERIFY_FAILED after in-memory check:** do NOT recompress. Retry the change on the module buffer. Only recompress (Step 5) when all in-memory verifications pass.
 
 ### Step 6b — Structural comparison (Synthesize only)
 

@@ -22,8 +22,8 @@
 6. **new_logic = cell insertion** — when new_net doesn't exist in PostEco, insert a new cell: inverter (Step 4c) for simple inversion, DFF (Step 4c-DFF) for sequential registers, or combinational gate (Step 4c-GATE) for multi-input logic. FM auto-matches inserted cells by instance path name — do NOT call eco_svf_updater for cell insertions. eco_svf_updater is only called (Step 4b) when pre-existing FM failures require `set_dont_verify` suppression.
 7. **Polarity rule** — only use `+` (non-inverted) impl nets for rewiring, never `-` (inverted); for inverted signals use new_logic insert
 8. **Bus dual-query** — for bus signals `reg [N:0] X`, query both `X` and `X_0_` to find gate-level name
-9. **PostEco FM verification** — always run all 3 PostEco targets after applying ECO
-10. **5-round fix loop** — if FM fails, revert → analyze → apply revised strategy → rerun FM; max 5 rounds
+9. **PostEco FM verification — ONE run only** — run all 3 targets in Step 5. If FM fails: write round_handoff.json → spawn ROUND_ORCHESTRATOR → HARD STOP. Never re-run FM or loop within ORCHESTRATOR. Each subsequent FM run belongs to its own ROUND_ORCHESTRATOR instance.
+10. **5-round fix loop** — each round = one eco_applier run + one FM run. Round 1 is in ORCHESTRATOR. Rounds 2–5 are in separate ROUND_ORCHESTRATOR instances. One ROUND_ORCHESTRATOR = one FM run, then spawn next agent.
 11. **Same instance name across all stages** — new_logic cells must use identical instance names in Synthesize, PrePlace, and Route for FM stage-to-stage matching
 12. **Output file verification** — after every sub-agent completes, verify the expected output file exists and is non-empty before proceeding to the next step. Never assume a sub-agent succeeded without checking.
 13. **Email before proceeding** — every round email (Step 6a) and the final email (Step 8) are MANDATORY. Verify "Email sent successfully" in the output before continuing.
@@ -775,13 +775,16 @@ Also read `data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_tag` — save it to 
 
 ### Step 5 Notes (reference — do NOT execute yourself)
 
-Full implementation is in `eco_fm_runner.md`. Key rules: write eco_fm_config with fixed filename (not tag-based), poll every 5 minutes with individual Bash tool calls (max 72 polls = 6h), merge results with previous round, write tmp file with eco_fm_tag.
+> **HARD RULE: ORCHESTRATOR runs PostEco FM EXACTLY ONCE — Round 1 only, all 3 targets.**
+> If FM fails after Round 1: do NOT re-run FM. Do NOT write a new eco_fm_config. Do NOT call genie_cli again.
+> Instead: write round_handoff.json → spawn ROUND_ORCHESTRATOR → HARD STOP.
+> Subsequent rounds (Round 2+) are entirely ROUND_ORCHESTRATOR's responsibility. Each ROUND_ORCHESTRATOR instance runs FM exactly once for its round and then spawns the next agent.
 
-### Step 5a — Write FM config file
+Full implementation is in `eco_fm_runner.md`. Key rules for the Round 1 sub-agent: write eco_fm_config with ALL 3 targets (fixed filename, not tag-based), poll every 5 minutes with individual Bash tool calls (max 72 polls = 6h), write tmp file with eco_fm_tag.
 
-Write to `<REF_DIR>/data/eco_fm_config` — **fixed filename inside refDir** (NOT tag-based). This is critical: `post_eco_formality.csh` gets its own new tag from genie_cli and uses refDir to find this file, so the filename must NOT include the ECO TAG.
+### Step 5a — Write FM config file (Round 1 only — all 3 targets)
 
-**Initial run (round 1 — all targets):**
+Write to `<REF_DIR>/data/eco_fm_config` — **fixed filename inside refDir** (NOT tag-based):
 ```bash
 cat > <REF_DIR>/data/eco_fm_config << EOF
 ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace
@@ -790,20 +793,9 @@ ECO_SVF_ENTRIES=<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 EOF
 ```
 
-**Subsequent rounds (only failing targets):**
-```bash
-cat > <REF_DIR>/data/eco_fm_config << EOF
-ECO_TARGETS=<space-separated list of failing targets from previous round>
-RUN_SVF_GEN=<1 if FmEqvEcoSynthesizeVsSynRtl is in failing list AND svf_update_needed else 0>
-ECO_SVF_ENTRIES=<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
-EOF
-```
+`RUN_SVF_GEN=1` only when BOTH: `FmEqvEcoSynthesizeVsSynRtl` is in targets AND `svf_update_needed = true`.
 
-**Key rule:** `RUN_SVF_GEN=1` only when BOTH:
-1. `FmEqvEcoSynthesizeVsSynRtl` is in the targets list, AND
-2. `svf_update_needed = true` (new_logic cells were inserted)
-
-### Step 5b — Run PostEco FM
+### Step 5b — Run PostEco FM (once)
 
 ```bash
 cd <BASE_DIR>
@@ -812,11 +804,7 @@ python3 script/genie_cli.py \
   --execute --xterm
 ```
 
-The script reads `<REF_DIR>/data/eco_fm_config` automatically (fixed filename, not tag-based). When `RUN_SVF_GEN=1`, it:
-1. Resets + runs `FmEcoSvfGen` first (60-min timeout)
-2. Appends `ECO_SVF_ENTRIES` to `data/svf/EcoChange.svf` after FmEcoSvfGen completes
-3. Resets + runs only the specified `ECO_TARGETS`
-4. Polls until all targets complete (180-min timeout)
+The script reads `<REF_DIR>/data/eco_fm_config` automatically.
 
 **[eco_fm_runner sub-agent does this — not the ORCHESTRATOR]** eco_fm_runner reads the tag from CLI output, saves it to `<BASE_DIR>/data/<TAG>_eco_fm_tag_round<ROUND>.tmp`, polls `data/<eco_fm_tag>_spec` every 5 minutes until `OVERALL ECO FM RESULT:` appears.
 
@@ -893,6 +881,8 @@ Initialize and write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
   "tile": "<TILE>",
   "ref_dir": "<REF_DIR>",
   "jira": "<JIRA>",
+  "base_dir": "<BASE_DIR>",
+  "ai_eco_flow_dir": "<REF_DIR>/AI_ECO_FLOW_<TAG>",
   "max_rounds": 5,
   "strategies_tried": [],
   "fm_results_per_round": [

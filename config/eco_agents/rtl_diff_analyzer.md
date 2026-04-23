@@ -333,17 +333,32 @@ The `instance` field allows Step 3 to process each instance's cells independentl
 
 Pass BOTH to find_equivalent_nets — FM-036 on one, the other may succeed.
 
-**Condition inputs pending FM resolution:** After E4d runs, check each change for `condition_inputs_to_query`. For each entry, add a `nets_to_query` entry so FM resolves the gate-level name in Step 2:
+### Step D-POST — Add condition_inputs_to_query signals to nets_to_query (MANDATORY)
 
-```json
-{
-  "net_path": "<INST_A>/<INST_B>/<signal>",
-  "hierarchy": ["<INST_A>", "<INST_B>"],
-  "reason": "condition gate input not found by name in PreEco gate-level netlist — FM resolves synthesis-renamed net",
-  "is_condition_input_resolution": true,
-  "original_signal": "<signal>"
-}
+**This step is MANDATORY and must run AFTER Step D (nets_to_query generation) completes.** Do not skip it. Do not merge it into E4d. It is a separate step.
+
+Scan every change in `changes[]`. For any change that has a non-empty `condition_inputs_to_query` list, add one `nets_to_query` entry per signal so FM resolves the gate-level name in Step 2:
+
+```python
+for change in rtl_diff["changes"]:
+    for ci in change.get("condition_inputs_to_query", []):
+        signal = ci["signal"]   # e.g., "REG_UmcCfgEco_1_"
+        scope  = ci["scope"]    # e.g., "umccmd"
+        # Build hierarchy path: use the declaring module's instance hierarchy from RTL diff
+        hierarchy = change.get("instances") or [scope]
+        net_path  = "/".join(hierarchy) + "/" + signal
+        rtl_diff["nets_to_query"].append({
+            "net_path": net_path,
+            "hierarchy": hierarchy,
+            "reason": f"condition gate input '{signal}' not found by name in PreEco gate-level — FM resolves synthesis-renamed net",
+            "is_condition_input_resolution": True,
+            "original_signal": signal
+        })
 ```
+
+**CHECKPOINT:** After this step, verify `nets_to_query` count increased by the number of `condition_inputs_to_query` entries across all changes. If count is unchanged but `condition_inputs_to_query` was non-empty → this step was skipped → run it again.
+
+**Why this is separate from E4d:** E4d populates `condition_inputs_to_query` on individual change entries. Step D-POST aggregates those entries into `nets_to_query` so eco_fenets_runner submits them to FM. Without this step, the signals are recorded but never queried — FM results will be missing → eco_netlist_studier falls back to raw netlist lookup → may find `UNCONNECTED_xxx` nets → FM treats them as undriven in P&R stages.
 
 The studier reads these FM results in Step 0c-5: when a chain entry has `"PENDING_FM_RESOLUTION:<signal>"` as an input, it substitutes the gate-level net name returned by FM for that signal.
 
