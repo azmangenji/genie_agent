@@ -233,7 +233,7 @@ rerun_signals = [...]  # from eco_fm_analysis rerun_fenets_signals list
 nets_to_query = []
 for s in rerun_signals:
     nets_to_query.append({
-        "net_path": s["net_path"],   # e.g., "FEI/SDPINTF/REG_UmcCfgEco_1_"
+        "net_path": s["net_path"],   # e.g., "<INST_A>/<INST_B>/<condition_input_signal>"
         "hierarchy": s["scope"].split("/"),
         "is_condition_input_resolution": True,
         "original_signal": s["signal"]

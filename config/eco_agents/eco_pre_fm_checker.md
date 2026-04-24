@@ -20,9 +20,9 @@
 ## Why This Exists
 
 FM stage-to-stage comparisons fail when stages have different ECO changes applied. Examples:
-- 9899: A648153 SKIPPED in Synthesize, APPLIED in PrePlace → 4834 FM non-equiv DFFs
-- 9868 Round 2: NeedFreqAdj declared twice in PrePlace → FM-599 abort
-- 9868 Round 2: eco_9868_e002 used wrong cell type → FE-LINK-7 abort
+- A cell SKIPPED in Synthesize but APPLIED in PrePlace → thousands of FM stage-to-stage non-equiv DFFs
+- A signal declared twice in a module port list → FM-599 (Verilog syntax abort)
+- A gate inserted with wrong cell type (wrong port names) → FM FE-LINK-7 (port not defined abort)
 
 These are fixable in seconds without a full round cycle.
 
@@ -211,19 +211,19 @@ OVERALL: <PASS — proceed to FM / FAIL after 3 retries — escalate to ROUND_OR
 ================================================================================
 <Per-issue detail including: what was found, what fix was applied, result>
 
-[Check A] FIXED: eco_9899_c008 stage inconsistency
-  Was: INSERTED in Synthesize/Route, SKIPPED in PrePlace (N2408127 not found)
-  Fix: Found Route alias 'FxCts_ZINV_479' for N2408127 in PrePlace PreEco netlist
-       Updated study JSON per-stage net, re-applied eco_9899_c008 in PrePlace
-  Result: eco_9899_c008 now present in all 3 stages ✓
+[Check A] FIXED: eco_<jira>_<seq> stage inconsistency
+  Was: INSERTED in Synthesize/Route, SKIPPED in PrePlace (input net not found)
+  Fix: Found P&R alias for input net in PrePlace PreEco netlist
+       Updated study JSON per-stage net, re-applied gate in PrePlace
+  Result: eco_<jira>_<seq> now present in all 3 stages ✓
 
-[Check D] FIXED: NeedFreqAdj duplicate in PrePlace ddrss_umccmd_t_umcarbctrlsw
-  Was: NeedFreqAdj appeared twice in port list and twice as 'output NeedFreqAdj;'
+[Check D] FIXED: <signal_name> duplicate in PrePlace <module_name>
+  Was: <signal_name> appeared twice in port list and twice as direction declaration
   Fix: Removed duplicate entries (kept force_reapply version)
-  Result: NeedFreqAdj declared once in port list, once as output ✓
+  Result: <signal_name> declared once in port list, once as direction declaration ✓
 
-[Check E] WARNING: A648153 rewire skipped in Synthesize
-  Rewire applied in PrePlace/Route but skipped in Synthesize (cell not in DCQARB1 scope)
+[Check E] WARNING: <cell_name> rewire skipped in Synthesize
+  Rewire applied in P&R stages but skipped in Synthesize (cell not found in declaring module scope)
   Action: Proceeding to FM — eco_fm_analyzer will diagnose if FM fails on this
 ================================================================================
 NEXT STEP: <Proceed to Step 5 (FM submission) / Escalate to ROUND_ORCHESTRATOR>

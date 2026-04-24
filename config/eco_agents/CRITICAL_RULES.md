@@ -423,7 +423,7 @@ FM ABORTS (N/A)
 
 **Why this rule exists:** Agents see N/A results (no matching or failing points report) and interpret it as "something went wrong that I must fix immediately." This causes them to apply patches, re-submit FM, or loop — all within the same round — bypassing the ROUND_ORCHESTRATOR diagnosis chain entirely and producing double-applied or corrupt netlists.
 
-> **Confirmed failure mode:** 9899 ORCHESTRATOR looped FM 3+ times internally without spawning ROUND_ORCHESTRATOR, producing double-applied PostEco netlists (Apr 24 2026).
+> **Confirmed failure mode:** A confirmed ECO run where the ORCHESTRATOR looped FM multiple times internally without spawning ROUND_ORCHESTRATOR, producing double-applied PostEco netlists.
 
 ---
 

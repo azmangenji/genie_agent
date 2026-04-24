@@ -225,9 +225,9 @@ After resolving PENDING inputs via rerun FM results, the gate entry is either:
 **For `failure_mode: ABORT_CELL_TYPE` (cell_type/gate_function mismatch):**
 
 For each `fix_cell_type` entry in `revised_changes`:
-- `gate_instance` — the ECO gate with wrong cell_type (e.g., `eco_9868_e002`)
+- `gate_instance` — the ECO gate with wrong cell_type (e.g., `eco_<jira>_<seq>`)
 - `gate_function` — the correct logical function (e.g., `AND2`)
-- `wrong_cell_type` — what eco_applier used (e.g., `ND2D1BWP`)
+- `wrong_cell_type` — what eco_applier used (e.g., `<wrong_cell_type>`)
 - `correct_cell_prefix` — prefix to search for (e.g., `AN2` for AND2)
 
 **Step CT-1 — Find the correct cell type in PreEco Synthesize:**
@@ -260,7 +260,7 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
 **For `failure_mode: H` (gate input driven only through hierarchical port bus):**
 
 For each `fix_named_wire` entry in `revised_changes`:
-- `gate_instance` — the ECO gate whose input needs the named wire (e.g., `eco_9868_e002`)
+- `gate_instance` — the ECO gate whose input needs the named wire (e.g., `eco_<jira>_<seq>`)
 - `input_pin` — which input pin (e.g., `A1`)
 - `source_net` — the net currently in the port bus at that position
 - `stage` — which stage(s) need the fix (usually PrePlace and/or Route, not Synthesize)
@@ -306,6 +306,38 @@ for stage in affected_stages:
 zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep "\.<pin>( <source_net> )" | grep -v "{" | head -5
 ```
 If Synthesize has a direct driver → do NOT set `needs_named_wire` for Synthesize stage. The fix applies only to the P&R stages where the source module is a hard macro.
+
+**For `action: update_gate_function` (gate polarity wrong — e.g., NAND2 inserted where AND2 needed):**
+
+For each `update_gate_function` entry in `revised_changes`:
+- `gate_instance` — the ECO gate with wrong gate_function (e.g., `eco_<jira>_<seq>`)
+- `wrong_gate_function` — what was used (e.g., `NAND2`)
+- `correct_gate_function` — what should be used (e.g., `AND2`)
+
+**Step GF-1 — Find correct real library cell in PreEco Synthesize:**
+```bash
+# Search PreEco for any cell instance with the output port name from port_connections
+# (e.g., if port_connections has 'Z': use AND2-family; if 'ZN': use NAND2-family)
+output_pin = entry.get("port_connections", {}).keys() - input_pins  # deduce output pin
+zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | \
+  awk "/module <module_scope>/{p=1} p && /\.<output_pin>/" | \
+  grep -oE "^[[:space:]]*[A-Z][A-Z0-9]+" | head -3
+# Use port-structure search (from eco_applier Step 2) to find correct cell type
+```
+
+**Step GF-2 — Update study JSON for ALL stages:**
+```python
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    for entry in study[stage]:
+        if entry.get("instance_name") == gate_instance:
+            entry["gate_function"] = correct_gate_function
+            entry["cell_type"] = correct_cell_type  # from Step GF-1
+            entry["re_study_note"] = (
+                f"update_gate_function: {wrong_gate_function} → {correct_gate_function}. "
+                f"cell_type updated to {correct_cell_type}. "
+                f"eco_applier will replace cell in next round."
+            )
+```
 
 **For `failure_mode: UNKNOWN` (deep investigation needed):**
 
@@ -465,7 +497,7 @@ If any input is `UNRESOLVED_IN_<Stage>:<net>` after all 3 priorities:
 - If already in FM results → use the FM-resolved name
 - If still unresolved → mark that gate as `"confirmed": false` for that stage only, with reason "input net '<net>' not found in <Stage> PreEco — cannot insert gate"
 
-**Why this is mandatory:** P&R synthesis renames many internal combinational nets (e.g., `N2408127` in Synthesize becomes a different net in Route). A gate inserted with a non-existent input net produces a floating pin that FM classifies as DFF0X or non-equivalent. The eco_applier will SKIP the gate if the input net is not found — but if no per-stage data is provided, it falls back to Synthesize nets and then fails silently.
+**Why this is mandatory:** P&R synthesis renames many internal combinational nets (e.g., `<net_name>` in Synthesize becomes a renamed net in Route due to P&R renaming). A gate inserted with a non-existent input net produces a floating pin that FM classifies as DFF0X or non-equivalent. The eco_applier will SKIP the gate if the input net is not found — but if no per-stage data is provided, it falls back to Synthesize nets and then fails silently.
 
 ### 0b-STAGE-NETS — Per-Stage Pin Verification for DFF (MANDATORY)
 

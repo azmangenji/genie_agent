@@ -342,7 +342,7 @@ Scan every change in `changes[]`. For any change that has a non-empty `condition
 ```python
 for change in rtl_diff["changes"]:
     for ci in change.get("condition_inputs_to_query", []):
-        signal = ci["signal"]   # e.g., "REG_UmcCfgEco_1_"
+        signal = ci["signal"]   # e.g., "<condition_input_signal>"
         scope  = ci["scope"]    # e.g., "umccmd"
         # Build hierarchy path: use the declaring module's instance hierarchy from RTL diff
         hierarchy = change.get("instances") or [scope]

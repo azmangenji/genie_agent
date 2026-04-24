@@ -23,7 +23,7 @@
 7. **Polarity rule** — only use `+` (non-inverted) impl nets for rewiring, never `-` (inverted); for inverted signals use new_logic insert
 8. **Bus dual-query** — for bus signals `reg [N:0] X`, query both `X` and `X_0_` to find gate-level name
 9. **PostEco FM verification — ONE run only** — run all 3 targets in Step 5. If FM fails: write round_handoff.json → spawn ROUND_ORCHESTRATOR → HARD STOP. Never re-run FM or loop within ORCHESTRATOR. Each subsequent FM run belongs to its own ROUND_ORCHESTRATOR instance.
-10. **5-round fix loop** — each round = one eco_applier run + one FM run. Round 1 is in ORCHESTRATOR. Rounds 2–5 are in separate ROUND_ORCHESTRATOR instances. One ROUND_ORCHESTRATOR = one FM run, then spawn next agent.
+10. **6-round fix loop** — each round = one eco_applier run + one FM run. Round 1 is in ORCHESTRATOR. Rounds 2–6 are in separate ROUND_ORCHESTRATOR instances. One ROUND_ORCHESTRATOR = one FM run, then spawn next agent.
 11. **Same instance name across all stages** — new_logic cells must use identical instance names in Synthesize, PrePlace, and Route for FM stage-to-stage matching
 12. **Output file verification** — after every sub-agent completes, verify the expected output file exists and is non-empty before proceeding to the next step. Never assume a sub-agent succeeded without checking.
 13. **Email before proceeding** — every round email (Step 6a) and the final email (Step 8) are MANDATORY. Verify "Email sent successfully" in the output before continuing.
@@ -921,7 +921,7 @@ Initialize and write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
   "jira": "<JIRA>",
   "base_dir": "<BASE_DIR>",
   "ai_eco_flow_dir": "<REF_DIR>/AI_ECO_FLOW_<TAG>",
-  "max_rounds": 5,
+  "max_rounds": 6,
   "strategies_tried": [],
   "fm_results_per_round": [
     {

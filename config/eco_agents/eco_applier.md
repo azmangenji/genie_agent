@@ -864,11 +864,27 @@ new_conn = f', .{port_name}( {net_name} )'
 lines[close_idx] = close_line[:last_paren] + new_conn + close_line[last_paren:]
 ```
 
-**Step 5 — Verify within parent module boundary:**
-```bash
-grep -c ".{port_name}( {net_name} )" /tmp/eco_apply_<TAG>_<Stage>.v
-# Must = 1
+**Step 5 — Verify within instance block (NOT file-wide):**
+
+The verify MUST be scoped to the specific instance block, not the whole file. A file-wide grep finds the string in other locations (port declarations, other instances) and falsely reports APPLIED.
+
+```python
+# Read lines from inst_line to close_idx (the actual instance block)
+instance_block = ''.join(lines[inst_line:close_idx + 1])
+conn_pattern = f'.{port_name}( {net_name} )'
+if conn_pattern not in instance_block and f'.{port_name}({net_name})' not in instance_block:
+    # Connection was NOT inserted into the instance block despite the edit
+    status = "VERIFY_FAILED"
+    reason = (f"PORT_CONN verify failed: '.{port_name}({net_name})' not found "
+              f"in instance block lines {inst_line}-{close_idx} of {instance_name}. "
+              f"Depth tracking may have found wrong close ')' — connection inserted at wrong position.")
+else:
+    verified = True
 ```
+
+**Why instance-scoped:** A file-wide `grep -c ".{port_name}( {net_name} )"` finds the string in port declarations, other instances with same port name, or anywhere else — it does NOT confirm the connection is INSIDE the correct instance block. This causes "falsely APPLIED" where the eco_applier reports success but the actual instance is missing the connection, leading FM to see undriven signals.
+
+**If VERIFY_FAILED:** Do NOT recompress. Mark entry as VERIFY_FAILED with reason. ORCHESTRATOR's Step 4c will detect the missing connection via Check B or the ROUND_ORCHESTRATOR's eco_fm_analyzer will diagnose as Mode_A_port_connection_false_applied.
 
 **Step 6 — If `net_name` doesn't exist as a wire/signal in the parent module**, add a wire declaration inside the parent module scope (after the module header, before the first instance):
 ```verilog
@@ -1010,7 +1026,7 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 
 ## ALREADY_APPLIED Detection — Per-Type Rules
 
-**CRITICAL:** `ALREADY_APPLIED` is a valid status but MUST be based on a specific, type-appropriate check — NOT a broad grep that finds the signal anywhere in the file. A signal name can exist in the file as a wire without being in the right place (e.g., `NeedFreqAdj` appears as a DFF output but is NOT in the module port list). Always record `already_applied_reason` in the JSON with exactly what check was performed and what was found.
+**CRITICAL:** `ALREADY_APPLIED` is a valid status but MUST be based on a specific, type-appropriate check — NOT a broad grep that finds the signal anywhere in the file. A signal name can exist in the file as a wire without being in the right place (e.g., `<signal_name>` appears as a DFF output but is NOT in the module port list). Always record `already_applied_reason` in the JSON with exactly what check was performed and what was found.
 
 | change_type | ALREADY_APPLIED condition | What to check |
 |-------------|--------------------------|---------------|

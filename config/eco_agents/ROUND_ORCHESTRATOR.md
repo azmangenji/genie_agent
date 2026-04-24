@@ -120,7 +120,7 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 
 **RULE: Early-exit decisions (Mode F all-manual, empty revised_changes) happen HERE immediately after Step 6d — before Steps 6e/6f/4/5. Do NOT continue to Steps 6e/6f/4/5 if exiting early.**
 
-**RULE: "After Step 5" only handles 3 outcomes: FM PASS → FINAL_ORCHESTRATOR, FM FAIL+NEXT_ROUND<5 → new ROUND_ORCHESTRATOR, FM FAIL+NEXT_ROUND=5 → FINAL_ORCHESTRATOR(MAX_ROUNDS). Mode F all-manual is never seen in "After Step 5" because it exits at Step 6d.**
+**RULE: "After Step 5" only handles 3 outcomes: FM PASS → FINAL_ORCHESTRATOR, FM FAIL+NEXT_ROUND<6 → new ROUND_ORCHESTRATOR, FM FAIL+NEXT_ROUND=6 → FINAL_ORCHESTRATOR(MAX_ROUNDS). Mode F all-manual is never seen in "After Step 5" because it exits at Step 6d.**
 
 ---
 
@@ -377,7 +377,7 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 
 **Then EXIT — your work is done.**
 
-### If FM RESULT = FAIL and NEXT_ROUND < 5
+### If FM RESULT = FAIL and NEXT_ROUND < 6
 
 Update `eco_fixer_state.fm_results_per_round` with this round's result.
 
@@ -388,14 +388,14 @@ Update `eco_fixer_state.fm_results_per_round` with this round's result.
 
 **Then EXIT — your work is done.**
 
-### If FM RESULT = FAIL and NEXT_ROUND = 5 (max rounds reached — FM still failing, not manual_only)
+### If FM RESULT = FAIL and NEXT_ROUND = 6 (max rounds reached — FM still failing, not manual_only)
 
 Update handoff: `"status": "MAX_ROUNDS"`
 
 **Spawn FINAL_ORCHESTRATOR agent** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
-- `TOTAL_ROUNDS`: 5
+- `TOTAL_ROUNDS`: 6
 
 **Then EXIT — your work is done.**
 

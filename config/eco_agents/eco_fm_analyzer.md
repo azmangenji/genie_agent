@@ -112,13 +112,13 @@ Extract the specific missing port(s) from the FE-LINK-7 error:
 ```bash
 zcat <REF_DIR>/logs/<target>.log.gz | grep "FE-LINK-7" | head -10
 # Example output:
-# Error: The pin 'NeedFreqAdj' of '/.../umcarb/CTRLSW' has no corresponding port on 'umcarbctrlsw'
+# Error: The pin '<missing_port>' of '/.../<parent>/<instance>' has no corresponding port on '<module_name>'
 ```
 
 For each `FE-LINK-7` error, record:
-- `missing_port`: the port name (e.g., `NeedFreqAdj`)
-- `instance_path`: the instance where the pin is used (e.g., `umcarb/CTRLSW`)
-- `module_name`: the module that is missing the port (e.g., `umcarbctrlsw`)
+- `missing_port`: the port name (e.g., `<missing_port>`)
+- `instance_path`: the instance where the pin is used (e.g., `<parent>/<instance>`)
+- `module_name`: the module that is missing the port (e.g., `<module_name>`)
 
 **Step 0c-1: Check if port is in PostEco netlist port list:**
 ```bash
@@ -159,7 +159,7 @@ Error: The pin '<pin>' of '.../eco_<jira>_<seq>' has no corresponding port
 
 **Diagnosis:** Read `eco_preeco_study.json` for the gate entry:
 - `gate_function` — what logical function the gate should implement (e.g., AND2)
-- `cell_type` — what cell the eco_applier actually used (e.g., ND2D1BWP — a different function)
+- `cell_type` — what cell the eco_applier actually used (e.g., a cell of the wrong gate function)
 - `port_connections` — what pin names were used (e.g., pin `Z`)
 
 The mismatch is between the **cell actually used** and the **port names in port_connections**. The correct fix is to re-search the PreEco netlist for a real library cell that (a) implements `gate_function` AND (b) has the port names specified in `port_connections`.
@@ -647,7 +647,96 @@ If `needs_re_study: true` → ROUND_ORCHESTRATOR will re-run eco_netlist_studier
 
 ## STEP 4 — Build Revised Strategy
 
-**RULE: revised_changes must be ACTIONABLE and HONEST.**
+**RULE 1: Diagnose ALL failing points — not just one mode.**
+
+Run ALL checks (A through H) across ALL failing points before writing revised_changes. A single ECO round can have multiple independent failure modes:
+- Synthesize may have NAND2 polarity (Mode A)
+- PrePlace may have false-APPLIED port connection (Mode A sub-type)
+- Route may have hierarchical port bus input (Mode H)
+- Any stage may have stage-inconsistency (Mode D)
+
+**NEVER stop at the first issue found.** Continue through all failing points, classify each independently, and combine ALL diagnosed issues into a single `revised_changes` list. The eco_netlist_studier_round_N and eco_apply_fix_round_N will apply all of them in one shot.
+
+```python
+# Collect issues from ALL failing points across ALL stages
+all_revised_changes = []
+
+for target, failing_points in all_failing_points.items():
+    for dff_path in failing_points:
+        # Run checks A-H on this failing point
+        issue = classify_failing_point(dff_path, target)
+        if issue not in all_revised_changes:  # deduplicate
+            all_revised_changes.append(issue)
+
+# Also run proactive checks on eco_applied regardless of failing points:
+# Check D (gate polarity): scan all new_logic_gate entries for NAND2/AND2 mismatch
+for gate_entry in eco_applied[stage]:
+    if gate_entry.get("change_type") == "new_logic_gate":
+        check_gate_polarity(gate_entry)  # adds to all_revised_changes if wrong
+
+# Check port_connection false-applied: verify each APPLIED port_connection is in the instance block
+for conn_entry in eco_applied[stage]:
+    if conn_entry.get("change_type") == "port_connection" and conn_entry.get("status") == "APPLIED":
+        check_port_conn_in_instance_block(conn_entry)  # adds if missing
+
+# final revised_changes covers ALL issues found
+```
+
+**RULE 2: Check D (gate polarity) runs proactively — not just when polarity causes a failing point.**
+
+**Critical masking scenario:** When a gate input is undriven (Mode H), the gate output is stuck at a constant value regardless of its actual polarity. FM classifies the downstream DFF as DFF0X (constant) — it never exercises the path that would expose the wrong gate polarity. The polarity error is completely hidden behind the Mode H failure.
+
+General pattern:
+- Gate input undriven (Mode H) → gate output = constant
+- Downstream DFF sees constant input → FM: DFF0X
+- Gate polarity (inverting vs non-inverting) is irrelevant when input is constant → polarity error masked
+- Next round: Mode H fixed → input now driven → gate polarity wrong → new FM failure → wastes another round
+
+**Therefore: whenever Mode H is diagnosed, ALSO run proactive Check D on all gate entries that feed that DFF chain.** Fix gate polarity and named wire in the same round. Scan ALL stages for ALL new_logic_gate entries:
+
+```python
+# Track already-processed gates to avoid duplicate revised_changes
+checked_gates = set()
+
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    for entry in eco_applied.get(stage, []):
+        if entry.get("change_type") != "new_logic_gate":
+            continue
+        gate_instance = entry.get("instance_name")
+        if not gate_instance or gate_instance in checked_gates:
+            continue
+        checked_gates.add(gate_instance)
+
+        gate_fn = entry.get("gate_function")
+        if not gate_fn:
+            continue
+
+        # Re-derive the correct gate function from PreEco netlist:
+        # Check the output pin name in port_connections — this tells us what the gate SHOULD be
+        # (e.g., output pin 'Z' → non-inverting: AND2, OR2, MUX2; 'ZN' → inverting: NAND2, NOR2, INV)
+        # Then find a real library cell with those ports in the PreEco netlist
+        port_connections = entry.get("port_connections", {})
+        correct_fn = re_derive_gate_function_from_preeco(gate_instance, gate_fn, port_connections)
+
+        if correct_fn and correct_fn != gate_fn:
+            all_revised_changes.append({
+                "action": "update_gate_function",
+                "stage": "ALL",
+                "gate_instance": gate_instance,
+                "wrong_gate_function": gate_fn,
+                "correct_gate_function": correct_fn,
+                "rationale": (f"Gate '{gate_instance}' has gate_function='{gate_fn}' in study JSON "
+                              f"but correct function derived from PreEco netlist is '{correct_fn}'. "
+                              f"eco_netlist_studier will update gate_function and cell_type."),
+                "eco_preeco_study_update": {
+                    "action": "update_gate_function",
+                    "gate_instance": gate_instance,
+                    "gate_function": correct_fn
+                }
+            })
+```
+
+**RULE 3: revised_changes must be ACTIONABLE and HONEST.**
 - If you found the real cause → provide specific fix
 - If you cannot determine the cause after Steps 0-3b → say so explicitly with what was checked; do NOT invent a fix
 - Do NOT use `set_dont_verify` as a lazy fallback for unclassified failures — only use it for proven Mode E or Mode G
@@ -702,8 +791,9 @@ If `needs_re_study: true` → ROUND_ORCHESTRATOR will re-run eco_netlist_studier
 - `revert_and_rewire` — previous rewire was wrong; apply corrected version
 - `exclude` — do NOT touch this cell again (Mode B wrong cell)
 - `set_dont_verify` — Mode E (pre-existing, proven) or Mode G (structural mismatch)
-- `force_port_decl` — Mode ABORT_LINK; port declaration was falsely ALREADY_APPLIED, force re-apply
+- `force_port_decl` — Mode ABORT_LINK or false-APPLIED; port declaration/connection missing, force re-apply
 - `fix_named_wire` — Mode H; gate input driven only through hierarchical port bus, needs named wire
+- `update_gate_function` — Mode A (Check D); gate inserted with wrong polarity (e.g., NAND2 instead of AND2); eco_netlist_studier updates gate_function and cell_type in study JSON
 - `rerun_fenets` — Check F; condition input signal was never FM-queried; must submit to find_equivalent_nets before re-study
 - `manual_only` — Mode F; cannot be automated
 
