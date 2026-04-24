@@ -129,6 +129,34 @@ with gzip.open(stage_file, 'rt') as f_in, \
 
 **`apply_all_changes_to_module(lines, changes, module_name)`** applies all change types (port_decl, port_conn, new_logic gate/DFF, rewire, named_wire) in the correct Pass order (1→2→3→4) on the isolated module line list. Since the module is isolated, line numbers are stable throughout all changes for that module.
 
+**CRITICAL — Status must be recorded BEFORE modifying the buffer (pre-snapshot check):**
+
+The ALREADY_APPLIED check MUST run on the **original unmodified module buffer** before any changes are applied. If the check runs on the modified buffer (after insertion), it will always find the just-inserted cell and falsely report ALREADY_APPLIED.
+
+```python
+def apply_all_changes_to_module(lines, changes, module_name):
+    # Step 0: Snapshot the original lines for ALREADY_APPLIED checks
+    original_lines = list(lines)  # copy BEFORE any modification
+    original_text  = ''.join(original_lines)
+
+    results = []
+
+    for entry in changes:
+        # Run ALREADY_APPLIED check against ORIGINAL buffer (before any edits)
+        already_applied, reason = check_already_applied(entry, original_text, original_lines)
+        if already_applied and not entry.get("force_reapply"):
+            results.append({"status": "ALREADY_APPLIED", "already_applied_reason": reason, **entry})
+            continue  # skip — do not modify buffer
+
+        # Apply the change to the CURRENT (possibly modified) buffer
+        status, detail = apply_single_change(entry, lines)
+        results.append({"status": status, **detail, **entry})
+
+    return lines, results  # return both edited buffer and per-entry results
+```
+
+Never run `check_already_applied` after calling `apply_single_change` — the check would find the change just made and report ALREADY_APPLIED incorrectly.
+
 **Why this is better:**
 - Each module is processed as a self-contained unit — no cross-module contamination
 - All changes for a module apply to a stable, small line buffer (not the 500k-line file)

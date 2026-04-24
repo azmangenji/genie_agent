@@ -401,7 +401,7 @@ netlist_type = detect_netlist_type()  # "flat" or "hierarchical"
 
 if netlist_type == "hierarchical":
     # Identify which module in PostEco corresponds to the declaring module from RTL diff
-    posteco_module_name = f"<TILE>_<module_name>"  # e.g., ddrss_umccmd_t_umcdcqarb_0
+    posteco_module_name = f"<TILE>_<module_name>"  # e.g., "<TILE>_<child_module>"
 
     for cell in fm_returned_cells:
         # Check: does this cell appear INSIDE the declaring module in PostEco?
@@ -429,7 +429,7 @@ def check_cell_in_module(cell_name, module_name, lines):
     return False
 ```
 
-**Why this matters:** When PreEco is flat but PostEco is hierarchical, the FM query on `old_token` returns ALL cells using that net across the ENTIRE flat netlist — including cells in parent modules (`umcarb`) that happen to use the same signal name. In the hierarchical PostEco, those parent-scope cells are in different modules and must NOT be rewired as part of an `and_term` change scoped to a child module (`umcdcqarb`). Rewiring them produces wrong logic in the parent module and causes hundreds or thousands of FM non-equivalences.
+**Why this matters:** When PreEco is flat but PostEco is hierarchical, the FM query on `old_token` returns ALL cells using that net across the ENTIRE flat netlist — including cells in parent modules that happen to use the same signal name. In the hierarchical PostEco, those parent-scope cells are in different modules and must NOT be rewired as part of an `and_term` change scoped to a child module. Rewiring them produces wrong logic in the parent module and causes hundreds or thousands of FM non-equivalences.
 
 ---
 
