@@ -6,6 +6,39 @@
 
 ---
 
+## STEP -1 — Pre-FM Check Fast Path (check BEFORE reading FM results)
+
+Read `<BASE_DIR>/data/<TAG>_round_handoff.json`. If `pre_fm_check_failed: true`:
+- FM was **never submitted** — skip Steps 0-2 (FM log/spec analysis) entirely
+- Read pre_fm_check JSON directly: `<BASE_DIR>/data/<TAG>_eco_pre_fm_check_round<ROUND>.json`
+- Map each critical issue to a revised_changes action:
+
+```python
+pre_fm = load(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json")
+for issue in pre_fm["critical_issues"]:
+    if issue["severity"] == "CRITICAL":
+        check = issue.get("check_id", "A")  # A/B/C/D
+        if check == "A":  # Stage inconsistency
+            # Change was SKIPPED in some stages — needs per-stage fix
+            add_to_revised_changes(action="fix_stage_skip", gate=issue["name"],
+                                   skipped_in=issue["skipped_in"])
+        elif check == "B":  # Port missing from stages
+            add_to_revised_changes(action="force_port_decl", signal=issue["signal"],
+                                   module=issue["module"], missing_from=issue["stage"])
+        elif check == "C":  # Cell missing from stage
+            add_to_revised_changes(action="force_cell_insert", instance=issue["instance"],
+                                   missing_from=issue["missing_from"])
+        elif check == "D":  # Duplicate port
+            add_to_revised_changes(action="force_reapply", signal=issue["duplicates"][0],
+                                   note="dedup required")
+
+set failure_mode = "PRE_FM_CHECK"
+set needs_re_study = True
+Write eco_fm_analysis_round<ROUND>.json and EXIT (skip remaining STEP 0-4)
+```
+
+---
+
 ## STEP 0 — FM Abort Detection (MANDATORY FIRST)
 
 **Before reading failing points, determine if FM actually ran comparison at all.**
@@ -15,12 +48,32 @@ Read the structured FM verify result:
 cat <BASE_DIR>/data/<TAG>_eco_fm_verify.json
 ```
 
-Check each target's `status` field:
-- `PASS` — FM ran and passed
-- `FAIL` — FM ran and found failing points
-- `N/A` or `ABORTED` — FM aborted before comparison; failing_points will be empty/missing
+Check each target's result in the JSON:
 
-**If ANY target shows N/A or ABORTED — do a full abort diagnosis before anything else.**
+**New format (eco_fm_runner updated):** each target is a dict with `status` field:
+- `{"status": "PASS"}` — FM ran and passed
+- `{"status": "FAIL", "failing_count": N}` — FM ran, found N non-equivalent points
+- `{"status": "ABORT", "abort_type": "ABORT_LINK|ABORT_NETLIST|ABORT_SVF|ABORT_OTHER"}` — FM aborted; `abort_type` already classified from log
+- `{"status": "NOT_RUN"}` — target not run this round (carried forward)
+
+**Old format (eco_fm_runner not yet updated):** each target is a string `"PASS"`, `"FAIL"`, or `"NOT_RUN"` — ABORT appears as `"FAIL"` with empty or N/A failing_points.
+
+**How to detect abort in both formats:**
+```python
+def is_abort(target_result):
+    if isinstance(target_result, dict):
+        return target_result.get("status") == "ABORT"
+    # Old format: FAIL with no real failing_points = likely ABORT
+    # Must check log file to confirm
+    return False  # treat as real FAIL, eco_fm_analyzer Step 2 checks will clarify
+
+def get_abort_type(target_result):
+    if isinstance(target_result, dict) and target_result.get("status") == "ABORT":
+        return target_result.get("abort_type")  # already classified — skip log read
+    return None  # need to read log (Step 0a)
+```
+
+**If ANY target is ABORT (new format) or shows FAIL with 0/N/A failing_points (old format) — do a full abort diagnosis before anything else.**
 
 ### Step 0a — Read FM log for all error codes
 
@@ -93,6 +146,42 @@ for stage, entries in data.items():
             print(f'  already_applied_reason: {reason}')
 "
 ```
+
+**Step 0c-2b: Detect cell_type/port mismatch (FE-LINK-7 on technology library cell)**
+
+If the FE-LINK-7 error names a **technology library cell** as the module (path contains `/TECH_LIB_DB/` or similar) rather than a user design module, this is NOT a port_declaration issue — it is a **cell_type/port mismatch** where the inserted ECO cell has a port name that doesn't exist on the technology library cell.
+
+Pattern:
+```
+Error: The pin '<pin>' of '.../eco_<jira>_<seq>' has no corresponding port
+       on the design '/TECH_LIB_DB/<WRONG_CELL_TYPE>'. (FE-LINK-7)
+```
+
+**Diagnosis:** Read `eco_preeco_study.json` for the gate entry:
+- `gate_function` — what logical function the gate should implement (e.g., AND2)
+- `cell_type` — what cell the eco_applier actually used (e.g., ND2D1BWP — a different function)
+- `port_connections` — what pin names were used (e.g., pin `Z`)
+
+The mismatch is between the **cell actually used** and the **port names in port_connections**. The correct fix is to re-search the PreEco netlist for a real library cell that (a) implements `gate_function` AND (b) has the port names specified in `port_connections`.
+
+**Fix:** Set `action: fix_cell_type` in revised_changes:
+```json
+{
+  "stage": "ALL",
+  "action": "fix_cell_type",
+  "gate_instance": "<eco_jira_seq>",
+  "gate_function": "<gate_function from study JSON>",
+  "wrong_cell_type": "<cell that was used but failed>",
+  "missing_pin": "<the pin that didn't exist on wrong_cell_type>",
+  "rationale": "FE-LINK-7: pin '<pin>' not a port of '<wrong_cell_type>'. Study JSON cell_type does not match gate_function. eco_netlist_studier must re-search PreEco netlist for a cell that implements '<gate_function>' and has port '<pin>'.",
+  "eco_preeco_study_update": {
+    "action": "fix_cell_type",
+    "gate_instance": "<eco_jira_seq>"
+  }
+}
+```
+
+Set `failure_mode: ABORT_CELL_TYPE`. ROUND_ORCHESTRATOR treats this as NOT a reason to stop.
 
 **Step 0c-3: Verify what check was used for ALREADY_APPLIED**
 
@@ -566,7 +655,7 @@ If `needs_re_study: true` → ROUND_ORCHESTRATOR will re-run eco_netlist_studier
 ```json
 {
   "round": <ROUND>,
-  "failure_mode": "ABORT_SVF|ABORT_LINK|ABORT_NETLIST|A|B|C|D|E|F|G|H|UNKNOWN",
+  "failure_mode": "ABORT_SVF|ABORT_LINK|ABORT_NETLIST|ABORT_CELL_TYPE|A|B|C|D|E|F|G|H|UNKNOWN",
   "diagnosis": "<specific — which DFF, which port, which net, which check found it, what was checked in investigation 3b>",
   "failing_points_count": {
     "FmEqvEcoSynthesizeVsSynRtl": <N>,

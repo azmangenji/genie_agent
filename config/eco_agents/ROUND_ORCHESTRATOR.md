@@ -38,10 +38,19 @@ Read `<BASE_DIR>/data/<TAG>_eco_fixer_state` to confirm current round and get `s
 
 ## STEP 6a — Write Per-Round HTML and Send Email
 
-Write `<BASE_DIR>/data/<TAG>_eco_report_round<ROUND>.html` covering:
+**Check if FM was submitted this round:**
+```python
+handoff = load(f"data/{TAG}_round_handoff.json")
+pre_fm_check_failed = handoff.get("pre_fm_check_failed", False)
+```
+
+If `pre_fm_check_failed: true` — FM was never submitted (blocked by Step 4c). Write a **simplified HTML** noting pre-FM check failure and skip the FM failing points section. Do NOT try to read `eco_fm_tag_spec` (it doesn't exist). Send email with subject indicating "Pre-FM Check Failed".
+
+If `pre_fm_check_failed: false` (normal FM failure) — write full HTML:
 - Round N summary: which targets failed, failing point count per target
-- ECO changes attempted: cell name, pin, old_net → new_net, status (APPLIED/INSERTED/SKIPPED) — read from `data/<TAG>_eco_applied_round<ROUND>.json`
+- ECO changes attempted: read from `data/<TAG>_eco_applied_round<ROUND>.json`
 - FM failing points detail: hierarchy paths of failing DFFs — read from `data/<eco_fm_tag>_spec`
+- Pre-FM check results: read from `data/<TAG>_eco_step4c_pre_fm_check_round<ROUND>.rpt` (if exists)
 - What will be tried next round (from eco_fm_analyzer — written in Step 6d)
 
 Then send:
@@ -98,6 +107,7 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 - `failure_mode: UNKNOWN` → NOT a reason to stop — eco_fm_analyzer MUST have run Step 3b deep investigation before returning UNKNOWN. If `revised_changes` is non-empty, apply them and continue. If empty, treat same as MAX_ROUNDS.
 - `failure_mode: ABORT_SVF` → NOT a reason to stop — fix SVF issue (set `svf_update_needed=false`), continue to next round
 - `failure_mode: ABORT_LINK` → NOT a reason to stop — `revised_changes` contains `force_port_decl` entries; apply them in Step 6e (`force_reapply: true` in study JSON), continue to next round
+- `failure_mode: ABORT_CELL_TYPE` → NOT a reason to stop — `revised_changes` contains `fix_cell_type` entries; eco_netlist_studier_round_N re-searches PreEco for correct cell type and updates study JSON, continue to next round
 - `failure_mode: H` (hierarchical port bus input) → NOT a reason to stop — `revised_changes` contains `fix_named_wire` entries; eco_netlist_studier_round_N sets `needs_named_wire: true` in study JSON, eco_apply_fix_round_N declares named wire and rewires port bus, continue to next round
 - `needs_rerun_fenets: true` → NOT a reason to stop — Step 6f-FENETS re-queries the missing signals; eco_netlist_studier_round_N resolves PENDING_FM_RESOLUTION inputs from the rerun results; continue to next round
 - `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
@@ -275,6 +285,33 @@ If no pre-existing failures requiring suppression: set `svf_update_needed = fals
 
 ---
 
+## STEP 4c — Pre-FM Cross-Stage Consistency Check
+
+**Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_pre_fm_checker.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `BASE_DIR`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`
+- Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json`
+
+Wait for sub-agent to complete.
+
+**Read result — gate FM submission:**
+```python
+check = load(f"data/{TAG}_eco_pre_fm_check_round{NEXT_ROUND}.json")
+if check["passed"]:
+    # All checks passed (fixes applied inline if needed) → proceed to Step 5
+    pass
+else:
+    # Inline fixes exhausted after MAX_RETRIES — escalate to next ROUND_ORCHESTRATOR
+    update_round_handoff(status="FM_FAILED", pre_fm_check_failed=True)
+    update_eco_fixer_state(strategies_tried=[{
+        "round": NEXT_ROUND, "failure_mode": "PRE_FM_CHECK_UNRESOLVED",
+        "unresolved_issues": check["issues_unresolved"]
+    }])
+    spawn ROUND_ORCHESTRATOR (next instance)
+    EXIT  # Step 5 skipped — FM never submitted this round
+```
+
+---
+
 ## STEP 5 — PostEco Formality Verification
 
 > **HARD RULE: Each ROUND_ORCHESTRATOR instance runs PostEco FM EXACTLY ONCE for its round.**
@@ -291,6 +328,8 @@ If no pre-existing failures requiring suppression: set `svf_update_needed = fals
 
 Wait for the sub-agent to complete. **Do NOT spawn another eco_fm_runner if results are not what you expected — read them as-is and hand off.**
 
+> **CRITICAL: When eco_fm_runner returns — regardless of PASS, FAIL, or ABORT — go directly to "After Step 5" and spawn the correct next agent. NEVER attempt to diagnose, patch, or re-submit FM within this same ROUND_ORCHESTRATOR instance. ABORT results (N/A, no matching/failing points) go to the NEXT ROUND_ORCHESTRATOR, not handled inline.**
+
 **CHECKPOINT:** Verify ALL of the following:
 ```bash
 ls <BASE_DIR>/data/<TAG>_eco_fm_verify.json
@@ -303,6 +342,12 @@ Read `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` to get `eco_fm_tag` — save 
 ---
 
 ## After Step 5 — Spawn Next Agent
+
+> **HARD RULE: Read eco_fm_verify.json ONCE and spawn the next agent. Do not loop.**
+> - `status: "PASS"` on ALL targets → FINAL_ORCHESTRATOR
+> - `status: "FAIL"` on ANY target → new ROUND_ORCHESTRATOR (if rounds remain)
+> - `status: "ABORT"` on ANY target → treated as FAIL → new ROUND_ORCHESTRATOR (eco_fm_analyzer will diagnose the abort in Step 6d of the next round)
+> - NEVER re-submit FM here. NEVER apply patches here. NEVER re-run eco_applier here.
 
 Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 ```json

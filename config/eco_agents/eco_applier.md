@@ -476,15 +476,71 @@ if missing_inputs:
 
 If any input is a `new_logic` output (`n_eco_<jira>_<seq>`) — verify that new_logic entry was already processed in Pass 1 (it should exist in the module buffer from an earlier Pass 1 step).
 
-**Step 2 — Find gate cell type from PreEco netlist matching `gate_function`:**
-```bash
-# Use gate_function as a prefix pattern — find first matching real library cell
-zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -E "^[[:space:]]*<gate_function>[A-Z0-9]* [a-z]" | head -3
+**Step 1b — Verify cell_type is compatible with port_connections (MANDATORY):**
+
+If the study JSON entry already has a `cell_type` field, verify it actually has ALL the ports named in `port_connections` BEFORE using it. Look up the cell in the PreEco netlist and check that every pin in `port_connections` appears as a port:
+
+```python
+cell_type = entry.get("cell_type", "")
+pcs       = stage_pcs  # port_connections for this stage
+
+if cell_type:
+    # Find any instance of this cell_type in PreEco and read its port list
+    cell_ports = find_cell_ports_in_preeco(cell_type, preeco_lines)
+    # cell_ports = set of port names used in the netlist (e.g., {'.A1', '.A2', '.ZN'})
+
+    missing_pins = [pin for pin in pcs if pin not in cell_ports]
+    if missing_pins:
+        # cell_type does not have these ports — study JSON has wrong cell_type
+        # Force re-search via Step 2 instead of blindly using wrong cell
+        record_warning(f"cell_type '{cell_type}' missing ports {missing_pins} — clearing for re-search")
+        cell_type = None  # Step 2 will find the correct cell
+
+def find_cell_ports_in_preeco(cell_type, lines):
+    """Find any instance of cell_type in PreEco and return set of its port names."""
+    for i, line in enumerate(lines):
+        if cell_type in line and '(' in line:
+            # Read the full instance block
+            block = ' '.join(lines[i:i+10])
+            ports = re.findall(r'\.(\w+)\s*\(', block)
+            if ports:
+                return set(ports)
+    return set()
 ```
 
-Replace `<gate_function>` with the actual value (e.g., `NAND2`, `AND2`, `OR2`, `MUX2`, `INV`, etc.). The pattern `<gate_function>[A-Z0-9]*` matches the full library cell name that starts with the gate function prefix.
+This check is general and technology-library-agnostic — it verifies ports structurally by looking at how the cell is actually instantiated in the PreEco netlist, regardless of naming conventions.
 
-**For `MUX2` gate_function specifically:** The library cell will have a longer technology-specific name (e.g., `MUX2<drive_strength><tech_suffix>`). Never use the bare `MUX2` primitive — it is a generic Verilog behavioral construct not present in the technology library. FM will fail to elaborate any netlist containing bare `MUX2` instances. Always grep the PreEco netlist with the `MUX2[A-Z0-9]*` pattern to find the real cell name used in the current netlist.
+**Step 2 — Find gate cell type from PreEco netlist by port structure (NOT by name prefix):**
+
+Technology libraries use vendor-specific naming (e.g., TSMC uses `AN2` for AND2, `ND2` for NAND2, `OR2D` for OR2). Never grep by `gate_function` as a name prefix — it is technology-specific and will find the wrong cell or nothing.
+
+**The correct approach: search by the port names that the gate must have.**
+
+From `port_connections` in the study JSON, extract the exact port names (e.g., `{A1, A2, Z}` for a 2-input AND gate with output Z). Search the PreEco netlist for any cell instance in the **same module scope** that has ALL those port names:
+
+```python
+# Get port names from port_connections (keys = pin names, e.g., A1, A2, Z)
+required_ports = set(port_connections.keys())  # e.g., {'A1', 'A2', 'Z'}
+
+# Search PreEco module scope for a cell that has all these ports
+# A cell instance with ports .A1(...), .A2(...), .Z(...) matches
+for line in module_scope_lines:
+    m = re.match(r'^\s*([A-Z][A-Z0-9]+)\s+\w+\s*\(', line)
+    if m:
+        cell_name = m.group(1)
+        # Read the full instance block to get its port list
+        block = read_instance_block(line_idx, module_scope_lines)
+        cell_ports = set(re.findall(r'\.(\w+)\s*\(', block))
+        if required_ports.issubset(cell_ports):
+            cell_type = cell_name  # found a compatible cell
+            break
+```
+
+This is technology-library-agnostic — it finds any real library cell that has the required port names, regardless of cell naming conventions.
+
+**If no matching cell found in this stage's PreEco, try other stages** (Synthesize is most likely to have the needed cell). If still none found: report `cell_type=UNRESOLVED` and mark gate as SKIPPED with reason "no library cell with ports {required_ports} found in PreEco netlist".
+
+**Never use bare generic primitives** (`MUX2`, `AND2`, `OR2`) as cell types — these are Verilog behavioral constructs, not library cells. FM will fail to elaborate them. Always resolve to a real instantiated library cell from the PreEco netlist.
 
 **Step 2b — Handle constant inputs (`1'b0`, `1'b1`) in gate port connections:**
 
@@ -561,7 +617,7 @@ Record: `status=APPLIED`, `change_type=port_declaration`, `declaration_type=wire
 
 When multiple PORT_DECL entries (declaration_type=input or output) target the **same module**, do NOT apply them one-by-one with separate port list modifications. Each sequential modification shifts line numbers, causing subsequent depth-tracking to find the wrong `port_list_close_idx` — a line without `)` — and Python's `rfind(')')` = -1 corrupts it catastrophically.
 
-**Correct approach — batch before starting:**
+**Correct approach — batch and deduplicate before starting:**
 ```python
 # Before processing any PORT_DECL for a module, collect ALL signal names for that module
 port_decl_by_module = defaultdict(list)
@@ -569,7 +625,17 @@ for entry in stage_array:
     if entry.get("change_type") == "port_declaration" and entry.get("declaration_type") in ("input", "output"):
         port_decl_by_module[entry["module_name"]].append(entry)
 
-# For each module, run port list modification ONCE with ALL signals
+# For each module, DEDUPLICATE by signal_name before applying
+# The same signal may appear twice (once from initial study, once added by eco_netlist_studier_round_N with force_reapply)
+# Deduplication: last entry wins (force_reapply takes precedence)
+for module_name, entries in port_decl_by_module.items():
+    seen = {}
+    for e in entries:
+        seen[e["signal_name"]] = e   # later entry (force_reapply) overwrites earlier
+    entries = list(seen.values())    # deduplicated — each signal appears once
+    port_decl_by_module[module_name] = entries
+
+# For each module, run port list modification ONCE with ALL deduplicated signals
 for module_name, entries in port_decl_by_module.items():
     signal_names = [e["signal_name"] for e in entries]
     directions   = {e["signal_name"]: e["declaration_type"] for e in entries}
@@ -813,7 +879,79 @@ Record: `status=APPLIED`, `change_type=port_connection`, `port_name`, `net_name`
 
 ---
 
-### Step 5 — Recompress (once per stage, after ALL modules processed)
+### Step 4b — Pre-Recompress Verilog Self-Validation (MANDATORY before Step 5)
+
+**This step prevents FM ABORT (FM-599, FE-LINK-7) by catching Verilog errors in the edited file BEFORE submitting to FM.** All ABORT conditions seen in real runs traced back to eco_applier producing invalid Verilog — catching them here costs seconds vs wasting a 1-2 hour FM slot.
+
+Run these checks on `/tmp/eco_apply_<TAG>_<Stage>.v` after all edits:
+
+**Check 1 — No duplicate port declarations in any module:**
+```bash
+# For each module, check if any port name appears twice in the port list header
+python3 -c "
+import re, sys
+content = open('/tmp/eco_apply_<TAG>_<Stage>.v').read()
+modules = re.split(r'^module\s+', content, flags=re.MULTILINE)
+for mod in modules[1:]:
+    # Extract port list (between first ( and first ) ;)
+    m = re.search(r'\((.*?)\)\s*;', mod, re.DOTALL)
+    if m:
+        ports = re.findall(r'\b([A-Za-z_]\w*)\b', m.group(1))
+        seen = {}
+        for p in ports:
+            seen[p] = seen.get(p, 0) + 1
+        dups = [p for p, c in seen.items() if c > 1]
+        if dups:
+            mod_name = mod.split('(')[0].strip()
+            print(f'DUPLICATE PORTS in {mod_name}: {dups}')
+            sys.exit(1)
+print('Check 1 PASSED: no duplicate ports')
+"
+```
+
+**Check 2 — Port list correctly closed (no syntax corruption):**
+```bash
+# Ensure every module header '(' has exactly one closing ') ;'
+python3 -c "
+import re
+content = open('/tmp/eco_apply_<TAG>_<Stage>.v').read()
+# Count open/close parens in module declarations — should balance at ') ;'
+for m in re.finditer(r'^module\s+(\S+)', content, re.MULTILINE):
+    pos = m.start()
+    depth = 0
+    for ch in content[pos:pos+50000]:
+        if ch == '(': depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                break
+    if depth != 0:
+        print(f'UNCLOSED PORT LIST in module {m.group(1)}')
+        import sys; sys.exit(1)
+print('Check 2 PASSED: all port lists correctly closed')
+"
+```
+
+**Check 3 — No direction declared for unknown port (duplicate output/input):**
+```bash
+# Quick grep for any signal declared as output/input twice
+grep -oP '(?:^|\s)(input|output)\s+(?:\[.*?\]\s+)?(\w+)\s*;' /tmp/eco_apply_<TAG>_<Stage>.v | \
+  awk '{print $NF}' | sort | uniq -d | head -5
+# If any duplicates printed → FAIL
+```
+
+**Check 4 — Verify module count unchanged:**
+```bash
+zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | grep -c "^module " > /tmp/preeco_module_count
+grep -c "^module " /tmp/eco_apply_<TAG>_<Stage>.v > /tmp/posteco_module_count
+diff /tmp/preeco_module_count /tmp/posteco_module_count || echo "WARNING: module count changed"
+```
+
+**If ANY check fails → DO NOT recompress. Record all affected changes as VERIFY_FAILED with the check number and reason. Report to ORCHESTRATOR. The ORCHESTRATOR will diagnose via eco_fm_analyzer without wasting an FM slot.**
+
+> **Why this matters:** ALL FM ABORT conditions seen in real runs (FM-599 "Verilog syntax error", FE-LINK-7 "port not defined") were caused by eco_applier producing invalid Verilog — corrupted port lists, duplicate port declarations, wrong cell pin names. FM is the first validator in the current flow, wasting 1-2 hours per detection. These 4 checks run in seconds and catch all confirmed patterns.
+
+### Step 5 — Recompress (once per stage, after ALL modules processed AND Step 4b checks pass)
 
 ```bash
 gzip -c /tmp/eco_apply_<TAG>_<Stage>.v > <REF_DIR>/data/PostEco/<Stage>.v.gz

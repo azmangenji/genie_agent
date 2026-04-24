@@ -74,24 +74,79 @@ grep -c "OVERALL ECO FM RESULT:" <BASE_DIR>/data/<eco_fm_tag>_spec 2>/dev/null |
 
 ## STEP E — Parse and Merge Results
 
-Parse the spec file for each target result. For ROUND > 1, merge with previous round's results (carry forward PASS results, update only re-run targets):
+Parse the spec file for each target result. **Distinguish between real FAIL (comparison ran) and ABORT (FM crashed before comparison).** This distinction is critical — eco_fm_analyzer uses it to determine whether to read log files for ABORT diagnosis or spec failing_points for Mode classification.
 
 ```python
+def parse_target_result(spec_file, log_file, target):
+    """
+    Returns a dict with:
+      status: "PASS" | "FAIL" | "ABORT"
+      failing_points: list of DFF paths (empty for PASS or ABORT)
+      failing_count: integer or 0
+      abort_type: None | "ABORT_SVF" | "ABORT_LINK" | "ABORT_NETLIST" | "ABORT_OTHER"
+
+    How to distinguish FAIL vs ABORT:
+      - Read spec for target status and "Failing Points" value
+      - If "Failing Points" = "N/A (N/A)" or spec shows no LEC Result → ABORT
+      - If "Failing Points" = "<N> (FAILED)" with N > 0 → real FAIL
+      - If "Failing Points" = "0 (PASSED)" or no failing points → PASS
+
+    For ABORT: read the FM log to classify the abort type:
+      - CMD-010/CMD-005 in log → ABORT_SVF
+      - FE-LINK-7 + FM-234 + FM-156 in log → ABORT_LINK
+      - FM-599 (read_verilog error) in log → ABORT_NETLIST
+      - Any other Error: in log before comparison → ABORT_OTHER
+    """
+    spec_status = read_spec_status(spec_file, target)   # "PASS"/"FAIL"/"N/A"
+    failing_pts  = read_spec_failing_points(spec_file, target)  # list or empty
+
+    if spec_status == "PASS" or (spec_status == "FAIL" and len(failing_pts) > 0):
+        # FM ran comparison
+        return {
+            "status": spec_status,
+            "failing_points": failing_pts,
+            "failing_count": len(failing_pts),
+            "abort_type": None
+        }
+    else:
+        # N/A or empty failing points — FM aborted before comparison
+        abort_type = classify_abort_from_log(log_file)  # reads log for error codes
+        return {
+            "status": "ABORT",
+            "failing_points": [],
+            "failing_count": 0,
+            "abort_type": abort_type   # e.g., "ABORT_LINK", "ABORT_NETLIST"
+        }
+
 # Load previous results if ROUND > 1
 cumulative = load_previous_eco_fm_verify_json() if ROUND > 1 else {
-    "FmEqvEcoSynthesizeVsSynRtl": "NOT_RUN",
-    "FmEqvEcoPrePlaceVsEcoSynthesize": "NOT_RUN",
-    "FmEqvEcoRouteVsEcoPrePlace": "NOT_RUN"
+    "FmEqvEcoSynthesizeVsSynRtl": {"status": "NOT_RUN"},
+    "FmEqvEcoPrePlaceVsEcoSynthesize": {"status": "NOT_RUN"},
+    "FmEqvEcoRouteVsEcoPrePlace": {"status": "NOT_RUN"}
 }
 for target in ECO_TARGETS:
-    cumulative[target] = parse_result(spec_file, target)  # "PASS" or "FAIL"
+    log_file = f"<REF_DIR>/logs/{target}.log.gz"
+    cumulative[target] = parse_target_result(spec_file, log_file, target)
+
 cumulative["round"] = ROUND
 cumulative["eco_fm_tag"] = eco_fm_tag
 ```
 
 Write `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`.
 
-OVERALL PASS = all 3 targets show PASS in merged JSON.
+**OVERALL PASS** = all 3 targets show `status: "PASS"` in merged JSON.
+
+**OVERALL FAIL** = any target shows `status: "FAIL"` (real non-equivalent points found).
+
+**OVERALL ABORT** = any target shows `status: "ABORT"` (FM did not run comparison).
+
+> **CRITICAL EXIT RULE — applies to ALL outcomes including ABORT:**
+> After writing eco_fm_verify.json and eco_step5_fm_verify_round<ROUND>.rpt, **EXIT IMMEDIATELY**.
+> Do NOT attempt to diagnose the failure. Do NOT re-submit FM. Do NOT apply any patches or fixes.
+> Do NOT loop. Do NOT interpret N/A or ABORT as a signal to take additional action.
+> Your ONLY job is to write the result files and exit.
+> The ORCHESTRATOR reads eco_fm_verify.json and decides the next step (spawn ROUND_ORCHESTRATOR or FINAL_ORCHESTRATOR).
+> ROUND_ORCHESTRATOR is the agent responsible for diagnosis and fixes — not eco_fm_runner.
 
 ---
 

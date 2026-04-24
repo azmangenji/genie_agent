@@ -379,6 +379,16 @@ If `port_list_close_idx` is None after the loop: do NOT silently proceed. Record
 
 ---
 
+## RULE 25b — eco_applier Must Self-Validate Verilog Before Recompressing
+
+**eco_applier Step 4b is MANDATORY and must pass before Step 5 (recompress).** The 4 checks (duplicate ports, unclosed port list, duplicate direction declarations, module count) take seconds and prevent FM ABORT conditions that waste 1-2 hour FM slots.
+
+All confirmed FM ABORTs (FM-599, FE-LINK-7) in this flow traced back to eco_applier producing invalid Verilog. FM is NOT the right place to discover these — eco_applier must validate its own output first.
+
+If Step 4b fails → record VERIFY_FAILED, do NOT recompress, do NOT submit FM. The ORCHESTRATOR/ROUND_ORCHESTRATOR will handle the failure without wasting an FM slot.
+
+---
+
 ## RULE 25 — Run Pre-FM Integrity Checks Before Every FM Submission
 
 **Before submitting FM (Step 5), always run Step 4c — the 4 pre-FM checks:**
@@ -391,4 +401,30 @@ FM jobs run for 1–2 hours. A corrupt netlist or missing port declaration cause
 
 ---
 
-*Last updated: 2026-04-21*
+---
+
+## RULE 26 — FM ABORT (N/A) Goes to ROUND_ORCHESTRATOR — Never Self-Fix
+
+**When FM produces N/A results (no matching/failing points — FM aborted before comparison), the agent MUST NOT attempt to diagnose or fix the issue itself. It MUST hand off to ROUND_ORCHESTRATOR exactly as it would for a real FAIL.**
+
+This applies to:
+- **eco_fm_runner**: When spec shows N/A or no failing points — write eco_fm_verify.json with `status: "ABORT"` and **EXIT IMMEDIATELY**. Do NOT re-submit FM. Do NOT apply any patches. Do NOT loop.
+- **ORCHESTRATOR After Step 5**: When eco_fm_verify.json shows ABORT or FAIL — write round_handoff.json + spawn ROUND_ORCHESTRATOR + HARD STOP. Do NOT try to fix the netlist, SVF, or cell types yourself.
+- **ROUND_ORCHESTRATOR After Step 5**: When eco_fm_verify.json shows ABORT or FAIL — update round_handoff.json + spawn next ROUND_ORCHESTRATOR + EXIT. Do NOT re-submit FM or apply inline patches.
+
+**The chain for ABORT:**
+```
+FM ABORTS (N/A)
+→ eco_fm_runner writes abort result → EXIT
+→ ORCHESTRATOR/ROUND_ORCHESTRATOR reads result → writes round_handoff.json → spawns next agent → HARD STOP
+→ ROUND_ORCHESTRATOR (next instance): Step 6d eco_fm_analyzer diagnoses abort type
+→ Steps 6f, 4, 5: fix + re-run FM
+```
+
+**Why this rule exists:** Agents see N/A results (no matching or failing points report) and interpret it as "something went wrong that I must fix immediately." This causes them to apply patches, re-submit FM, or loop — all within the same round — bypassing the ROUND_ORCHESTRATOR diagnosis chain entirely and producing double-applied or corrupt netlists.
+
+> **Confirmed failure mode:** 9899 ORCHESTRATOR looped FM 3+ times internally without spawning ROUND_ORCHESTRATOR, producing double-applied PostEco netlists (Apr 24 2026).
+
+---
+
+*Last updated: 2026-04-24*

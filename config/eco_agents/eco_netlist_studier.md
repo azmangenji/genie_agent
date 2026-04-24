@@ -112,7 +112,7 @@ After reading the fm_analysis, check `failure_mode`:
 
 - **re_study_targets is empty AND failure_mode is not ABORT_LINK/A/B/D/UNKNOWN** → Write rpt noting "No re-study targets — study JSON unchanged." Copy. **EXIT.**
 
-Only proceed to Re-study Step 3 for: `ABORT_LINK`, `A`, `B`, `C`, `D`, `H`, `UNKNOWN`, or mixed modes with non-empty `re_study_targets`.
+Only proceed to Re-study Step 3 for: `ABORT_LINK`, `ABORT_CELL_TYPE`, `A`, `B`, `C`, `D`, `H`, `UNKNOWN`, or mixed modes with non-empty `re_study_targets`.
 
 ### Re-study Step 3 — Handle each failure mode
 
@@ -221,6 +221,41 @@ After resolving PENDING inputs via rerun FM results, the gate entry is either:
 - **Fully resolved** with a direct driver → ready for eco_applier insertion
 - **Resolved but needs_named_wire** → eco_applier Step 0 handles it (declares named wire, rewires port bus)
 - **Still PENDING** → FM could not find it even with rerun → mark SKIPPED with reason "FM could not resolve after rerun — manual investigation required"
+
+**For `failure_mode: ABORT_CELL_TYPE` (cell_type/gate_function mismatch):**
+
+For each `fix_cell_type` entry in `revised_changes`:
+- `gate_instance` — the ECO gate with wrong cell_type (e.g., `eco_9868_e002`)
+- `gate_function` — the correct logical function (e.g., `AND2`)
+- `wrong_cell_type` — what eco_applier used (e.g., `ND2D1BWP`)
+- `correct_cell_prefix` — prefix to search for (e.g., `AN2` for AND2)
+
+**Step CT-1 — Find the correct cell type in PreEco Synthesize:**
+
+Search for any cell instance in the same module scope that uses the same port names as `port_connections` — this finds a real library cell that is structurally compatible:
+
+```bash
+# Extract port names from port_connections (e.g., A1, A2, Z)
+# Search PreEco for cells in the same scope that have ALL those port names
+# The found cell implements the correct function for those ports
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
+  awk '/^module <scope_module>/{p=1} p && /\.<pin1>.*\.<pin2>.*\.<output_pin>/{print; exit} /^endmodule/{p=0}' | \
+  grep -oE "^[[:space:]]*[A-Z][A-Z0-9]+" | head -3
+```
+
+The resulting cell type is one that (a) exists in the same module scope, (b) has all the same ports. This is technology-library-agnostic — no need to know specific prefixes.
+
+**Step CT-2 — Update study JSON entry:**
+```python
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    for entry in study[stage]:
+        if entry.get("instance_name") == gate_instance:
+            entry["cell_type"] = correct_cell_type   # cell found in Step CT-1
+            entry["re_study_note"] = (
+                f"ABORT_CELL_TYPE: corrected cell_type from '{wrong_cell_type}' "
+                f"to '{correct_cell_type}' — wrong cell had missing port '{missing_pin}'"
+            )
+```
 
 **For `failure_mode: H` (gate input driven only through hierarchical port bus):**
 

@@ -754,6 +754,38 @@ If count=0 in any P&R stage: the port declaration was skipped → FM will fail w
 
 ---
 
+## STEP 4c — Pre-FM Cross-Stage Consistency Check
+
+**Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_pre_fm_checker.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `BASE_DIR`, `ROUND=1`, `AI_ECO_FLOW_DIR`
+- Path to applied JSON: `<BASE_DIR>/data/<TAG>_eco_applied_round1.json`
+
+Wait for sub-agent to complete.
+
+**Read result — gate FM submission:**
+```python
+check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
+if check["passed"]:
+    # All checks passed (including any inline fixes applied) → proceed to Step 5
+    pass
+else:
+    # Issues remained after MAX_RETRIES inline fix attempts
+    # eco_pre_fm_checker exhausted its fix attempts — escalate to ROUND_ORCHESTRATOR
+    write_round_handoff({
+        "status": "FM_FAILED",
+        "eco_fm_tag": "NOT_RUN_PRE_FM_CHECK_FAILED",
+        "pre_fm_check_failed": True,
+        "pre_fm_check_path": f"data/{TAG}_eco_pre_fm_check_round1.json"
+    })
+    write_eco_fixer_state(round=1)
+    spawn ROUND_ORCHESTRATOR
+    HARD STOP  # Step 5 skipped — FM never submitted
+```
+
+> **Why before FM:** FM stage-to-stage comparisons (PrePlace vs Synthesize, Route vs PrePlace) fail when stages have different ECO changes applied — e.g., a port added to Synthesize but SKIPPED in PrePlace causes thousands of non-equivalent DFFs. This check takes seconds. FM takes 1-2 hours.
+
+---
+
 ## STEP 5 — PostEco Formality Verification
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
@@ -871,7 +903,13 @@ If the file does not exist or is empty — write it again. Do NOT proceed to spa
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
 - `TOTAL_ROUNDS`: 1
 
-#### If FM RESULT = FAIL → Spawn ROUND_ORCHESTRATOR
+#### If FM RESULT = FAIL or ABORT → Spawn ROUND_ORCHESTRATOR
+
+> **CRITICAL: ABORT is treated IDENTICALLY to FAIL here.** When eco_fm_runner returns with any non-PASS result — whether FM ran comparison (FAIL) or crashed before comparison (ABORT with N/A) — the action is the same: write fixer_state, write round_handoff, spawn ROUND_ORCHESTRATOR, HARD STOP.
+>
+> Do NOT attempt to diagnose the ABORT. Do NOT re-apply ECO. Do NOT re-submit FM. Do NOT try to fix the netlist yourself. ROUND_ORCHESTRATOR's eco_fm_analyzer will diagnose the abort type (ABORT_NETLIST, ABORT_LINK, etc.) and produce the correct fix.
+>
+> The difference between FAIL and ABORT only matters to eco_fm_analyzer (Step 0). To ORCHESTRATOR's spawn decision, both are the same: → ROUND_ORCHESTRATOR.
 
 Initialize and write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
 ```json
