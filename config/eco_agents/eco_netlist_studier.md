@@ -934,12 +934,25 @@ Why wire declarations must NOT modify the port list: the module's port list only
 
 1. Identify `parent_module`, `instance_name`, `port_name`, `net_name`, `submodule_type`.
 2. Re-use netlist type from 0g. If hierarchical: `confirmed: true` always.
-3. Verify instance block in PreEco Synthesize: `grep -n "<submodule_type> <instance_name>" /tmp/eco_study_<TAG>_Synthesize.v | head -3`
+3. **MANDATORY — Validate `submodule_pattern` before recording:**
+   ```bash
+   grep -c "<submodule_type> <instance_name>" /tmp/eco_study_<TAG>_Synthesize.v
+   ```
+   - Count ≥ 1 → `confirmed: true`, record `submodule_pattern: "<submodule_type>"` (the actual module type name as it appears in the instantiation line)
+   - Count = 0 → `confirmed: false`, reason: `"instance <instance_name> of type <submodule_type> not found in Synthesize PreEco"`. Also try the other stages before giving up:
+     ```bash
+     grep -c "<submodule_type> <instance_name>" /tmp/eco_study_<TAG>_PrePlace.v
+     grep -c "<submodule_type> <instance_name>" /tmp/eco_study_<TAG>_Route.v
+     ```
+     If found in any stage: record per-stage `instance_confirmed` flags. eco_applier will skip stages where `instance_confirmed: false`.
+   - **NEVER record a `submodule_pattern` that was not verified against at least one PreEco stage** — an unverified pattern causes eco_applier to silently SKIP the port_connection (instance block not found → SKIPPED), which FM will then flag as a globally unmatched signal.
+
 4. Record:
 ```json
-{"change_type": "port_connection", "parent_module": "<module>", "submodule_pattern": "<pattern>",
+{"change_type": "port_connection", "parent_module": "<module>", "submodule_pattern": "<verified_submodule_type>",
  "instance_name": "<INST>", "port_name": "<port>", "net_name": "<net>",
- "netlist_type": "hierarchical", "confirmed": true}
+ "netlist_type": "hierarchical", "confirmed": true,
+ "instance_confirmed": {"Synthesize": true, "PrePlace": true, "Route": true}}
 ```
 
 ### 0i — Process `port_promotion` changes → `port_promotion` study entries

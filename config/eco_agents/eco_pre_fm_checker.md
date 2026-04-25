@@ -173,6 +173,98 @@ remove_duplicate_port(lines, module_name, signal)  # keep first occurrence, remo
 recompress(lines, f"PostEco/{stage}.v.gz")
 ```
 
+### Check F — Duplicate Wire Declarations and Duplicate Instance Port Connections
+
+These are FM-599 abort triggers that eco_applier's Check 5/6 may have missed (e.g., in modules not directly touched by eco_applier, or when the conflict was introduced via port_promotion interaction).
+
+```python
+import re, gzip
+
+for stage in ["Synthesize", "PrePlace", "Route"]:
+    content = gzip.open(f"PostEco/{stage}.v.gz", 'rt').read()
+    for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
+        mod_name = mod_block.split('(')[0].strip()
+
+        # F1: Duplicate explicit wire declarations
+        wire_decls = re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE)
+        seen = {}
+        for w in wire_decls:
+            seen[w] = seen.get(w, 0) + 1
+        dups = [w for w, c in seen.items() if c > 1]
+        if dups:
+            issues_F.append({
+                "stage": stage, "module": mod_name,
+                "sub_check": "F1_dup_wire",
+                "wires": dups, "severity": "CRITICAL"
+            })
+
+        # F2: Explicit wire X where .X(X) port connection already creates implicit wire X
+        wire_set = set(re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE))
+        implicit = set(re.findall(r'\.\s*(\w+)\s*\(\s*\1\s*\)', mod_block))
+        conflict = wire_set & implicit
+        if conflict:
+            issues_F.append({
+                "stage": stage, "module": mod_name,
+                "sub_check": "F2_implicit_wire_conflict",
+                "wires": list(conflict), "severity": "CRITICAL"
+            })
+
+        # F3: Duplicate port connections in instance blocks (.pin used twice)
+        for inst_match in re.finditer(r'(\w+)\s+(\w+)\s*\((.*?)\)\s*;', mod_block, re.DOTALL):
+            inst_name = inst_match.group(2)
+            pins = re.findall(r'\.\s*(\w+)\s*\(', inst_match.group(3))
+            pin_seen = {}
+            for pin in pins:
+                pin_seen[pin] = pin_seen.get(pin, 0) + 1
+            dup_pins = [p for p, c in pin_seen.items() if c > 1]
+            if dup_pins:
+                issues_F.append({
+                    "stage": stage, "module": mod_name, "instance": inst_name,
+                    "sub_check": "F3_dup_port_connection",
+                    "pins": dup_pins, "severity": "CRITICAL"
+                })
+```
+
+**Inline fix for Check F:**
+
+- **F1 (duplicate wire decl)**: Keep the first occurrence, remove all subsequent `wire X;` lines for the duplicated name in that module.
+- **F2 (explicit wire conflicts with implicit)**: Remove the explicit `wire X;` declaration — the implicit wire from the port connection is sufficient and the explicit one causes FM-599.
+- **F3 (duplicate port connection)**: In the instance block, remove the duplicate `.pin(...)` entry (keep the first; the duplicate is from eco_applier inserting a port connection that was already present).
+
+```python
+def fix_F1_F2(lines, module_name, wire_name, sub_check):
+    in_module = False
+    wire_seen = False
+    result = []
+    for line in lines:
+        if re.match(rf'^module\s+{re.escape(module_name)}\b', line):
+            in_module = True
+        elif re.match(r'^endmodule\b', line):
+            in_module = False
+        if in_module and re.match(rf'^\s*wire\s+{re.escape(wire_name)}\s*;', line):
+            if wire_seen:
+                continue  # drop duplicate (F1) or drop conflicting explicit wire (F2)
+            wire_seen = True
+        result.append(line)
+    return result
+
+def fix_F3(lines, module_name, instance_name, dup_pin):
+    in_inst = False
+    pin_seen = False
+    result = []
+    for line in lines:
+        if re.search(rf'\b{re.escape(instance_name)}\s*\(', line):
+            in_inst = True
+        if in_inst and re.search(rf'\.\s*{re.escape(dup_pin)}\s*\(', line):
+            if pin_seen:
+                continue  # drop duplicate port connection
+            pin_seen = True
+        if in_inst and re.search(r'\)\s*;', line):
+            in_inst = False
+        result.append(line)
+    return result
+```
+
 ### Check E — Rewire Consistency (WARNING only — not a blocker)
 
 ```python
@@ -203,8 +295,9 @@ Attempts: <N of MAX_RETRIES>
 Check A — Stage Consistency (INSERTED/SKIPPED mismatch) : <PASS / FIXED / FAIL>
 Check B — Port Declarations in all 3 stages             : <PASS / FIXED / FAIL>
 Check C — Inserted Cells in all 3 stages                : <PASS / FIXED / FAIL>
-Check D — No Duplicate Port Names                        : <PASS / FIXED / FAIL>
+Check D — No Duplicate Port Names (port list header)     : <PASS / FIXED / FAIL>
 Check E — Rewire Consistency (warning)                   : <PASS / WARN>
+Check F — Duplicate Wire Decls / Implicit Wire Conflicts : <PASS / FIXED / FAIL>
 
 OVERALL: <PASS — proceed to FM / FAIL after 3 retries — escalate to ROUND_ORCHESTRATOR>
 
@@ -255,7 +348,8 @@ result = {
         "B_port_declarations": result_B,
         "C_cell_insertions":   result_C,
         "D_duplicate_ports":   result_D,
-        "E_rewire_warnings":   "WARN" if issues_E else "PASS"
+        "E_rewire_warnings":   "WARN" if issues_E else "PASS",
+        "F_wire_dup_implicit": result_F
     }
 }
 write_json(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json", result)

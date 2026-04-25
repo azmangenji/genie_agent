@@ -925,6 +925,12 @@ If the file does not exist or is empty — write it again. Do NOT proceed to spa
 
 ### Mandatory Step B — Spawn the correct next agent
 
+#### If pre_fm_check_failed = true (Step 4c failure — FM was never submitted)
+
+This path is triggered when eco_pre_fm_checker returned `passed: false` after MAX_RETRIES inline fix attempts. FM was **never submitted** this round. The round_handoff.json already has `status: FM_FAILED` and `pre_fm_check_failed: true` from Step 4c.
+
+**Spawn ROUND_ORCHESTRATOR** — same as FM FAIL path below. ROUND_ORCHESTRATOR's Step 0 will detect `pre_fm_check_failed: true` in the handoff and skip FM log parsing, reading instead from `eco_pre_fm_check_round<ROUND>.json` for the diagnosis.
+
 #### If FM RESULT = PASS → Spawn FINAL_ORCHESTRATOR
 
 **Spawn FINAL_ORCHESTRATOR agent** with content of `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:

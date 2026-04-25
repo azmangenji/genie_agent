@@ -65,19 +65,23 @@ If it fails, retry once. If still fails, log the error — but never skip the at
 
 ---
 
-## STEP 6b — Revert PostEco Netlists
+## STEP 6b — Backup Current PostEco (Surgical Patch Mode)
 
-Restore from round-specific backup:
+> **Architecture change — do NOT revert to PreEco.** Previous rounds applied changes that were correct. Reverting to PreEco and re-applying everything from scratch causes duplicate insertions when ALREADY_APPLIED detection misfires. Instead: backup the current PostEco (which has all previous rounds' changes), then eco_applier will surgically undo only the failing entries and re-apply corrections.
+
+Backup current PostEco as the rollback point for this round:
 ```bash
 for stage in Synthesize PrePlace Route:
-    bak = <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>
-    if bak exists:
-        cp bak <REF_DIR>/data/PostEco/<Stage>.v.gz
-    else:
-        print("No backup for <Stage> round <ROUND> — skipping revert")
+    # Tag the backup with NEXT_ROUND so each round has its own rollback point
+    cp <REF_DIR>/data/PostEco/<Stage>.v.gz \
+       <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<NEXT_ROUND>
 ```
 
-**CHECKPOINT:** For each stage that had a backup, verify the restore succeeded — gz file is non-zero. Do NOT proceed to Step 6c if any restore failed.
+**Do NOT restore from any previous backup.** The current `PostEco/<Stage>.v.gz` already contains all correctly-applied changes from previous rounds — eco_applier will leave those untouched in Surgical Mode and only undo+reapply entries marked `force_reapply: true`.
+
+**Safety net:** `bak_<TAG>_round1` (written by eco_applier in Round 1) is always the original PreEco state. It is never overwritten and can be used to fully restore if needed.
+
+**CHECKPOINT:** For each stage, verify the backup file `bak_<TAG>_round<NEXT_ROUND>` was created and is non-zero. Do NOT proceed to Step 6c if any backup failed.
 
 ---
 
@@ -196,6 +200,25 @@ ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt
 ```
 Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to Step 4 without both.
+
+**MANUAL_ONLY RE-CHECK (after Step 6f):** After eco_netlist_studier_round_N completes, re-scan `eco_preeco_study.json` for entries with `force_reapply: true`:
+
+```python
+study = load(f"data/{TAG}_eco_preeco_study.json")
+reapply_entries = [
+    e for stage_entries in study.values() if isinstance(stage_entries, list)
+    for e in stage_entries
+    if e.get("force_reapply") and not e.get("manual_only")
+]
+if not reapply_entries:
+    # All force_reapply entries are manual_only — no fixable work remains
+    # Exit early: do NOT spawn eco_applier or eco_fm_runner
+    update_handoff(status="MANUAL_LIMIT")
+    spawn FINAL_ORCHESTRATOR with TOTAL_ROUNDS=<NEXT_ROUND>
+    EXIT
+```
+
+This catches the case where eco_netlist_studier discovered that all previously-fixable entries are now `manual_only` (e.g., cell lookup failed, net unresolvable in all stages). Without this re-check, eco_applier and eco_fm_runner would be spawned with nothing actionable to do.
 
 ---
 
@@ -377,7 +400,9 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 
 **Then EXIT — your work is done.**
 
-### If FM RESULT = FAIL and NEXT_ROUND < 6
+### If FM RESULT = FAIL and NEXT_ROUND ≤ 6
+
+> **GUARD:** Before spawning, verify `NEXT_ROUND ≤ max_rounds (6)`. If `NEXT_ROUND > 6` — this should never happen, but if it does: do NOT spawn another ROUND_ORCHESTRATOR. Treat as MAX_ROUNDS exceeded → spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`.
 
 Update `eco_fixer_state.fm_results_per_round` with this round's result.
 
@@ -388,7 +413,7 @@ Update `eco_fixer_state.fm_results_per_round` with this round's result.
 
 **Then EXIT — your work is done.**
 
-### If FM RESULT = FAIL and NEXT_ROUND = 6 (max rounds reached — FM still failing, not manual_only)
+### If FM RESULT = FAIL and NEXT_ROUND > 6 (max rounds exceeded)
 
 Update handoff: `"status": "MAX_ROUNDS"`
 

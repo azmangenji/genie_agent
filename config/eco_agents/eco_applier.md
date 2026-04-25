@@ -6,6 +6,51 @@
 
 ---
 
+## MODE SELECTION: Round 1 (Full Apply) vs Round 2+ (Surgical Patch)
+
+### Round 1 — Full Apply Mode
+
+All changes in study JSON are processed from scratch. PostEco starts as a copy of PreEco (clean state). Backup before editing (`bak_<TAG>_round1` = original PreEco = permanent safety net).
+
+### Round 2+ — Surgical Patch Mode
+
+> **Why surgical:** Reverting to PreEco and re-applying everything causes duplicate insertions when ALREADY_APPLIED detection misfires on changes that are already correctly in PostEco. Surgical mode preserves correct Round-N work and only undoes/redoes entries that need fixing.
+
+In Surgical Patch Mode:
+1. **PostEco already contains previous rounds' correct changes** — do NOT restore from any backup
+2. ROUND_ORCHESTRATOR Step 6b has already backed up the current PostEco as `bak_<TAG>_round<ROUND>` — eco_applier's Step 2 backup is skipped (backup already done)
+3. Read `eco_fm_analysis_round<ROUND-1>.json` → `revised_changes` list — these are the entries that need to be fixed
+4. For each entry in study JSON:
+   - **NOT in `revised_changes` AND `force_reapply: false`** → mark as ALREADY_APPLIED (skip — correctly applied in a previous round)
+   - **In `revised_changes` OR `force_reapply: true`** → UNDO previous application → RE-APPLY with corrections from updated study JSON
+
+#### UNDO by change_type (Surgical Patch Mode only)
+
+Before re-applying a `force_reapply: true` entry, undo its previous application from the current PostEco:
+
+| change_type | Undo action |
+|-------------|-------------|
+| `rewire` | In the cell instance block, find `.pin(new_net)` and replace with `.pin(old_net)` — restoring the original connection |
+| `new_logic_gate`, `new_logic_dff`, `new_logic` | Find the cell instance block `<cell_type> <instance_name> (...)` and remove the entire block including trailing `;` |
+| `port_declaration`, `port_promotion` | If a duplicate port exists in the module header: remove the duplicate. If the force_reapply reason is a correction (e.g., wrong direction): remove the incorrect declaration line |
+| `port_connection` | In the module instance block, revert `.port(new_net)` back to its previous form (either remove if it was a new addition, or restore `.port(old_net)`) |
+| `wire_declaration` (Check F fix) | Remove the explicit `wire X;` that caused FM-599 |
+| `port_connection_duplicate` (Check F/F3 fix) | Remove the duplicate `.pin(net)` line from the instance block |
+
+**UNDO verification:** After each undo, confirm the undone element is gone:
+```bash
+# For rewire undo: confirm new_net no longer appears on this pin
+grep -n "\.pin(new_net)" /tmp/eco_apply_<TAG>_<Stage>.v | grep "<instance_name>"
+# → expect 0 matches
+
+# For cell removal: confirm instance_name is gone
+grep -c "<instance_name>" /tmp/eco_apply_<TAG>_<Stage>.v
+# → expect 0
+```
+If undo fails (element not found): the entry was never actually applied in a previous round — skip undo, proceed directly to RE-APPLY.
+
+---
+
 ## CRITICAL: Processing Order — 4 passes per stage
 
 The PreEco study JSON may contain entries of multiple change types. Process in this strict order within each stage's decompress/edit/recompress cycle:
@@ -47,14 +92,13 @@ Before doing any file I/O, scan the stage array for entries where `"confirmed": 
 
 ### Step 2 — Backup (once per stage)
 
-Include the round number in the backup name so each round has its own backup:
-
+**Round 1:** Backup before editing (this backup is the permanent safety net — original PreEco state):
 ```bash
 cp <REF_DIR>/data/PostEco/<Stage>.v.gz \
-   <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round<ROUND>
+   <REF_DIR>/data/PostEco/<Stage>.v.gz.bak_<TAG>_round1
 ```
 
-Example: `Synthesize.v.gz.bak_<TAG>_round1`, `Synthesize.v.gz.bak_<TAG>_round2`
+**Round 2+:** SKIP this step — ROUND_ORCHESTRATOR Step 6b already backed up the current PostEco as `bak_<TAG>_round<ROUND>` before spawning eco_applier. Do not overwrite that backup.
 
 ### Step 3 — Module-grouped decompress strategy
 
@@ -991,9 +1035,58 @@ grep -c "^module " /tmp/eco_apply_<TAG>_<Stage>.v > /tmp/posteco_module_count
 diff /tmp/preeco_module_count /tmp/posteco_module_count || echo "WARNING: module count changed"
 ```
 
+**Check 5 — No duplicate `wire` declarations in any module body:**
+```python
+import re
+content = open('/tmp/eco_apply_<TAG>_<Stage>.v').read()
+for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
+    mod_name = mod_block.split('(')[0].strip()
+    wire_decls = re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE)
+    seen = {}
+    for w in wire_decls:
+        seen[w] = seen.get(w, 0) + 1
+    dups = [w for w, c in seen.items() if c > 1]
+    if dups:
+        print(f'DUPLICATE WIRE DECL in {mod_name}: {dups}')
+        # ALSO check: explicit wire X where X appears in a port connection .X(X)
+        # — implicit wire from port connection + explicit wire = FM-599
+        for w in dups:
+            raise SystemExit(1)
+# Also check explicit wire X vs implicit wire from port connection .X(net):
+for mod_block in re.split(r'^module\s+', content, flags=re.MULTILINE)[1:]:
+    mod_name = mod_block.split('(')[0].strip()
+    wire_decls = set(re.findall(r'^\s*wire\s+(\w+)\s*;', mod_block, re.MULTILINE))
+    # Named port connections: .portname(anything) — portname becomes implicit wire if net=portname
+    implicit_wires = set(re.findall(r'\.\s*(\w+)\s*\(\s*\1\s*\)', mod_block))
+    conflict = wire_decls & implicit_wires
+    if conflict:
+        print(f'EXPLICIT WIRE conflicts with implicit port-connection wire in {mod_name}: {conflict}')
+        raise SystemExit(1)
+print('Check 5 PASSED: no duplicate wire declarations')
+```
+
+**Check 6 — No duplicate instance port connections in any module body:**
+```python
+import re
+content = open('/tmp/eco_apply_<TAG>_<Stage>.v').read()
+# Find all instance blocks: CellType instance_name ( .pin(net), ... );
+for inst_match in re.finditer(r'(\w+)\s+(\w+)\s*\((.*?)\)\s*;', content, re.DOTALL):
+    inst_name = inst_match.group(2)
+    port_body = inst_match.group(3)
+    pins = re.findall(r'\.\s*(\w+)\s*\(', port_body)
+    seen = {}
+    for pin in pins:
+        seen[pin] = seen.get(pin, 0) + 1
+    dups = [pin for pin, c in seen.items() if c > 1]
+    if dups:
+        print(f'DUPLICATE PORT CONNECTION in instance {inst_name}: {dups}')
+        raise SystemExit(1)
+print('Check 6 PASSED: no duplicate instance port connections')
+```
+
 **If ANY check fails → DO NOT recompress. Record all affected changes as VERIFY_FAILED with the check number and reason. Report to ORCHESTRATOR. The ORCHESTRATOR will diagnose via eco_fm_analyzer without wasting an FM slot.**
 
-> **Why this matters:** ALL FM ABORT conditions seen in real runs (FM-599 "Verilog syntax error", FE-LINK-7 "port not defined") were caused by eco_applier producing invalid Verilog — corrupted port lists, duplicate port declarations, wrong cell pin names. FM is the first validator in the current flow, wasting 1-2 hours per detection. These 4 checks run in seconds and catch all confirmed patterns.
+> **Why this matters:** ALL FM ABORT conditions seen in real runs (FM-599 "Verilog syntax error", FE-LINK-7 "port not defined") were caused by eco_applier producing invalid Verilog — corrupted port lists, duplicate port/wire declarations, duplicate instance port connections, wrong cell pin names. FM is the first validator in the current flow, wasting 1-2 hours per detection. These checks run in seconds and catch all confirmed patterns.
 
 ### Step 5 — Recompress (once per stage, after ALL modules processed AND Step 4b checks pass)
 
@@ -1054,6 +1147,8 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 
 ## ALREADY_APPLIED Detection — Per-Type Rules
 
+> **Surgical Mode note (Round 2+):** In Surgical Patch Mode, ALREADY_APPLIED is the EXPECTED result for correctly-applied entries from previous rounds. Do NOT treat ALREADY_APPLIED as an error. Only entries with `force_reapply: true` or in `revised_changes` should reach the undo+reapply path — all others are intentionally skipped.
+
 **CRITICAL:** `ALREADY_APPLIED` is a valid status but MUST be based on a specific, type-appropriate check — NOT a broad grep that finds the signal anywhere in the file. A signal name can exist in the file as a wire without being in the right place (e.g., `<signal_name>` appears as a DFF output but is NOT in the module port list). Always record `already_applied_reason` in the JSON with exactly what check was performed and what was found.
 
 | change_type | ALREADY_APPLIED condition | What to check |
@@ -1106,7 +1201,8 @@ if count >= 1:
 | Cell not in PostEco | SKIPPED — cell may have been optimized away |
 | old_net not on pin | SKIPPED — PostEco may differ from PreEco structurally |
 | Occurrence count > 1 | SKIPPED + AMBIGUOUS — cannot safely change without risk |
-| Backup already exists | Overwrite — always back up to `<Stage>.v.gz.bak_<TAG>_round<ROUND>` |
+| Round 1 backup | Always create `<Stage>.v.gz.bak_<TAG>_round1` before any edits — permanent safety net |
+| Round 2+ backup | Skip eco_applier backup — ROUND_ORCHESTRATOR Step 6b already backed up as `bak_<TAG>_round<ROUND>` |
 
 ---
 
