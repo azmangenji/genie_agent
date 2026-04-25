@@ -1239,7 +1239,7 @@ rm -f /tmp/eco_apply_<TAG>_<Stage>.v
 
 | change_type | ALREADY_APPLIED condition | What to check |
 |-------------|--------------------------|---------------|
-| `new_logic_dff` / `new_logic_gate` / `new_logic` | Instance name already in the file | `grep -c "^\s*<cell_type>\s*<instance_name>\s*(" netlist` ≥ 1 |
+| `new_logic_dff` / `new_logic_gate` / `new_logic` | Instance exists AND all input pin connections match the study JSON | Step 1: `grep -c "^\s*<cell_type>\s*<instance_name>\s*(" netlist` ≥ 1. **Step 2 (MANDATORY):** For each input pin in `port_connections` or `port_connections_per_stage[<stage>]`, verify the expected net is actually on that pin in the current module buffer: `grep -c "\.<input_pin>( <expected_net> )" <instance_block>` = 1. If Step 1 passes but Step 2 fails for ANY input pin → **NOT ALREADY_APPLIED** — the instance exists with wrong connections; UNDO and RE-APPLY. |
 | `rewire` | new_net already on the target pin | `grep -c "\.<pin>(<new_net>)" <cell_block>` = 1 (scoped to cell block) |
 | `port_declaration` (`input`\|`output`) | Signal already in the MODULE PORT LIST | Parse port list from `mod_idx` to `port_list_close_idx` — check if `<signal_name>` appears in that range. Signal present ONLY in the module body (as a wire or DFF output) does NOT count. |
 | `port_declaration` (`wire`) | Wire declaration already in module body | `grep -c "^\s*wire\s\+<signal_name>\s*;" <module_scope>` ≥ 1 |
@@ -1381,7 +1381,10 @@ Write `data/<TAG>_eco_applied_round<ROUND>.json`. Each stage is an array — one
 1. **NEVER edit if occurrence count > 1** — ambiguity means you cannot be sure which instance to change; mark SKIPPED + AMBIGUOUS instead
 2. **NEVER do global search-replace** — scope all changes to the specific cell instance block; `old_net` may legitimately appear on other pins
 3. **ALWAYS backup before decompressing** — one backup per stage per round, before any edits; include round number in the backup name
-4. **Consistent instance naming across stages** — `eco_<jira>_<seq>` must be the same name in Synthesize, PrePlace, and Route for the same logical change; FM stage-to-stage matching requires identical instance names; D-input chain gates use `eco_<jira>_d<seq>` (with `d` prefix) and nets `n_eco_<jira>_d<seq>`
+4. **Consistent instance naming across stages** — the same name must be used in Synthesize, PrePlace, and Route for the same logical change; FM stage-to-stage matching requires identical instance names across all 3 stages.
+   - **DFF insertions** (`new_logic_dff`): use `<target_register>_reg` as instance name, `<target_register>` as Q output net. This matches FM's RTL synthesis name → FM auto-matches in `FmEqvEcoSynthesizeVsSynRtl` without `set_user_match`.
+   - **Combinational gate insertions** (`new_logic_gate`): use `eco_<jira>_<seq>` for instances, `n_eco_<jira>_<seq>` for output nets. FM matches these by structural cone tracing, not by name.
+   - **D-input chain gates**: use `eco_<jira>_d<seq>` with `d` prefix; condition gates use `eco_<jira>_c<seq>` with `c` prefix.
 5. **ALWAYS verify after recompressing** — confirm old_net count drops to 0 in the scoped block and new cell is present; global grep gives false results
 6. **Keep processing remaining cells if one is SKIPPED** — a SKIPPED cell does not abort the stage; continue with all remaining confirmed entries
 7. **Polarity rule** — only use Step 4c (inverter) when new_net is an inverted signal (`~source_net`); for DFF or gate new_logic, use 4c-DFF or 4c-GATE respectively — never SKIPPED simply because it is not a simple inversion

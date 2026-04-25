@@ -695,22 +695,12 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 
 ---
 
-## STEP 4b — SVF Entries for Pre-Existing FM Failures (not for inserted cells)
+## STEP 4b — DISABLED (SVF is for engineers only)
 
-Read `data/<TAG>_eco_fm_verify.json` (written by Step 5 in subsequent rounds) and `data/<TAG>_eco_applied_round<ROUND>.json`. Check if any pre-existing FM failures need suppression (LATCG mismatches or FM-unmatched points that existed before this ECO).
+> **SVF updates are PROHIBITED for the AI flow. Step 4b is permanently disabled.**
+> Always set `svf_update_needed = false`. Do NOT spawn eco_svf_updater. Do NOT write any `set_dont_verify`, `set_user_match`, or `guide_eco_change` entries. SVF changes are manual engineer decisions made after reviewing the AI flow's FINAL_ORCHESTRATOR report.
 
-> **CRITICAL distinction:** `guide_eco_change -type insert_cell` is NOT a valid SVF command (RULE 11). FM auto-matches ECO-inserted cells by instance path — no SVF entry is needed or valid for inserted cells. Step 4b is ONLY for writing `set_dont_verify` or `set_user_match` entries to suppress pre-existing failures.
-
-For pure new_logic insertions with no pre-existing FM failures: set `svf_update_needed = false`, skip Step 4b. The Step 4b RPT is still written noting "not applicable".
-
-If pre-existing FM failures exist — **spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_svf_updater.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND` (current round number), `AI_ECO_FLOW_DIR`
-- Task: Write `set_dont_verify` / `set_user_match` entries (NEVER `guide_eco_change -type insert_cell`) to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
-- Output: `<BASE_DIR>/data/<TAG>_eco_svf_update.json` + `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
-
-Set `svf_update_needed = true` for use in Step 5 only when the TCL file was actually written with entries.
-
-**CHECKPOINT (if spawned):** Verify `data/<TAG>_eco_svf_entries.tcl` exists and contains at least one `set_dont_verify` or `set_user_match` entry (no `guide_eco_change` entries) before proceeding.
+Set `svf_update_needed = false` and proceed directly to Step 4c.
 
 ---
 

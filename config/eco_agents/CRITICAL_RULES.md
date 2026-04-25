@@ -132,6 +132,22 @@ The retry strategies in Step 2 of ORCHESTRATOR.md are NOT optional. Only after t
 
 ---
 
+## RULE 10b — ECO Instance Naming Convention
+
+**DFF insertions (`new_logic_dff`):**
+- Instance name: `<target_register>_reg` — the RTL register name with `_reg` suffix
+- Q output net: `<target_register>` — the actual RTL signal name
+
+**Why:** FM's `FmEqvEcoSynthesizeVsSynRtl` compares PostEco SynRtl (where FM synthesizes the new RTL and names the DFF `<target_register>_reg`) against PostEco gate-level. If the gate-level DFF instance name is `<target_register>_reg`, FM auto-matches them by name — no `set_user_match` needed. If the name is anything else (e.g., `eco_<jira>_dff1`), FM cannot match and the downstream comparison fails.
+
+**Combinational gate insertions (`new_logic_gate`):**
+- Instance name: `eco_<jira>_<seq>` (combinational), `eco_<jira>_d<seq>` (D-input chain), `eco_<jira>_c<seq>` (condition gates)
+- Output net: `n_eco_<jira>_<seq>`
+
+FM matches combinational gates by structural cone tracing — generic naming is sufficient. Same name must be used in all 3 stages for stage-to-stage matching.
+
+---
+
 ## RULE 11 — SVF: No Cell-Insertion Entries for ECO-Inserted Cells
 
 **NEVER write `guide_eco_change -type insert_cell -instance {...} -reference {...}` to EcoChange.svf.** This command does not exist in Formality SVF and causes CMD-010 abort on all 3 FM targets before any comparison occurs.
@@ -342,18 +358,19 @@ Entirely new logic with no old expression preserved. Cannot use intermediate net
 
 ---
 
-## RULE 22 — Structural Stage-to-Stage Mismatches Require `set_dont_verify`, Not ECO Rewire
+## RULE 22 — Structural Stage-to-Stage Mismatches: Fix Netlist First
 
-**When `FmEqvEcoPrePlaceVsEcoSynthesize` fails with a large count (hundreds+) AND `FmEqvEcoRouteVsEcoPrePlace` passes (0 failures), this is a structural P&R divergence — NOT a functional ECO error.**
+**When `FmEqvEcoPrePlaceVsEcoSynthesize` fails with a large count (hundreds+) AND `FmEqvEcoRouteVsEcoPrePlace` passes (0 failures), this is a structural P&R divergence.** Investigate the netlist before concluding it cannot be fixed.
 
-Root cause: P&R tools insert HFS buffer trees for high-fanout signals. After new gating logic is added to a high-fanout net, the structural representation of that net differs between Synthesize (simple gate) and PrePlace (buffer tree). FM stage-to-stage comparison fails structurally even though the logic is functionally equivalent.
+Root cause: P&R tools insert HFS buffer trees for high-fanout signals. ECO-inserted gates may reference Synthesize net names that are renamed or split in P&R. The correct fix is always `fix_named_wire` — rewire the gate input to use the correct P&R net name. Use Priority 3 structural driver trace (eco_netlist_studier) to find the P&R alias.
 
-**eco_fm_analyzer classification (Mode G):**
+**eco_fm_analyzer classification (Mode G) — only after confirming netlist fix is impossible:**
 - Detect: `FmEqvEcoRouteVsEcoPrePlace` PASS (0 failures), `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL (≥ 10 failures)
-- Verify: for each failing DFF path, check if its name appears in `eco_rtl_diff.json` as a `target_register`. If none of the failing DFF paths match any `target_register`, these are downstream consumers of the rewired net (HFS buffer tree consumers), not the ECO change itself. This confirms Mode G. If any failing DFF IS a `target_register` — this is NOT Mode G; re-classify as Mode A or C.
-- Action: `set_dont_verify -type { register } /<common_scope>/*` in SVF setup partition, where `<common_scope>` is the longest common hierarchy prefix shared by all failing DFF paths
+- Step 1 — Try fix_named_wire first: trace each failing DFF D-input back to the ECO gate. Check whether any ECO gate input uses a Synthesize net name that is renamed in PrePlace. If found → `fix_named_wire` is the correct action (Mode H). Do NOT proceed to suppression.
+- Step 2 — Only if all ECO gate inputs are correct AND the failures are pure HFS consumer cascades (none of the failing DFFs match any `target_register` in RTL diff, AND Priority 3 structural trace confirms no fixable net): classify Mode G.
+- Mode G action: `set_dont_verify` scoped to the common hierarchy prefix of all failing paths. NEVER use wildcard `*` beyond the proven failing scope.
 
-**NEVER apply Mode G suppression when Route-vs-PrePlace also fails** — that indicates a real ECO error, not a structural mismatch.
+**NEVER apply Mode G suppression when Route-vs-PrePlace also fails** — that indicates a real ECO error requiring a netlist fix, not a structural mismatch.
 
 ---
 
@@ -428,3 +445,25 @@ FM ABORTS (N/A)
 ---
 
 
+
+## RULE 27 — Netlist Fix Priority: Never Use Tune Files or SVF as Shortcuts
+
+**The correct fix for any FM failure is always a netlist change.** `set_dont_verify`, `set_user_match`, and tune file updates are not fixes — they suppress FM's ability to verify the ECO and produce an unverified result.
+
+**SVF updates are for MANUAL ENGINEERS ONLY. The AI flow is PROHIBITED from applying any SVF update.**
+
+`set_dont_verify`, `set_user_match`, and `guide_eco_change` are SVF commands. The AI flow must NEVER write them to `EcoChange.svf` or any `eco_svf_entries.tcl`. Step 4b (eco_svf_updater) is permanently disabled. `svf_update_needed` is always `false`.
+
+**Priority order for every FM failing point:**
+
+| Priority | Action | When |
+|----------|--------|------|
+| **1 — Netlist fix** | Rewire, re-insert, fix_named_wire, correct port connections | ALWAYS try this first |
+| **2 — MANUAL_ONLY** | Report to engineer; stop the fix loop | Only when Priority 1 is proven impossible (net absent via Priority 3 structural trace AND ECO is architecturally correct) |
+| **NEVER** | SVF updates (`set_dont_verify`, `set_user_match`) | The AI flow is prohibited from applying SVF |
+| **NEVER** | Tune file updates to work around FM failures | Tune files mask problems, not fix them |
+
+**HFS net rename = netlist fix, not SVF:**
+When an ECO-inserted gate uses a net in Synthesize that is renamed by P&R (HFS distribution, CTS buffering), the fix is `fix_named_wire` — rewire the gate input to the correct P&R net name. Do NOT suppress with `set_dont_verify`. The named wire approach makes the ECO structurally correct in P&R stages. Using suppression means the ECO gate has a wrong input in P&R stages — it just passes FM without being correct.
+
+**A passing FM via SVF suppression is NOT a verified ECO.** The goal is zero failing points via correct netlist, not zero failing points via suppression.

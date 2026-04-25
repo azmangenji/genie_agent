@@ -115,8 +115,8 @@ rm -f <BASE_DIR>/data/<TAG>_eco_svf_entries.tcl
 - `failure_mode: H` (hierarchical port bus input) → NOT a reason to stop — `revised_changes` contains `fix_named_wire` entries; eco_netlist_studier_round_N sets `needs_named_wire: true` in study JSON, eco_apply_fix_round_N declares named wire and rewires port bus, continue to next round
 - `needs_rerun_fenets: true` → NOT a reason to stop — Step 6f-FENETS re-queries the missing signals; eco_netlist_studier_round_N resolves PENDING_FM_RESOLUTION inputs from the rerun results; continue to next round
 - `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
-- `failure_mode: E` (pre-existing) → NOT a reason to stop — revised_changes contains `set_dont_verify`; apply and continue
-- `failure_mode: G` (structural stage mismatch) → NOT a reason to stop — revised_changes contains `set_dont_verify` entries for the affected scope. Write these entries to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl` using the eco_svf_updater sub-agent (Step 4b), then set `svf_update_needed=true` for Step 5. Do NOT modify `eco_preeco_study.json` — Mode G failures are suppressed in FM, not fixed by ECO rewiring. Continue to next round.
+- `failure_mode: E` (pre-existing) → revised_changes contains `manual_only` entries. These failures existed before this ECO — the AI flow cannot fix them. Report in FINAL_ORCHESTRATOR summary for engineer review. Engineer decides whether SVF `set_dont_verify` is appropriate. Do NOT apply SVF in the AI flow.
+- `failure_mode: G` (structural stage mismatch) → first attempt `fix_named_wire` (Mode H path) for any ECO gate with a P&R-renamed net. If Priority 3 structural trace confirms no fixable net → revised_changes contains `manual_only` entries. Report for engineer review. Do NOT apply SVF.
 - `failure_mode: F` (manual_only — `d_input_decompose_failed`) → **check if ALL `revised_changes` entries have `action: manual_only`**:
   - If YES → **exit the loop early right here** — set handoff `status: MANUAL_LIMIT`, NEXT_ROUND = ROUND + 1, spawn FINAL_ORCHESTRATOR with `TOTAL_ROUNDS: <ROUND>`. Do NOT run Steps 6e/6f/4/5 — those are wasted rounds. These points cannot be automated.
   - If NO (mixed — some manual_only, some fixable) → continue; apply the fixable changes in Steps 6e/6f/4/5, leave manual_only points in engineer report
@@ -287,24 +287,12 @@ Do NOT proceed to Step 4b until the RPT is confirmed in both data/ and AI_ECO_FL
 
 ---
 
-## STEP 4b — SVF Entries (if pre-existing FM failures require suppression)
+## STEP 4b — DISABLED (SVF is for engineers only)
 
-> **CRITICAL:** `guide_eco_change -type insert_cell` is NOT a valid SVF command and must NEVER be written (RULE 11). FM auto-matches inserted cells by instance path. Step 4b is ONLY for `set_dont_verify` / `set_user_match` entries suppressing pre-existing failures — it is NOT triggered by new_logic insertions alone.
+> **SVF updates are PROHIBITED for the AI flow. Step 4b is permanently disabled.**
+> Always set `svf_update_needed = false`. Do NOT spawn eco_svf_updater. Do NOT write any `set_dont_verify`, `set_user_match`, or `guide_eco_change` entries. SVF changes are manual engineer decisions.
 
-Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`. Check if `revised_changes` contains any entry with `action: set_dont_verify` (Mode E pre-existing, or Mode G structural mismatch).
-
-If yes — **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_svf_updater.md` prepended. Pass:
-- `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `AI_ECO_FLOW_DIR`
-- `ROUND_FAILED=<ROUND>` — the round that just failed (eco_svf_updater reads `eco_fm_analysis_round<ROUND_FAILED>.json` for set_dont_verify commands)
-- `ROUND_NEXT=<NEXT_ROUND>` — used only for output file naming
-- Task: Write `set_dont_verify` / `set_user_match` entries (NEVER `guide_eco_change -type insert_cell`) to `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
-- Output: `<BASE_DIR>/data/<TAG>_eco_svf_update.json` + `<BASE_DIR>/data/<TAG>_eco_svf_entries.tcl`
-
-Set `svf_update_needed = true` only when the TCL file was written with entries.
-
-**CHECKPOINT (if spawned):** Verify `_eco_svf_entries.tcl` exists and contains only `set_dont_verify` or `set_user_match` entries.
-
-If no pre-existing failures requiring suppression: set `svf_update_needed = false`, skip Step 4b.
+Set `svf_update_needed = false` and proceed directly to Step 4c.
 
 ---
 

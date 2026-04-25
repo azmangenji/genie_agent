@@ -133,10 +133,29 @@ For each stage-specific entry in `revised_changes`: grep the correct PostEco sta
 If `FENETS_RERUN_PATH` is non-null, build a resolution map from `condition_input_resolutions[]` where `resolved_gate_level_net` is set.
 
 For each gate entry in `eco_preeco_study.json` where any input is `PENDING_FM_RESOLUTION:<signal>`:
-- If resolved and `needs_named_wire` or `has_direct_driver is False` → set input to `NEEDS_NAMED_WIRE:<resolved_net>`, set `needs_named_wire: true`, `port_bus_source_net: <resolved_net>`
-- If resolved with direct driver → set input directly to `resolved_net`
-- If still unresolved → leave as `PENDING_FM_RESOLUTION` (triggers another rerun_fenets)
-- Record re_study_note with resolution details
+
+**Resolution order — try all before giving up:**
+
+1. **Rerun fenets result** (from `FENETS_RERUN_PATH`): if resolved and has direct driver → use directly. If `needs_named_wire` → set `NEEDS_NAMED_WIRE`.
+
+2. **If rerun returned FM-036 or no rerun was done** → try **Priority 3 structural driver trace**:
+   - From the Synthesize-resolved net (stored in the prior round's rerun JSON or eco_preeco_study.json), find the **driver cell instance name** of that net in the Synthesize PreEco netlist
+   - Search the failing P&R stage PreEco netlist for that same driver cell instance
+   - If found → read its output net → use as the P&R alias for the signal in this stage
+   - If driver cell is also renamed → search by cell type + known input net combination
+   ```bash
+   # Find driver cell of <synth_resolved_net> in Synthesize:
+   grep -n "\.<output_pin>( <synth_resolved_net> )" /tmp/eco_study_<TAG>_Synthesize.v | head -3
+   # → extract <driver_cell_name>
+   # Search for same cell in P&R stage:
+   grep -n "\b<driver_cell_name>\b" /tmp/eco_study_<TAG>_<FailingStage>.v | head -3
+   # → extract its output net → that is the P&R alias
+   ```
+   If alias found → set gate input to alias, mark `source: "structural_driver_trace_round<N>"`.
+
+3. **If Priority 3 also fails** (driver cell and all its structural equivalents absent from P&R stage PreEco) → mark input as `UNRESOLVABLE:<signal>` (NOT `PENDING_FM_RESOLUTION` — this terminates the rerun loop). Record: "Signal absent from <stage> PreEco after Priority 1/2/3 — P&R optimization eliminated driver chain."
+
+**CRITICAL: Do NOT leave as `PENDING_FM_RESOLUTION` after a rerun returned FM-036.** This creates an infinite loop (Round N → rerun → FM-036 → Round N+1 → rerun → ...). After the first FM-036 rerun, escalate to Priority 3. If Priority 3 fails, mark `UNRESOLVABLE` and let eco_fm_analyzer decide whether `set_dont_verify` is appropriate (Mode G-P&R).
 
 After resolving:
 - Fully resolved → ready for eco_applier insertion
@@ -156,15 +175,73 @@ zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
 
 **Step CT-2 — Update study JSON:** For all stages where `entry["instance_name"] == gate_instance`, set `cell_type` to the found correct cell type and add `re_study_note` explaining the correction.
 
-**For `failure_mode: H` (gate input driven only through hierarchical port bus):**
+**For `failure_mode: H` (gate input inaccessible in P&R stage — named wire or P&R rename):**
 
-For each `fix_named_wire` entry (`gate_instance`, `input_pin`, `source_net`, `stage`):
+eco_fm_analyzer's deep D-input chain trace identifies the **specific gate and input pin** where the root net is inaccessible. Two sub-cases:
 
-**Step H1 — Confirm structural issue in failing stage(s):** Verify gate exists, input pin is connected to source_net, source_net has no direct primitive driver, and source_net appears only in a hierarchical port bus.
+**Sub-case H-BUS (hierarchical port bus):** Net has no direct primitive driver in P&R; driven only through a submodule output port bus (FM black-boxes it).
+**Sub-case H-RENAME (P&R net rename):** Net exists in Synthesize PreEco but absent in P&R PreEco — P&R renamed it (HFS distribution, CTS buffering).
 
-**Step H2 — Update study JSON for affected stages:** Find the gate entry matching `gate_instance`; set `port_connections_per_stage[stage][input_pin] = "NEEDS_NAMED_WIRE:<source_net>"`, `needs_named_wire: true`, `port_bus_source_net: <source_net>`, and add `re_study_note` explaining Mode H.
+For each `fix_named_wire` entry with fields `gate_instance`, `input_pin`, `source_net`, `stage`:
 
-**Step H3 — Verify Synthesize is NOT affected:** Confirm source_net has a direct primitive driver in Synthesize. If yes, do NOT set `needs_named_wire` for Synthesize stage.
+**Step H1 — Confirm the structural issue:**
+```bash
+# Verify source_net is absent from P&R PreEco
+par_count=$(zcat <REF_DIR>/data/PreEco/<stage>.v.gz | grep -cw "<source_net>")
+synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<source_net>")
+# par_count=0, synth_count>0 → H-RENAME
+# par_count=0, synth_count=0 → H-BUS (hierarchical port bus only)
+```
+
+**Step H2 — Find the P&R alias using Priority 3 structural driver trace:**
+For H-RENAME: find the cell that drives `source_net` in Synthesize PostEco → search for that same cell instance in the P&R stage PostEco → read its output net → that is the P&R alias.
+For H-BUS: `source_net` stays as-is; the named wire approach will connect it through the port bus.
+
+**Step H3 — Update study JSON for the specific gate entry:**
+```python
+# Find the study JSON entry for gate_instance
+entry = find_entry_by_instance(gate_instance, eco_preeco_study)
+
+# Set the corrected net for this specific pin in this specific stage
+if entry.get("port_connections_per_stage") is None:
+    entry["port_connections_per_stage"] = {
+        stage: dict(entry.get("port_connections", {}))
+        for stage in ["Synthesize", "PrePlace", "Route"]
+    }
+
+if par_alias_found:
+    # H-RENAME: use the P&R alias directly
+    entry["port_connections_per_stage"][stage][input_pin] = par_alias
+else:
+    # H-BUS: flag for named wire approach
+    entry["port_connections_per_stage"][stage][input_pin] = f"NEEDS_NAMED_WIRE:{source_net}"
+    entry["needs_named_wire"] = True
+    entry["port_bus_source_net"] = source_net
+
+entry["force_reapply"] = True
+entry["re_study_note"] = f"Mode H fix on pin {input_pin}: {source_net} inaccessible in {stage}"
+```
+
+**Step H4 — Verify Synthesize stage is NOT modified:** `source_net` has a direct primitive driver in Synthesize (confirmed in Step H1). Do NOT set `force_reapply` for Synthesize unless that stage was also diagnosed with the same issue.
+
+**Step H5 — Re-read `mode_H_risk` flags from eco_rtl_diff.json (MANDATORY at RE_STUDY start):**
+
+Before processing eco_fm_analyzer's `revised_changes`, re-read the original RTL diff JSON and check `mode_H_risk: true` on any gate chain entry. For each gate with `mode_H_risk: true` whose `port_connections_per_stage` has NOT already been updated for the listed stages → proactively apply Priority 3 structural trace and update NOW, without waiting for another FM failure:
+
+```python
+rtl_diff = load(f"data/{TAG}_eco_rtl_diff.json")
+for change in rtl_diff.get("changes", []):
+    for gate in change.get("d_input_gate_chain", []):
+        if gate.get("mode_H_risk") and gate.get("missing_in_stages"):
+            for stage in gate["missing_in_stages"]:
+                entry = find_entry_by_instance(gate["instance_name"], eco_preeco_study)
+                if entry and not already_updated(entry, stage, gate["inputs"]):
+                    alias = priority3_structural_trace(gate["inputs"][0], stage)
+                    entry["port_connections_per_stage"][stage][gate["pin"]] = alias or f"NEEDS_NAMED_WIRE:{gate['inputs'][0]}"
+                    entry["force_reapply"] = True
+```
+
+This eliminates the "wasted round" pattern where Mode H is discovered from FM failure rather than predicted from Step 1 analysis.
 
 **For `action: update_gate_function` (gate polarity wrong):**
 
@@ -278,6 +355,7 @@ After identifying the DFF cell type from Synthesize, verify and record actual ne
 **Step B — For each stage, resolve functional pin net names:**
 - Priority 1 — direct name: `grep -cw "<net_name>" /tmp/eco_study_<TAG>_<Stage>.v` — if ≥ 1, use it
 - Priority 2 — P&R alias (only if direct absent): search for net root excluding wire/input/output/reg declarations
+- Priority 3 — Structural driver trace (only if Priority 1 and 2 both fail): see **Step B-P3** below
 
 **Step C — For each stage, resolve auxiliary pin net names from a neighbour DFF** in the same module scope. If no neighbour DFF in the same scope, widen to parent module scope. Do NOT fall back to hardcoded constants without finding a neighbour.
 
@@ -333,9 +411,53 @@ Run for every `new_logic` change where `d_input_decompose_failed: true` AND `fal
 - **Entry A (rewire):** Redirect driver output from `<pivot_net>` → `<pivot_net>_orig`
 - **Entry B (new_logic_gate chain):** Read `new_condition_gate_chain` from `eco_rtl_diff.json`. If null → mark MANUAL_ONLY. Otherwise, for each gate in the chain: create `new_logic_gate` entry with per-stage net verification (same Priority 1/2 as 0b-GATE-STAGE-NETS). Last gate in chain outputs to `<pivot_net>_orig`; downstream cells unchanged.
 
+**Step B-P3 — Structural Driver Trace (Priority 3 fallback for P&R-renamed nets):**
+
+When FM returns FM-036 for a net in a P&R stage AND Priority 2 also fails, the net may have been P&R-renamed to a `tmp_net*` or `FxPlace_*` alias. Use the **driver cell** from the Synthesize resolution to find the renamed net in the P&R stage:
+
+```python
+# Given: synth_resolved_net (e.g., "N2408127") and its driver from Synthesize FM
+# Step 1: Find the driver cell in Synthesize
+driver_cell = None
+for line in synth_stage_lines:
+    if f".ZN( {synth_resolved_net} )" in line or f".Z( {synth_resolved_net} )" in line:
+        driver_cell = extract_cell_instance_name(line)
+        break
+
+# Step 2: Search for the SAME driver cell instance in the P&R stage
+if driver_cell:
+    for line in par_stage_lines:
+        if re.search(rf'\b{re.escape(driver_cell)}\b', line):
+            # Found the cell — extract its output net name
+            output_net = extract_output_pin_net(line)  # reads .ZN(net) or .Z(net)
+            if output_net and output_net != synth_resolved_net:
+                # This is the P&R alias for the Synthesize net
+                par_alias = output_net
+                record(stage=par_stage, net=par_alias, source="structural_driver_trace")
+                break
+```
+
+**Why this works:** P&R tools rename internal nets (e.g., `N2408127 → tmp_net360205`) but they keep the same cell instance name for the driving cell (`A2230141`). By finding the driver cell in the P&R stage and reading its output net, we recover the P&R alias without needing FM.
+
+**If driver cell is also renamed in P&R:** Search by structural signature — cell type AND input net(s) from Synthesize:
+```bash
+# Find any cell with matching inputs in the P&R stage
+grep -n "\.<input_pin>( <known_input_net> )" /tmp/eco_study_<TAG>_<Stage>.v | head -3
+# → extract cell instance and its output net
+```
+
+**If still not found after Priority 3:** Mark the input as `UNRESOLVABLE:<signal>` — not `PENDING_FM_RESOLUTION`. Record in RPT: "Signal not found in <stage> via name, alias, or structural trace — P&R optimization eliminated all equivalent nets." Do NOT skip the entire gate — use `1'b0` as a conservative constant input only if the gate still has at least one valid input and the unresolvable input controls a non-critical condition.
+
+---
+
 **Resolving `PENDING_FM_RESOLUTION` inputs before creating study entries:**
 
-For each gate input starting with `"PENDING_FM_RESOLUTION:<signal>"`, resolve using FM fenets results. Then apply the `needs_named_wire()` structural check.
+For each gate input starting with `"PENDING_FM_RESOLUTION:<signal>"`, resolve in this order:
+1. FM fenets result (from SPEC_SOURCES or rerun JSON)
+2. **Priority 3 structural driver trace** — if FM-036 in this stage, use driver cell to find P&R alias
+3. If still unresolved after all 3 priorities → mark `UNRESOLVABLE` and document
+
+Then apply the `needs_named_wire()` structural check on the resolved net.
 
 **`needs_named_wire(net_name, stage_lines)` function — MANDATORY, keep full logic:**
 
@@ -394,11 +516,19 @@ If the signal is a new_port from this ECO: record `input_from_change`. Signal wi
 
 ### 0d — Assign instance and output net names
 
+**For `new_logic_dff` (sequential DFF insertions):**
 ```
-eco_inst = eco_<jira>_<seq>    (e.g., eco_<jira>_001)
-eco_out  = n_eco_<jira>_<seq>  (e.g., n_eco_<jira>_001)
+instance_name = <target_register>_reg    (e.g., NeedFreqAdj_reg)
+output_net    = <target_register>        (e.g., NeedFreqAdj)
 ```
-Same seq used across all 3 stages for the same logical change.
+Use the `target_register` field from the RTL diff JSON as the DFF instance name (with `_reg` suffix) and the Q output net name. This matches the instance name that FM synthesizes from the RTL — enabling FM auto-matching in `FmEqvEcoSynthesizeVsSynRtl` without any `set_user_match`. Same name used in all 3 stages.
+
+**For `new_logic_gate` (combinational gate insertions, including D-input chain gates and MUX cascade gates):**
+```
+instance_name = eco_<jira>_<seq>    (e.g., eco_<jira>_001, eco_<jira>_d001, eco_<jira>_c001)
+output_net    = n_eco_<jira>_<seq>  (e.g., n_eco_<jira>_001)
+```
+FM matches combinational gates by structural cone tracing, not by name — generic naming is sufficient. Same seq used across all 3 stages.
 
 ### 0e — Record as new_logic_insertion entry in study JSON
 
@@ -650,13 +780,13 @@ eco_applier processes arrays in order — unsorted entries cause rewires to run 
   "instance_scope": "<INST_A>/<INST_B>",
   "scope_is_tile_root": false,
   "cell_type": "<DFF_cell_type>",
-  "instance_name": "eco_<jira>_<seq>",
-  "output_net": "n_eco_<jira>_<seq>",
-  "port_connections": {"<clk_pin>": "<clk_net_synthesize>", "<data_pin>": "<data_net_synthesize>", "<q_pin>": "n_eco_<jira>_<seq>", "<aux_pin1>": "<aux_net_synthesize>"},
+  "instance_name": "<target_register>_reg",
+  "output_net": "<target_register>",
+  "port_connections": {"<clk_pin>": "<clk_net_synthesize>", "<data_pin>": "<data_net_synthesize>", "<q_pin>": "<target_register>", "<aux_pin1>": "<aux_net_synthesize>"},
   "port_connections_per_stage": {
-    "Synthesize": {"<clk_pin>": "<clk_net_synthesize>", "<data_pin>": "<data_net_synthesize>", "<q_pin>": "n_eco_<jira>_<seq>", "<aux_pin1>": "<aux_net_synthesize>"},
-    "PrePlace":   {"<clk_pin>": "<clk_net_preplace>",   "<data_pin>": "<data_net_preplace>",   "<q_pin>": "n_eco_<jira>_<seq>", "<aux_pin1>": "<neighbour_aux_preplace>"},
-    "Route":      {"<clk_pin>": "<clk_net_route>",      "<data_pin>": "<data_net_route>",      "<q_pin>": "n_eco_<jira>_<seq>", "<aux_pin1>": "<neighbour_aux_route>"}
+    "Synthesize": {"<clk_pin>": "<clk_net_synthesize>", "<data_pin>": "<data_net_synthesize>", "<q_pin>": "<target_register>", "<aux_pin1>": "<aux_net_synthesize>"},
+    "PrePlace":   {"<clk_pin>": "<clk_net_preplace>",   "<data_pin>": "<data_net_preplace>",   "<q_pin>": "<target_register>", "<aux_pin1>": "<neighbour_aux_preplace>"},
+    "Route":      {"<clk_pin>": "<clk_net_route>",      "<data_pin>": "<data_net_route>",      "<q_pin>": "<target_register>", "<aux_pin1>": "<neighbour_aux_route>"}
   },
   "input_from_change": null,
   "confirmed": true

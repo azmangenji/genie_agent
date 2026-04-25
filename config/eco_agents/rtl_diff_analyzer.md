@@ -507,8 +507,9 @@ Parse the expression recursively. For each sub-expression, assign a gate type:
 | `A ? B : C` | MUX2 | |
 | Bit-select `A[i]` | Direct net | Use signal directly; gate-level name may be `A_i_` — verify by grep |
 
-**Assign seq numbers** starting from `d001` per JIRA per DFF target register.
-**Assign names:** `eco_<jira>_d<seq>` for instances, `n_eco_<jira>_d<seq>` for output nets.
+**Assign names for D-input gate chain (combinational gates only):** `eco_<jira>_d<seq>` for instances, `n_eco_<jira>_d<seq>` for output nets. Seq starts from `d001` per DFF target register.
+
+**DFF instance naming (different from gate chain):** The DFF itself uses `<target_register>_reg` as instance name and `<target_register>` as Q output net — NOT `eco_<jira>_dff<N>`. This matches the name FM synthesizes from the RTL, enabling auto-matching in `FmEqvEcoSynthesizeVsSynRtl` without `set_user_match`. Record in JSON: `"dff_instance_name": "<target_register>_reg"`, `"dff_output_net": "<target_register>"`.
 
 **Example decomposition for `~<rst> & <sig_A> & ~<sig_B> & ((<sig_C>[N:0] == <const_K1>) | (<sig_C>[N:0] == <const_K2>))`:**
 ```

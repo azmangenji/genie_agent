@@ -283,9 +283,24 @@ if unresolved:
 - These signals were never submitted to FM (Step D-POST in rtl_diff_analyzer was missed or incomplete)
 - Their gate chains contain `PENDING_FM_RESOLUTION` or wrongly-resolved inputs
 - All downstream failures (DFF0X, non-equivalent DFFs) trace back to this root cause
-- Add to `revised_changes`: `action: "rerun_fenets"` for each unresolved signal
-- Set `needs_re_study: true` — after fenets completes, eco_netlist_studier_round_N must re-resolve those inputs
+- For each unresolved signal, check whether a prior round's rerun already returned FM-036:
+  ```python
+  # Check eco_fenets_rerun_round<PREV>.json for this signal
+  prior_rerun = load(f"data/{TAG}_eco_fenets_rerun_round{ROUND-1}.json")
+  signal_result = next((r for r in prior_rerun.get("condition_input_resolutions", [])
+                        if r["signal"] == signal), None)
+  if signal_result and signal_result.get("resolved_gate_level_net") is None:
+      # Prior rerun already returned FM-036 — do NOT rerun again (infinite loop)
+      # Instead: trigger eco_netlist_studier Priority 3 structural driver trace
+      action = "structural_trace"   # eco_netlist_studier RE_STUDY_MODE handles this
+  else:
+      action = "rerun_fenets"       # First attempt — submit to FM
+  ```
+- Add to `revised_changes`: `action: "<rerun_fenets|structural_trace>"` for each unresolved signal
+- Set `needs_re_study: true` — after fenets/structural_trace completes, eco_netlist_studier_round_N must re-resolve those inputs
 - Also classify any resulting DFF0X failures as **Mode H** (hierarchical port bus) or **Mode A** depending on what FM returns
+
+> **Why this matters:** Without this check, the flow loops: Round N FM-036 → rerun → FM-036 → Round N+1 rerun → FM-036 → ... burning all remaining rounds on the same unresolvable signal. After the FIRST FM-036 rerun, switch to `structural_trace` which searches the P&R netlist directly using driver cell anchors.
 
 **Do NOT skip this check.** An unresolved condition input is invisible at the FM-failure level — it manifests as DFF0X or non-equivalent which look like Mode A or H without this upstream root cause being apparent.
 
@@ -359,42 +374,72 @@ This single check answers 90% of cases before any netlist tracing.
 
 A `DFF0X` on an ECO-inserted DFF means FM cannot determine that the DFF's D input is non-constant. This is always a flow problem, not a real design problem — the DFF was just inserted so it cannot pre-exist as a constant.
 
-**Step E1 — Read the DFF D-input chain from PostEco for the FAILING stage:**
+**Step E1 — Read the DFF D-input net from PostEco for the FAILING stage:**
 ```bash
-# Use the failing stage (not Synthesize unless Synthesize is the failing target)
-zcat <REF_DIR>/data/PostEco/<FailingStage>.v.gz | grep -A4 "<dff_instance_name>"
-# Find D-pin net: .D( <d_net> )
+zcat <REF_DIR>/data/PostEco/<FailingStage>.v.gz | grep -A6 "\b<dff_instance>\b" | grep "\.D("
+# Extract: .D( <d_net> )
 ```
 
-**Step E2 — Trace the D-input gate by gate until the root cause is found:**
+**Step E2 — Walk the FULL D-input gate chain, checking EVERY gate's inputs:**
 
-For each gate in the chain (e.g., eco_<jira>_e002):
-```bash
-zcat <REF_DIR>/data/PostEco/<FailingStage>.v.gz | grep "<gate_instance>" | head -3
-# Read all input nets (.A1, .A2, .I, etc.)
+This is the critical step. Do NOT stop at the first gate. Walk the entire chain from the DFF back through ALL ECO-inserted intermediate gates. For EACH gate and EACH input pin:
+
+```python
+# Algorithm: breadth-first walk of D-input chain
+queue = [d_net]          # start from DFF D-input net
+visited_gates = set()
+chain_depth = 0
+
+while queue and chain_depth < 10:
+    net = queue.pop(0)
+    chain_depth += 1
+
+    # Find what drives this net in the FAILING P&R stage PostEco
+    driver = find_driver_of_net(net, failing_stage_posteco)
+
+    if driver is None:
+        # Net has NO driver in this P&R stage → root cause found here
+        # Check if it has a driver in Synthesize (Step E3)
+        synth_driver = find_driver_of_net(net, synthesize_posteco)
+        if synth_driver is not None:
+            # Net exists in Synthesize but not in P&R → P&R renamed it
+            # Action: fix_named_wire for (driver_gate, input_pin, net) in this stage
+            report_mode_H(gate=current_gate, pin=current_pin, net=net, stage=failing_stage)
+        else:
+            # Net absent in both stages → different root cause
+            report_mode_A(net=net)
+        break
+
+    if driver["instance"] in eco_preeco_study:
+        # This is one of our ECO-inserted gates — check ALL its input nets
+        for pin, input_net in driver["inputs"].items():
+            # Check each input net: is it accessible in the failing P&R stage?
+            par_count = grep_count_in_preeco(input_net, failing_stage)
+            synth_count = grep_count_in_preeco(input_net, "Synthesize")
+            if synth_count > 0 and par_count == 0:
+                # Input net exists in Synthesize PreEco but NOT in P&R PreEco
+                # → this specific gate+pin is the Mode H source
+                # → fix_named_wire: rewire driver["instance"].pin in this P&R stage
+                report_mode_H(gate=driver["instance"], pin=pin, net=input_net, stage=failing_stage)
+                return  # Root cause found — stop walking
+            # If accessible → not the problem → add driver's inputs to queue
+            queue.append(input_net)
+        visited_gates.add(driver["instance"])
+    else:
+        # Non-ECO cell drives this net → stop tracing (out of ECO scope)
+        break
 ```
 
-For each input net found, apply the structural driver check:
+**Key rule:** Mode H is diagnosed on the **specific gate+pin** where the input net is inaccessible in the P&R stage — NOT on the top-level DFF. The `fix_named_wire` action targets that specific gate and pin.
 
+**Step E3 — Verify the same net in Synthesize (confirmation):**
 ```bash
-# Check 1: does any primitive cell directly drive this net as an output?
-grep -n "\.<pin>( <input_net> )" /tmp/eco_study_<TAG>_<FailingStage>.v | grep -v "^\s*//" | head -5
-# A direct primitive driver looks like: .Z( net ) or .ZN( net ) or .Q( net )
-# with no bus concatenation { } on the same line
-
-# Check 2: is the net only in a hierarchical port bus output?
-grep -n "\.<PORT>.*{.*<input_net>.*}" /tmp/eco_study_<TAG>_<FailingStage>.v | head -5
+# For the suspected Mode H net:
+synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<net>")
+par_count=$(zcat <REF_DIR>/data/PreEco/<FailingStage>.v.gz | grep -cw "<net>")
+# synth_count > 0 AND par_count = 0 → confirmed Mode H: P&R renamed this net
 ```
-
-**If Check 1 finds a direct primitive driver** → the net IS properly driven → DFF0X cause is elsewhere → continue tracing.
-
-**If Check 1 finds NO direct primitive driver AND Check 2 finds the net in a hierarchical port bus** → **Mode H**: the gate input is driven only through a hierarchical submodule output port bus. FM black-boxes this submodule in P&R stages and cannot trace the net's value → FM classifies downstream DFFs as DFF0X.
-
-**Step E3 — Verify the same net in Synthesize (comparison point):**
-```bash
-zcat <REF_DIR>/data/PostEco/Synthesize.v.gz | grep -n "\.<pin>( <input_net> )" | head -5
-```
-If Synthesize has a direct primitive driver but the failing P&R stage does not → confirms Mode H: FM can trace in Synthesize (flat/synthesized module) but not in P&R (hard macro).
+If Synthesize has the net but P&R does not → apply Priority 3 structural driver trace to find the P&R alias. Use it as the `fix_named_wire` target.
 
 ### Check D — Polarity verification for inserted gate cells (MUX select gates)
 
@@ -441,7 +486,7 @@ Use the results from Step 2 checks to classify:
 | Gate polarity wrong (Check D) | A | Replace gate with correct type |
 | ECO-inserted DFF is DFF0X AND gate input has no direct primitive driver (Check E) | H | Gate input driven only through hierarchical port bus — needs named wire |
 | Mode F condition (d_input_decompose_failed) | F | Manual only — report; do not retry |
-| `FmEqvEcoRouteVsEcoPrePlace` PASS (0 failures) AND `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL count ≥ 10 AND none of the failing DFFs are the RTL diff `target_register` (Check C) | G | Structural HFS mismatch — set_dont_verify on the common scope |
+| `FmEqvEcoRouteVsEcoPrePlace` PASS (0 failures) AND `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL count ≥ 10 AND none of the failing DFFs are the RTL diff `target_register` (Check C) | G | Structural HFS mismatch — attempt `fix_named_wire` for any ECO gate with renamed P&R net. If Priority 3 structural trace confirms no fixable net → `manual_only` (SVF is for engineers only, not the AI flow) |
 
 **Multiple modes can coexist** — classify each failing point independently. A single ECO can have Mode H (DFF0X) on one DFF and Mode A (port missing) on another — both get separate revised_changes entries and are fixed in the same round.
 
@@ -513,7 +558,25 @@ If not found → P&R renamed the cell. Find the actual name in this stage and up
 
 ### Mode E — Pre-existing failure (unrelated to ECO)
 
+> **HARD RULE — ECO-inserted DFFs are NEVER Mode E:**
+> If the failing DFF instance name matches the `eco_<jira>_` pattern (e.g., `eco_9868_dff1`, `eco_9899_c001`), it was inserted by THIS ECO. It did NOT exist in PreEco. It CANNOT be pre-existing. **Do NOT write `set_dont_verify` for it. Do NOT write `set_user_match` for it.** Re-examine as Mode A or Mode H immediately.
+>
+> **HARD RULE — `set_user_match` is NEVER written for ECO-inserted cells:**
+> FM auto-matches ECO-inserted cells by instance path in the PostEco netlist. `set_user_match` is only for points that FM cannot find at all (unmatched). An equivalence FAILURE on an ECO-inserted DFF is NOT an unmatched point — it is Mode A, H, or D. Never write `set_user_match` for a DFF that matches `eco_<jira>_` pattern.
+>
+> **HARD RULE — `set_dont_verify` is NEVER a substitute for `fix_named_wire`:**
+> When an ECO-inserted DFF fails in P&R stages only (passes Synthesize) due to a D-input net that is HFS-renamed between stages (a net present in Synthesize PreEco but absent or renamed in P&R PreEco), the correct action is `fix_named_wire` (Mode H) — not `set_dont_verify`. Suppressing verification hides the real root cause and produces an incomplete ECO.
+
 **PROOF required:** Two conditions must both be satisfied before classifying Mode E:
+
+**Condition 0 — ECO-inserted check (MANDATORY FIRST):**
+```bash
+# If the failing DFF name matches eco_<jira>_ pattern → STOP. Cannot be Mode E.
+if echo "<failing_dff_instance>" | grep -q "eco_<jira>_"; then
+    echo "ECO-inserted DFF — Mode E FORBIDDEN. Re-examine as Mode A or Mode H."
+    exit  # Do not proceed with Mode E classification
+fi
+```
 
 **Condition 1 — No ECO contact:** Trace the failing DFF's D-input backward (max 5 hops) through the PostEco Synthesize netlist. At each hop, check if the net name matches any `old_net`, `new_net`, `old_token`, or `new_token` from `eco_rtl_diff.json`. If any match is found: this is NOT Mode E — it is Mode A or B. Only if all 5 hops have zero matches may Condition 2 be checked.
 
@@ -521,9 +584,21 @@ If not found → P&R renamed the cell. Find the actual name in this stage and up
 ```bash
 zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -c "<failing_dff_instance_name>"
 ```
-If count ≥ 1: the failure is pre-existing (existed before this ECO). If count = 0: the DFF was inserted by this ECO — it cannot be pre-existing; re-examine Mode A.
+If count ≥ 1: the failure is pre-existing (existed before this ECO). If count = 0: the DFF was inserted by this ECO — it cannot be pre-existing; re-examine Mode A or Mode H.
 
-Only after both conditions are confirmed: classify Mode E and write `set_dont_verify` entry targeting this specific DFF path. Do NOT write a wildcard scope — scope it to exactly the failing DFF hierarchy path.
+**Condition 3 — Not a HFS net rename (P&R-only failure):**
+If the DFF fails in P&R stages only (passes Synthesize), check whether any D-input gate uses a net that exists in Synthesize but is renamed in P&R (HFS clock/reset distribution). This is Mode H, not Mode E:
+```bash
+# For each input net of D-input gate chain:
+synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<input_net>")
+pplace_count=$(zcat <REF_DIR>/data/PreEco/PrePlace.v.gz   | grep -cw "<input_net>")
+if [ "$synth_count" -gt 0 ] && [ "$pplace_count" -eq 0 ]; then
+    # HFS-renamed net — classify as Mode H (fix_named_wire), NOT Mode E
+    echo "Mode H: <input_net> renamed in P&R — use fix_named_wire not set_dont_verify"
+fi
+```
+
+Only after ALL conditions (0, 1, 2, 3) are confirmed: classify Mode E and write `set_dont_verify` entry targeting this specific DFF path. Do NOT write a wildcard scope — scope it to exactly the failing DFF hierarchy path.
 
 ### Mode F — d_input_decompose_failed
 
@@ -739,7 +814,19 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
 **RULE 3: revised_changes must be ACTIONABLE and HONEST.**
 - If you found the real cause → provide specific fix
 - If you cannot determine the cause after Steps 0-3b → say so explicitly with what was checked; do NOT invent a fix
-- Do NOT use `set_dont_verify` as a lazy fallback for unclassified failures — only use it for proven Mode E or Mode G
+- **NEVER write `set_dont_verify` or `set_user_match`** — SVF updates are prohibited for the AI flow. Engineers apply SVF manually when needed. The AI flow outputs `manual_only` for cases that cannot be fixed by netlist changes.
+- Do NOT write `set_dont_verify` as fallback for unclassified failures — classify correctly or mark `manual_only`
+- Do NOT write `set_user_match` for any point — FM auto-matches ECO cells; if FM cannot match, the netlist has a structural problem that needs a netlist fix
+
+**`UNRESOLVABLE` input handling — when `set_dont_verify` IS valid:**
+
+When eco_netlist_studier marks a gate input as `UNRESOLVABLE:<signal>` (after failing Priority 1, 2, and 3 structural driver trace), and the resulting DFF/gate failure in FM is for that specific stage only:
+
+1. Confirm the signal is truly absent: check that the driver cell AND all ancestor cells of `<signal>` have 0 occurrences in the failing stage's PreEco netlist
+2. Confirm the ECO logic is architecturally correct (RTL diff analysis confirms the intent)
+3. Confirm the failure is in a **stage-to-stage** comparison only (not Synthesize vs RTL)
+
+If all 3 confirmed → `set_dont_verify` on the specific failing DFF path in that stage is **valid**. Record reason: `"Signal <signal> P&R-optimized away in <stage> — driver cell absent from PreEco <stage>. ECO logic verified correct from RTL. Stage-to-stage comparison only."` This is NOT Mode E (pre-existing) — it is **Mode G-P&R** (structural stage divergence due to P&R optimization).
 
 ```json
 {
@@ -759,7 +846,7 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
   "revised_changes": [
     {
       "stage": "Synthesize|PrePlace|Route|ALL",
-      "action": "rewire|insert_cell|new_logic_dff|new_logic_gate|revert_and_rewire|exclude|set_dont_verify|force_port_decl|manual_only",
+      "action": "rewire|insert_cell|new_logic_dff|new_logic_gate|revert_and_rewire|exclude|force_port_decl|fix_named_wire|structural_trace|manual_only",
       "cell_name": "<cell>",
       "pin": "<pin>",
       "old_net": "<old>",
@@ -777,7 +864,7 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
     }
   ],
   "svf_update_needed": true|false,
-  "svf_commands": ["set_dont_verify -type { register } /<path>"]
+  "svf_commands": []
 }
 ```
 
@@ -790,7 +877,7 @@ for stage in ["Synthesize", "PrePlace", "Route"]:
 - `new_logic_gate` — insert new combinational gate; include `gate_function`
 - `revert_and_rewire` — previous rewire was wrong; apply corrected version
 - `exclude` — do NOT touch this cell again (Mode B wrong cell)
-- `set_dont_verify` — Mode E (pre-existing, proven) or Mode G (structural mismatch)
+- `manual_only` — Mode E (pre-existing, proven) or Mode G after Priority 3 confirms unfixable. SVF is for engineers — the AI flow does NOT apply set_dont_verify.
 - `force_port_decl` — Mode ABORT_LINK or false-APPLIED; port declaration/connection missing, force re-apply
 - `fix_named_wire` — Mode H; gate input driven only through hierarchical port bus, needs named wire
 - `update_gate_function` — Mode A (Check D); gate inserted with wrong polarity (e.g., NAND2 instead of AND2); eco_netlist_studier updates gate_function and cell_type in study JSON
@@ -817,6 +904,19 @@ Write `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`.
 6. **Polarity check re-derives from PreEco netlist** — do NOT compare against the RTL diff gate function hint (it may be wrong). Always re-run Step 4c-POLARITY from the actual PreEco MUX I0/I1 connections to determine the correct gate function independently.
 7. **NEVER use `set_dont_verify` as fallback for unknown failures** — only use it for proven Mode E or Mode G. Using it for unclassified failures masks real functional errors.
 8. **eco_preeco_study_update is mandatory for Mode B, D, A, ABORT_LINK** — without updating the study JSON, the next round re-applies the same wrong change.
+
+**PRIORITY RULE — NETLIST FIX FIRST, SVF/TUNE NEVER:**
+
+> The correct fix for ANY FM failure is ALWAYS a netlist change — rewire, insert, correct the gate-level implementation. `set_dont_verify`, `set_user_match`, and tune file updates are NOT fixes — they are shortcuts that hide real ECO errors. A passing FM via tune/SVF suppression is NOT a verified ECO.
+
+**Priority order for every failing point:**
+1. **Fix the netlist** — find the wrong/missing connection and correct it (fix_named_wire, rewire, re-insert)
+2. **Only if the net truly does not exist in the P&R stage** (Priority 3 structural trace confirmed absent) AND the ECO is architecturally correct from RTL → `set_dont_verify` on that specific DFF (Mode G-P&R only)
+3. **NEVER** update tune files to work around FM failures — tune file changes mask netlist problems and produce unverified ECOs
+4. **NEVER** use `set_user_match` for ECO-inserted cells — FM auto-matches them; an equivalence failure means the netlist is wrong, not that FM can't find the cell
+
+**HFS net rename is a NETLIST fix, not an SVF fix:**
+When an ECO-inserted gate uses a net in Synthesize that is renamed by P&R (HFS distribution, CTS buffering — net present in Synthesize PreEco but absent or renamed in P&R PreEco), the correct fix is `fix_named_wire` — rewire the gate input to the correct per-stage net name. Do NOT suppress with `set_dont_verify`. The named wire approach makes the ECO structurally correct in P&R stages, not just "FM-accepted".
 9. **Stage-specific analysis** — for stage-to-stage targets (PrePlace-vs-Synth, Route-vs-PrePlace), grep the CORRECT stage's PostEco netlist, not always Synthesize.
 10. **Pre-existing requires cone trace proof** — do NOT classify Mode E without tracing the failing DFF's D-input cone ≥ 5 hops and confirming no contact with ECO nets.
 11. **Deep investigation before UNKNOWN** — never return `failure_mode: UNKNOWN` without completing Step 3b. Reading the actual PostEco netlist is mandatory when Steps 1–3 cannot classify the failure. You have full read access — use it.
