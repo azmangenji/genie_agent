@@ -707,8 +707,24 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 Wait for sub-agent to complete.
 
 **Read result — gate FM submission:**
+
+**MANDATORY JSON SCHEMA VALIDATION** — verify the eco_pre_fm_checker followed the output contract:
 ```python
 check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
+
+# Validate required fields — if any missing, eco_pre_fm_checker did not follow the schema
+required = ["tag", "round", "passed", "attempts", "issues_found", "issues_fixed",
+            "issues_unresolved", "warnings", "check_summary"]
+missing = [f for f in required if f not in check]
+if missing:
+    raise RuntimeError(f"eco_pre_fm_checker JSON missing required fields: {missing}. "
+                       f"Re-spawn eco_pre_fm_checker to produce a conformant JSON.")
+
+# Validate check_summary has check8_verilog_validator
+if "check8_verilog_validator" not in check.get("check_summary", {}):
+    raise RuntimeError("eco_pre_fm_checker JSON missing check_summary.check8_verilog_validator. "
+                       "The --strict Verilog validator was not run. Re-spawn eco_pre_fm_checker.")
+
 if check["passed"]:
     # All checks passed (including any inline fixes applied) → proceed to Step 6
     pass

@@ -300,8 +300,22 @@ Do NOT proceed to Step 5 until the RPT is confirmed in both data/ and AI_ECO_FLO
 Wait for sub-agent to complete.
 
 **Read result — gate FM submission:**
+
+**MANDATORY JSON SCHEMA VALIDATION** — same contract as ORCHESTRATOR:
 ```python
 check = load(f"data/{TAG}_eco_pre_fm_check_round{NEXT_ROUND}.json")
+
+required = ["tag", "round", "passed", "attempts", "issues_found", "issues_fixed",
+            "issues_unresolved", "warnings", "check_summary"]
+missing = [f for f in required if f not in check]
+if missing:
+    raise RuntimeError(f"eco_pre_fm_checker JSON missing required fields: {missing}. "
+                       f"Re-spawn eco_pre_fm_checker.")
+
+if "check8_verilog_validator" not in check.get("check_summary", {}):
+    raise RuntimeError("eco_pre_fm_checker JSON missing check8_verilog_validator. "
+                       "Re-spawn eco_pre_fm_checker.")
+
 if check["passed"]:
     # All checks passed (fixes applied inline if needed) → proceed to Step 6
     pass

@@ -17,6 +17,59 @@
 
 ---
 
+## MANDATORY OUTPUT CONTRACT — JSON Schema
+
+> **Read this BEFORE running any checks.** Your final JSON MUST match this exact structure. Do NOT invent fields. Do NOT omit `check_summary` or `check8_verilog_validator`.
+
+```json
+{
+  "tag": "<TAG>",
+  "round": <ROUND>,
+  "passed": true,
+  "attempts": <N of 3>,
+  "issues_found": [],
+  "issues_fixed": [],
+  "issues_unresolved": [],
+  "warnings": [],
+  "check_summary": {
+    "A_stage_consistency":           "PASS | FAIL | FIXED",
+    "B_port_declarations":           "PASS | FAIL | FIXED | N/A",
+    "C_cell_insertions":             "PASS | FAIL | FIXED | N/A",
+    "D_duplicate_ports":             "PASS | FAIL | FIXED | N/A",
+    "E_rewire_warnings":             "PASS | WARN | N/A",
+    "F_wire_dup_implicit":           "PASS | FAIL | FIXED | N/A",
+    "G_port_direction_completeness": "PASS | FAIL | FIXED | N/A",
+    "H_eco_cell_pin_names":          "PASS | FAIL | FIXED | N/A",
+    "check8_verilog_validator": {
+      "Synthesize": "PASS | FAIL | SKIPPED",
+      "PrePlace":   "PASS | FAIL | SKIPPED",
+      "Route":      "PASS | FAIL | SKIPPED",
+      "errors":     []
+    }
+  }
+}
+```
+
+**Rules for `check_summary` values:**
+- `PASS` — check ran, no issues found
+- `FAIL` — check found issues that could NOT be fixed inline (blocks FM)
+- `FIXED` — check found issues, all were fixed inline (FM proceeds)
+- `WARN` — non-blocking issue noted (FM proceeds but eco_fm_analyzer may diagnose in next round)
+- `N/A` — check not applicable to this ECO (e.g., no new ports → Check G is N/A)
+- `SKIPPED` — validator script unavailable (checks 1–7 still ran)
+
+**MANDATORY SELF-CHECK before writing JSON:**
+```python
+assert "check_summary" in result, "MISSING check_summary — do not exit without it"
+assert "check8_verilog_validator" in result["check_summary"], "MISSING validator result"
+assert result["check_summary"]["check8_verilog_validator"]["Synthesize"] in ("PASS","FAIL","SKIPPED")
+assert result["check_summary"]["check8_verilog_validator"]["PrePlace"]   in ("PASS","FAIL","SKIPPED")
+assert result["check_summary"]["check8_verilog_validator"]["Route"]      in ("PASS","FAIL","SKIPPED")
+```
+If any assertion fails — **complete the missing sections before writing**. Do not exit with an incomplete JSON.
+
+---
+
 ## Why This Exists
 
 FM stage-to-stage comparisons fail when stages have different ECO changes applied. Examples:
@@ -654,7 +707,16 @@ try:
 except Exception as e:
     validator_result_synth = validator_result_pplace = validator_result_route = "SKIPPED"
     # Validator unavailable — log warning but proceed (manual checks below still run)
+# MANDATORY SELF-CHECK before writing — verify all required fields present
+assert "check_summary" in result, "BUG: check_summary missing from result"
+assert "check8_verilog_validator" in result["check_summary"], "BUG: validator result missing"
+for stage in ("Synthesize", "PrePlace", "Route"):
+    assert result["check_summary"]["check8_verilog_validator"].get(stage) in ("PASS","FAIL","SKIPPED"), \
+        f"BUG: validator result for {stage} is missing or invalid"
+
 write_json(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json", result)
+# Verify file written and non-empty
+assert os.path.getsize(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json") > 10, "JSON write failed"
 ```
 
 **EXIT immediately. Do NOT modify study JSON beyond what was needed for inline fixes.**
