@@ -299,24 +299,50 @@ RULE 27 SVF prohibition applies to the specific fix type).
 
 ---
 
-## GAP-14 — eco_applier: explicit wire_declaration type entries violate UNIVERSAL RULE
+## GAP-14 — UNIVERSAL RULE refinement: explicit wire declarations ARE needed for new intermediate nets
 
-**Severity:** CRITICAL
-**Observed in:** 9899 Round 4 Step 4 — `wire QualPmArbWinVld_d1_orig;` added explicitly
-**File:** `config/eco_agents/eco_applier.md`
+**Severity:** HIGH
+**Observed in:** 9899 — engineer comparison revealed explicit wire declarations are correct for ECO intermediate nets
+**Files:** `config/eco_agents/eco_applier.md`, `CRITICAL_RULES.md`
 
 **What happened:**
-Round 4 Step 3 added a `wire_declaration` type entry for `QualPmArbWinVld_d1_orig`. eco_applier applied it: "APPLIED QualPmArbWinVld_d1_orig type=wire_declaration → Added wire QualPmArbWinVld_d1_orig; after output QualPmArbWinVld_d1;". This violates the UNIVERSAL RULE: eco_applier NEVER adds explicit wire declarations. The implicit wire from the driver cell output (e.g., `A2387450.ZN(QualPmArbWinVld_d1_orig)`) creates the net without an explicit declaration.
+The UNIVERSAL RULE "eco_applier NEVER adds explicit wire declarations" was applied too broadly. Comparison with engineer solution for 9899 shows:
+- Engineer `wire ECO_9899_net20;` and `wire ECO_9899_net21;` — **CORRECT**, required for new intermediate nets
+- AI Round 4 `wire QualPmArbWinVld_d1_orig;` — **INCORRECT** because `QualPmArbWinVld_d1_orig` is created implicitly by `A2387450.ZN(QualPmArbWinVld_d1_orig)` — the driver cell output creates the net
 
-**Impact:** Potential FM SVR-9 (duplicate/conflicting wire declaration) and FM-599.
+**Refined UNIVERSAL RULE:**
+- ❌ **NEVER** add explicit `wire N;` for nets created by **port connections** (e.g., `DcqArb0_PhArbFineGater` created by `.PhArbFineGater(DcqArb0_PhArbFineGater)` port connection in parent module) — implicit wire is sufficient
+- ❌ **NEVER** add explicit `wire N;` for renamed original driver nets (e.g., `QualPmArbWinVld_d1_orig`) — the renamed driver cell output `.ZN(QualPmArbWinVld_d1_orig)` creates the implicit wire
+- ✅ **MUST** add explicit `wire N;` for **new intermediate nets** between ECO-inserted gates when those nets don't exist anywhere in the netlist yet (e.g., `ECO_9899_net20` between INV and AND2 — this net exists nowhere, must be declared)
 
 **Fix required:**
-- eco_applier.md: If the study JSON contains any entry with `change_type == "wire_declaration"`, SKIP it with reason "UNIVERSAL RULE: eco_applier never adds explicit wire N; declarations". Record in JSON.
-- eco_netlist_studier.md: Never generate `wire_declaration` type entries. If an intermediate wire is needed (e.g., for a renamed signal), create the implicit wire through the driver cell output pin connection — no explicit declaration.
+- Update CRITICAL_RULES.md RULE 10 and eco_applier.md to reflect the refined rule
+- eco_netlist_studier.md: When creating intermediate nets between ECO gates, mark them as `needs_explicit_wire_decl: true`. eco_applier adds `wire N;` for these only.
 
 ---
 
-## GAP-15 — eco_netlist_studier: and_term IND2 gate should drive module OUTPUT PORT directly
+## GAP-15 — eco_netlist_studier: and_term gate must drive module output port directly (engineer comparison confirmed)
+
+**Engineer solution (confirmed from `/proj/cip_feint2_konark/konark/MECO/regr_0306/main/pd/tiles/ddrss_umccmd_t_DEUMCIPRTL-9899`):**
+```verilog
+// DCQARB1 — engineer approach:
+// 1. Rename original driver output: QualPmArbWinVld_d1 → ECO_9899_net21
+INR3D8BWP... A2387450 ( .A1(...), .B1(...), .B2(...), .ZN ( ECO_9899_net21 ) ) ;
+// 2. INV for ~SplitActInProgOthDcq
+INVD4BWP... ECO_9899_cell20 ( .I ( SplitActInProgOthDcq ), .ZN ( ECO_9899_net20 ) ) ;
+// 3. AND2 drives QualPmArbWinVld_d1 directly (port output)
+AN2D3BWP... ECO_9899_cell21 ( .A1 ( ECO_9899_net20 ), .A2 ( ECO_9899_net21 ), .Z ( QualPmArbWinVld_d1 ) ) ;
+// Result: ALL consumers of QualPmArbWinVld_d1 see gated value. No individual rewires needed.
+```
+
+**AI approach (wrong — 3000 Synthesize failures):**
+```verilog
+// IND2 drives n_eco_9899_1_DCQARB1 (new net) — only 2-4 consumers rewired
+IND2LLKGD1... eco_9899_1_DCQARB1 ( .A1(QualPmArbWinVld_d1), .B1(SplitActInProgOthDcq), .ZN(n_eco_9899_1_DCQARB1) );
+// → rewired A648153.A2 and A648363.A1 only — all other consumers still see ungated value
+```
+
+**eco_netlist_studier: and_term IND2 gate should drive module output port directly
 
 **Severity:** CRITICAL
 **Observed in:** 9899 Rounds 1-5 — 3000+ Synthesize failures persisted across all 5 rounds
