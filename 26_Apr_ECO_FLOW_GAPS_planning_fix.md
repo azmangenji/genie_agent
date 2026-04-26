@@ -299,6 +299,94 @@ RULE 27 SVF prohibition applies to the specific fix type).
 
 ---
 
+## GAP-14 — eco_applier: explicit wire_declaration type entries violate UNIVERSAL RULE
+
+**Severity:** CRITICAL
+**Observed in:** 9899 Round 4 Step 4 — `wire QualPmArbWinVld_d1_orig;` added explicitly
+**File:** `config/eco_agents/eco_applier.md`
+
+**What happened:**
+Round 4 Step 3 added a `wire_declaration` type entry for `QualPmArbWinVld_d1_orig`. eco_applier applied it: "APPLIED QualPmArbWinVld_d1_orig type=wire_declaration → Added wire QualPmArbWinVld_d1_orig; after output QualPmArbWinVld_d1;". This violates the UNIVERSAL RULE: eco_applier NEVER adds explicit wire declarations. The implicit wire from the driver cell output (e.g., `A2387450.ZN(QualPmArbWinVld_d1_orig)`) creates the net without an explicit declaration.
+
+**Impact:** Potential FM SVR-9 (duplicate/conflicting wire declaration) and FM-599.
+
+**Fix required:**
+- eco_applier.md: If the study JSON contains any entry with `change_type == "wire_declaration"`, SKIP it with reason "UNIVERSAL RULE: eco_applier never adds explicit wire N; declarations". Record in JSON.
+- eco_netlist_studier.md: Never generate `wire_declaration` type entries. If an intermediate wire is needed (e.g., for a renamed signal), create the implicit wire through the driver cell output pin connection — no explicit declaration.
+
+---
+
+## GAP-15 — eco_netlist_studier: and_term IND2 gate should drive module OUTPUT PORT directly
+
+**Severity:** CRITICAL
+**Observed in:** 9899 Rounds 1-5 — 3000+ Synthesize failures persisted across all 5 rounds
+**File:** `config/eco_agents/eco_netlist_studier.md`
+
+**What happened:**
+The `and_term` change for `QualPmArbWinVld_d1` in DCQARB/DCQARB1 required gating the value with `~SplitActInProgOthDcq`. The studier's strategy (IND2 gate inside module, rewire individual consumers A648153/A648363/A606036/A606254) only gated 2-4 consumers. All other downstream consumers of `QualPmArbWinVld_d1` (in TIM, ARB, CMDARB via DcqArb0/1_QualPmArbWinVld_d1 ports) still saw the UNGATED old value → 3000 Synthesize failures.
+
+**Root cause:**
+`QualPmArbWinVld_d1` is a module OUTPUT PORT in DCQARB/DCQARB1. All external consumers read through this port. The correct fix is to make the IND2 gate drive the PORT directly:
+1. Rename the old port driver: `A2387450.ZN: QualPmArbWinVld_d1 → QualPmArbWinVld_d1_orig` (NO explicit wire declaration — implicit from driver output)
+2. IND2 gate input A1 = `QualPmArbWinVld_d1_orig`, output ZN = `QualPmArbWinVld_d1`
+3. ALL external consumers (TIM, ARB, CMDARB) automatically see the gated value through the port
+4. NO individual consumer rewires (A648153/A648363/A606036/A606254) needed — they all read through the port
+
+**The wrong approach (what happened):**
+IND2 gate drives `n_eco_9899_1_DCQARB1` (new net). Only 2-4 internal consumers rewired to use it. The module output port `QualPmArbWinVld_d1` still carries ungated value → all external consumers fail.
+
+**Fix required:**
+In eco_netlist_studier.md, for `and_term` changes where `old_token` is a module output port:
+> "If `old_token` is exposed as a module output port (check `port_promotion` or `new_port` change for same signal), the IND2 gate MUST drive the module output port name directly (`ZN=<old_token>`). Rename the original driver output to `<old_token>_orig_eco` (implicit wire — no explicit declaration). Do NOT rewire individual consumers — the port gating handles all of them automatically."
+
+---
+
+## GAP-16 — eco_fm_analyzer: wrong Mode B diagnosis led to counterproductive pivot fix strategy
+
+**Severity:** HIGH
+**Observed in:** 9899 Round 3→4 — eco_fm_analyzer proposed pivot fix that made PrePlace worse (2→4458 failures)
+**File:** `config/eco_agents/eco_fm_analyzer.md`
+
+**What happened:**
+Round 3 had 3000 Synthesize failures. eco_fm_analyzer diagnosed Mode B (incomplete rewiring) and proposed the "pivot fix" — rename the original driver output to `_orig`, make the eco gate drive `QualPmArbWinVld_d1` directly. This is architecturally correct but was implemented INSIDE the DCQARB1/DCQARB modules, creating an internal wire `QualPmArbWinVld_d1_orig` driven by DIFFERENT cell types per stage:
+- Synthesize: INR3D8 cell
+- PrePlace: NR2D6 cell (P&R renamed)
+- Route: NR2SKRD6 cell (P&R renamed)
+
+FM stage-to-stage comparison failed to prove equivalence of the internal wire across stages → PrePlace regression 2→4458 failures.
+
+**Root cause:**
+eco_fm_analyzer proposed the correct CONCEPT (gate the port output) but in the WRONG LOCATION (inside module with different P&R cell types per stage). The intermediate `_orig` internal wire is invisible to FM at stage boundaries.
+
+**Fix required:**
+eco_fm_analyzer.md: When diagnosing "cascade from ungated module port" (3000+ failures in module scope), the recommended fix should be:
+1. Check if `old_token` is a module output port
+2. If yes → propose "module port direct gating" strategy (GAP-15 approach) instead of internal wire pivot
+3. NEVER use intermediate internal wire `_orig` approach for signals that are module output ports — FM cannot match internal wires across P&R stages
+
+---
+
+## GAP-17 — 9899: 3000+ Synthesize failures persisted through 5 rounds — unresolved
+
+**Severity:** HIGH
+**Observed in:** 9899 Rounds 3, 4, 5 — Synthesize consistently fails at 3000-3071 points
+**Root cause:** eco gate architecture never correctly resolved (GAP-15)
+
+**What was tried:**
+- Round 3: IND2 inside DCQARB1/DCQARB, rewire 4 consumers → 3000 Synth failures (other consumers ungated)
+- Round 4: Pivot fix inside module (_orig intermediate wire) → 3071 Synth + 4458 PrePlace
+- Round 5: Move eco gate to ARB parent module → 3071 Synth + 4460 PrePlace (no improvement)
+
+**What should have been done from Round 1:**
+Module port direct gating (GAP-15):
+- IND2 inside DCQARB1: `A1=QualPmArbWinVld_d1_orig, ZN=QualPmArbWinVld_d1`
+- All consumers see gated value through port → 0 failures expected
+
+**Remaining gap:**
+The flow hit max rounds (5) without resolving. FINAL_ORCHESTRATOR should be spawned with `MANUAL_LIMIT` status. Engineer can apply GAP-15 fix manually.
+
+---
+
 ## Pending After FM Completion
 
 Once all FM runs finish, prioritize fixes in this order:
@@ -314,6 +402,10 @@ Once all FM runs finish, prioritize fixes in this order:
 | P3 | GAP-7 — wire decl note in rtl_diff_analyzer | rtl_diff_analyzer.md |
 | P3 | GAP-8 — EcoUseSdpOutstRdCnt not in Step 2 RPT | eco_fenets_runner.md |
 | P3 | GAP-9 — wire_swap classification misleading | eco_fenets_runner.md |
+| P1 | GAP-14 — eco_applier: wire_declaration type entries violate UNIVERSAL RULE | eco_applier.md |
+| P1 | GAP-15 — eco_netlist_studier: and_term IND2 must drive module OUTPUT PORT directly | eco_netlist_studier.md |
+| P2 | GAP-16 — eco_fm_analyzer: wrong Mode B diagnosis → counterproductive pivot fix | eco_fm_analyzer.md |
+| P2 | GAP-17 — 9899: 3000+ Synth failures unresolved through 5 rounds | eco_netlist_studier.md |
 | P2 | GAP-13 — manual_only too early: add Priority 4 backward cone trace before giving up | eco_netlist_studier.md |
 | P4 | GAP-10 — MUX cascade priority (pending FM result) | eco_netlist_studier.md |
 
