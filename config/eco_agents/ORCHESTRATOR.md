@@ -608,17 +608,48 @@ Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_
 ```python
 study = load("data/<TAG>_eco_preeco_study.json")
 with open("data/<TAG>_eco_step3_netlist_study_round1.rpt", "w") as f:
-    f.write(f"STEP 3 — PREECO NETLIST STUDY\nTag: <TAG>\n{'='*80}\n\n")
+    f.write(f"STEP 3 — PREECO NETLIST STUDY\nTag: <TAG>  |  JIRA: <JIRA>  |  Tile: <TILE>\n{'='*80}\n\n")
     for stage in ["Synthesize", "PrePlace", "Route"]:
-        confirmed = [e for e in study[stage] if e.get("confirmed")]
-        excluded  = [e for e in study[stage] if not e.get("confirmed")]
+        confirmed = [e for e in study.get(stage, []) if e.get("confirmed")]
+        excluded  = [e for e in study.get(stage, []) if not e.get("confirmed")]
         f.write(f"[{stage}] — {len(confirmed)} confirmed, {len(excluded)} excluded\n")
         for e in confirmed:
-            f.write(f"  CONFIRMED: {e.get('cell_name','?')} pin={e.get('pin','?')} "
-                    f"old={e.get('old_net','?')} new={e.get('new_net','?')} "
-                    f"type={e.get('change_type','?')}\n")
+            ct = e.get("change_type", "?")
+            if ct == "rewire":
+                # Use per_stage_cell_name if available (P&R renamed cells differ per stage)
+                cell = e.get("per_stage_cell_name", {}).get(stage) or e.get("cell_name", "?")
+                f.write(f"  CONFIRMED: {cell:<45} type={ct}  scope={e.get('instance_scope', e.get('scope','?'))}\n")
+                f.write(f"    pin={e.get('pin','?')}  old={e.get('old_net','?')}  →  new={e.get('new_net', e.get('new_net_alias','?'))}\n")
+            elif ct in ("new_logic_gate", "new_logic"):
+                f.write(f"  CONFIRMED: {e.get('instance_name','?'):<45} type={ct}  scope={e.get('instance_scope','?')}\n")
+                f.write(f"    fn={e.get('gate_function','?')}  out={e.get('output_net','?')}  cell={e.get('cell_type','?')}\n")
+                # Show per-stage connections if different from Synthesize
+                pcs = e.get("port_connections_per_stage", {}).get(stage, e.get("port_connections", {}))
+                if pcs:
+                    pins = "  ".join(f".{k}({v})" for k,v in pcs.items() if k != e.get("output_pin","Z") and k != "Z" and k != "ZN")
+                    if pins:
+                        f.write(f"    inputs: {pins}\n")
+            elif ct == "new_logic_dff":
+                f.write(f"  CONFIRMED: {e.get('instance_name','?'):<45} type={ct}  scope={e.get('instance_scope','?')}\n")
+                f.write(f"    target_reg={e.get('target_register','?')}  output={e.get('output_net','?')}  cell={e.get('cell_type','?')}\n")
+            elif ct == "port_declaration":
+                f.write(f"  CONFIRMED: {e.get('signal_name','?'):<45} type={ct}\n")
+                f.write(f"    module={e.get('module_name','?')}  direction={e.get('declaration_type','?')}\n")
+            elif ct == "port_promotion":
+                f.write(f"  CONFIRMED: {e.get('signal_name','?'):<45} type={ct}\n")
+                f.write(f"    module={e.get('module_name','?')}  promoted_to=output\n")
+            elif ct == "port_connection":
+                f.write(f"  CONFIRMED: {e.get('instance_name','?'):<45} type={ct}\n")
+                f.write(f"    .{e.get('port_name','?')}({e.get('net_name','?')})  parent={e.get('parent_module', e.get('module_name','?'))}\n")
+            else:
+                f.write(f"  CONFIRMED: {e.get('instance_name', e.get('cell_name', e.get('signal_name','?'))):<45} type={ct}\n")
+            # Show notes if present (backward cone trace, source, etc.)
+            if e.get("notes"):
+                note_short = e["notes"][:120].rstrip()
+                f.write(f"    Note: {note_short}{'...' if len(e['notes']) > 120 else ''}\n")
         for e in excluded:
-            f.write(f"  EXCLUDED:  {e.get('cell_name','?')} — {e.get('reason','?')}\n")
+            name = e.get("instance_name", e.get("cell_name", e.get("signal_name", "?")))
+            f.write(f"  EXCLUDED:  {name:<45} reason={e.get('reason', e.get('unresolvable_reason','?'))}\n")
         f.write("\n")
 ```
 

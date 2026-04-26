@@ -268,7 +268,15 @@ Write back `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` with ONLY modified entr
 
 Verify: `wc -l <BASE_DIR>/data/<TAG>_eco_preeco_study.json` is ≥ the original line count.
 
-Write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` covering: what was re-studied, what was found, what was updated (field-level diff — old vs new value), any `force_reapply: true` flags set and why.
+Write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` using the **same per-change-type format** defined in ORCHESTRATOR.md Step 3 RPT generator. The RPT must be human-readable with:
+- Each entry on its own line with the correct identifier (signal_name for port_declaration, instance_name for new_logic_gate/dff, cell_name for rewire)
+- For rewires: show `old → new` net and the pin
+- For new_logic: show gate_function, output_net, cell_type, and key input pins
+- For port_declaration: show signal_name, module_name, direction
+- For port_connection: show instance_name, port_name, net_name, parent_module
+- For each EXCLUDED entry: show instance_name AND the full reason
+- For each updated entry: show what changed (old value → new value) for every modified field
+- At the end: a `SUMMARY` section listing total force_reapply entries set and why
 
 ```bash
 cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
