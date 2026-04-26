@@ -695,6 +695,29 @@ Read from the line with the cell name through the closing `);`. Extract all `.po
 
 If neither direct name NOR alias found: `"confirmed": false`.
 
+### UNIVERSAL REAL-NET PREFERENCE RULE
+
+> **This rule applies to ALL net selections in ALL port_connections_per_stage entries — rewires, gate inputs, port connections, DFF D-input chains. Without exception.**
+
+**Always prefer the real RTL-named net over any P&R-generated alias, for every stage.**
+
+- **Real net** = the signal name from the RTL diff (`old_token` or `new_token`). Appears in RTL source as a `reg`, `wire`, or port declaration. Stable across P&R runs.
+- **HFS alias** = a P&R tool-generated name for a buffer/clone of the real net. Recognisable by prefix: `FxPrePlace_`, `FxCts_`, `ctmn_`, `ctmi_`, `phfnn_`, `phfnr_`, `SEQMAP_NET_`, `dftopt`. Changes between P&R runs.
+
+**For every net to be written into port_connections_per_stage[stage]:**
+1. Check if the real RTL-named net exists in current stage PostEco: `grep -cw "<real_net>" /tmp/eco_study_<TAG>_<Stage>.v`
+2. If count ≥ 1 → **use the real net**. Record `"net_source": "real_rtl_name"`.
+3. If count = 0 → fall back to P&R alias search (Priority 2). Record `"net_source": "hfs_alias"` and `"net_alias": "<alias>"`.
+
+**Why real net is preferred:**
+- HFS aliases change between P&R runs — reusing an alias across rounds causes SKIPPED/UNRESOLVABLE in Round 2+
+- FM equivalence checking is more reliable against stable RTL-named nets
+- eco_fm_analyzer Mode H diagnosis targets HFS-renamed nets — using the real net avoids false Mode H classifications
+
+**Exception:** If the real net is an HFS-renamed net itself (P&R renamed the RTL signal — confirmed by FM-036 or Priority 3 structural trace), use the P&R alias discovered through structural trace.
+
+---
+
 ### 4b. Verify new_net is reachable (Priority 1/2)
 
 **CRITICAL — Always prefer the direct signal name over HFS aliases.** `old_net` being an HFS alias does NOT bypass Priority 1. `new_net` for Priority 1 is always `new_token` from the RTL diff.

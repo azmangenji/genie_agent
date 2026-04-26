@@ -520,3 +520,22 @@ Before every FM submission, eco_pre_fm_checker runs checks that prevent FM-599 (
 - **Check G** (Port direction completeness): port in module header without `input/output` in body → FM-599
 
 These checks run in seconds. FM-599 aborts are detected only after 1-2 hours of FM runtime. **Never skip eco_pre_fm_checker** — it is the last gate before an expensive FM slot is consumed.
+
+---
+
+## RULE 32 — Always Use Real RTL-Named Net, Not HFS Alias, When Both Exist
+
+**Applies to:** eco_netlist_studier (port_connections_per_stage), eco_applier (all passes)
+
+When selecting a net to write into any `port_connections_per_stage` entry (gate inputs, rewire targets, DFF D-input, port connections), **always prefer the real RTL-named net over any P&R-generated HFS alias** when both exist in the current stage's PostEco netlist.
+
+| Net type | Pattern | Preference |
+|----------|---------|-----------|
+| **Real net** | RTL signal name — matches `old_token` or `new_token` from RTL diff JSON (e.g., the register or wire name from the RTL source) | **USE FIRST** |
+| **HFS alias** | P&R tool-generated buffer/clone net: `FxPrePlace_ZBUF_*`, `FxPrePlace_ZINV_*`, `ctmn_*`, `ctmi_*`, `phfnn_*`, `phfnr_*`, `SEQMAP_NET_*`, `dftopt*`, `FxCts_*` | Use ONLY if real net absent |
+
+**Rule:** For every net connection:
+1. Check if real RTL-named net exists: `grep -cw "<real_net>" <PostEco_stage>` — if ≥ 1, use it.
+2. Only if count = 0 → search for HFS alias via Priority 2/3 structural trace.
+
+**Why:** HFS aliases change between P&R runs. Using an alias in Round 1 that gets renamed in Round 2 causes SKIPPED/UNRESOLVABLE entries. Real RTL-named nets are stable across rounds, make eco_fm_analyzer diagnosis cleaner, and avoid false Mode H classifications.
