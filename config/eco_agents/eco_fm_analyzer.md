@@ -402,6 +402,19 @@ while queue and chain_depth < 10:
 
     if driver is None:
         # Net has NO driver in this P&R stage → root cause found here
+        # GAP-18: Submodule bus output check — run FIRST before any other classification
+        # Check if the net is driven through a submodule output port bus in the failing stage:
+        bus_match = re.search(
+            r'\.\s*\w+\s*\(\s*\{[^}]*\b' + re.escape(net) + r'\b',
+            failing_stage_module_lines
+        )
+        if bus_match:
+            # driven_by_submodule: true → Mode_H_submodule_rename
+            # Fix: rename the net to a meaningful eco name, keeping existing port bus connection
+            report_mode_H_submodule(gate=current_gate, pin=current_pin, net=net,
+                                    stage=failing_stage,
+                                    action="fix_named_wire", rename_wire=True)
+            break
         # Check if it has a driver in Synthesize (Step E3)
         synth_driver = find_driver_of_net(net, synthesize_posteco)
         if synth_driver is not None:
@@ -490,6 +503,8 @@ Use the results from Step 2 checks to classify:
 | ECO-inserted DFF is DFF0X AND gate input has no direct primitive driver (Check E) | H | Gate input driven only through hierarchical port bus — needs named wire |
 | Mode F condition (d_input_decompose_failed) | F | Manual only — report; do not retry |
 | `FmEqvEcoRouteVsEcoPrePlace` PASS (0 failures) AND `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL count ≥ 10 AND none of the failing DFFs are the RTL diff `target_register` (Check C) | G | Structural HFS mismatch — attempt `fix_named_wire` for any ECO gate with renamed P&R net. If Priority 3 structural trace confirms no fixable net → `manual_only` (SVF is for engineers only, not the AI flow) |
+| 3000+ cascade failures originating from a single module scope where `<old_token>` was a module output port (`port_promotion` or `and_term` change in RTL diff) | `Mode_A_module_port_direct_gating` | Set `and_term_strategy: "module_port_direct_gating"` — eco_netlist_studier re-studies with direct port gating |
+| Newly inserted DFF fails with globally unmatched SE/SI cone nets (SE net differs between PrePlace and Route; both are P&R HFS aliases) | `SCAN_CHAIN_MISMATCH` | Auto-fixable — generate tune file entries; no engineer escalation |
 
 **Multiple modes can coexist** — classify each failing point independently. A single ECO can have Mode H (DFF0X) on one DFF and Mode A (port missing) on another — both get separate revised_changes entries and are fixed in the same round.
 
@@ -503,6 +518,7 @@ Use the results from Step 2 checks to classify:
 2. **Wrong gate polarity** — inserted gate (AND2/NAND2) implements inverse of required logic → replace gate
 3. **Wrong net name** — new_net connected to cell is wrong → grep PostEco for the correct net
 4. **Port missing** — in hierarchical netlist, port declaration/connection was not applied → check RULE 15
+5. **Module output port cascade (GAP-16) — 3000+ failures from one module scope:** When diagnosing a cascade of 3000+ failures from a single module scope, first check if `<old_token>` was a module output port — look for it in `port_promotion` or `and_term` changes in the RTL diff JSON. If yes → the `and_term` gate must drive the port name directly ("Module Port Direct Gating"). The WRONG diagnosis is to propose an internal `<old_token>_orig` intermediate wire inside the module — this creates P&R cell type mismatches across stages. The correct `revised_changes` action: `and_term_strategy: "module_port_direct_gating"` — eco_netlist_studier re-studies the and_term with the direct port gating strategy.
 
 For each sub-cause, produce a concrete `revised_changes` entry specifying exactly what to change.
 
@@ -702,6 +718,31 @@ See detailed description in Modes section above. Apply `set_dont_verify` scoped 
 ```
 
 **Which stages to flag:** Apply to ALL stages where the DFF is DFF0X. If Synthesize passes (DFF is non-constant), Mode H applies only to the failing P&R stages — do NOT flag Synthesize.
+
+### Mode H sub-type — Submodule bus output (GAP-18): `Mode_H_submodule_rename`
+
+**Trigger:** Check E Step E2 driver-not-found branch finds the net via submodule bus regex before any other check:
+```python
+re.search(r'\.\s*\w+\s*\(\s*\{[^}]*\b<signal>\b', <failing_stage_module_lines>)
+```
+When matched → `driven_by_submodule: true` → the net is driven through a submodule output port bus and is NOT absent — it merely has no direct primitive driver. Never declare such a net as absent or undriven.
+
+**Fix:** Rename the net to a meaningful eco name, keeping the existing port bus connection intact. Set `action: "fix_named_wire"` with `rename_wire: true`. The renamed wire provides FM a traceable net identity without altering the port bus structure.
+
+```json
+{
+  "stage": "<FailingStage>",
+  "action": "fix_named_wire",
+  "rename_wire": true,
+  "source_net": "<original_net>",
+  "rationale": "Net '<original_net>' driven through submodule output port bus — has no direct primitive driver. Rename to eco wire; keep port bus connection. Never declare as absent.",
+  "eco_preeco_study_update": {
+    "action": "set_needs_named_wire",
+    "rename_wire": true,
+    "source_net": "<original_net>"
+  }
+}
+```
 
 ---
 
@@ -945,6 +986,13 @@ If all 3 confirmed → `set_dont_verify` on the specific failing DFF path in tha
 - `update_gate_function` — Mode A (Check D); gate inserted with wrong polarity (e.g., NAND2 instead of AND2); eco_netlist_studier updates gate_function and cell_type in study JSON
 - `rerun_fenets` — Check F; condition input signal was never FM-queried; must submit to find_equivalent_nets before re-study
 - `manual_only` — Mode F; cannot be automated
+- `scan_chain_tune` — `SCAN_CHAIN_MISMATCH`; newly inserted DFF SE/SI cone uses mismatched HFS alias nets between stages; auto-fixable via tune file entries (GAP-20)
+
+**`scan_chain_tune` action (GAP-20):** When `SCAN_CHAIN_MISMATCH` is classified (SE net differs between PrePlace and Route; both are P&R HFS aliases) or study JSON has `needs_se_tune: true`: generate tune file entries for each failing stage-to-stage target:
+```
+set_constant -type port {<DFF_full_hierarchy_path>/SE} 0
+```
+Apply for both ref and impl sides. eco_fm_runner adds these entries to the tune file before the next FM submission. Do not set `manual_only`. Do not escalate to engineer. This is auto-fixable.
 
 ---
 

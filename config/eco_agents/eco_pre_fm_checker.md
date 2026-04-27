@@ -40,6 +40,7 @@
     "F_wire_dup_implicit":           "PASS | FAIL | FIXED | N/A",
     "G_port_direction_completeness": "PASS | FAIL | FIXED | N/A",
     "H_eco_cell_pin_names":          "PASS | FAIL | FIXED | N/A",
+    "I_se_cone_mismatch":            "WARN | N/A",
     "check8_verilog_validator": {
       "Synthesize": "PASS | FAIL | SKIPPED",
       "PrePlace":   "PASS | FAIL | SKIPPED",
@@ -67,6 +68,11 @@ assert result["check_summary"]["check8_verilog_validator"]["PrePlace"]   in ("PA
 assert result["check_summary"]["check8_verilog_validator"]["Route"]      in ("PASS","FAIL","SKIPPED")
 ```
 If any assertion fails — **complete the missing sections before writing**. Do not exit with an incomplete JSON.
+
+---
+
+**ABSOLUTE RULE — Check 8 (Verilog Validator) is NEVER suppressed by manual_only:**
+`manual_only` status suppresses Check A/C escalation ONLY. Check 8 runs regardless of any manual_only classifications. A FAIL in Check 8 always blocks FM submission. Set `passed: false` in the output JSON if Check 8 fails, even if all other checks are PASS or N/A.
 
 ---
 
@@ -532,6 +538,18 @@ for name, stages in change_map.items():
 # Warnings do NOT block FM — eco_fm_analyzer handles these in next round if FM fails
 ```
 
+### Check I — SE/SI Scan Chain Stage Mismatch for Newly Inserted DFFs
+
+For each `new_logic_dff` entry in the applied JSON with `needs_se_tune: true` (set by eco_netlist_studier):
+1. Read `port_connections_per_stage["PrePlace"]["<SE_pin>"]` and `port_connections_per_stage["Route"]["<SE_pin>"]`
+2. If both differ AND neither appears in RTL source (`grep -rw "<se_net>" data/PreEco/SynRtl/ → count = 0`): flag `se_cone_mismatch_risk: true`
+3. Record in `check_summary["I_se_cone_mismatch"]`: `"WARN"` (non-blocking — FM proceeds)
+4. Add to `warnings[]`: recommended tune file entry `set_constant -type port {<DFF_hierarchy_path>/SE} 0` for stage-to-stage FM targets
+
+Check I is non-blocking. It surfaces the risk before FM runs so eco_fm_analyzer can auto-classify the resulting failure as `SCAN_CHAIN_MISMATCH` without engineer escalation.
+
+If no `new_logic_dff` entries have `needs_se_tune: true`, set `check_summary["I_se_cone_mismatch"]` to `"N/A"`.
+
 ---
 
 ## STEP 3 — Write RPT
@@ -609,6 +627,8 @@ result = {
         "E_rewire_warnings":   "WARN" if issues_E else "PASS",
         "F_wire_dup_implicit": result_F,
         "G_port_direction_completeness": result_G,
+        "H_eco_cell_pin_names": result_H,
+        "I_se_cone_mismatch":   result_I,   # "WARN" | "N/A"
         "check8_verilog_validator": {
             "Synthesize": validator_result_synth,   # "PASS" | "FAIL" | "SKIPPED"
             "PrePlace":   validator_result_pplace,
@@ -665,7 +685,7 @@ try:
         for err_line in validator_errors:
             stage = parse_stage_from_error(err_line)         # "Synthesize"|"PrePlace"|"Route"
             lineno = parse_lineno_from_error(err_line)       # integer line number
-            check = parse_check_from_error(err_line)         # "F3"|"F5"
+            check = parse_check_from_error(err_line)         # "F3"|"F5"|"F6"
             stage_gz = f"{REF_DIR}/data/PostEco/{stage}.v.gz"
 
             fix_success = False
@@ -676,6 +696,31 @@ try:
                 # Revert corrupted .pin(net1, eco_net1, eco_net2) to .pin(net1)
                 # Keep only the FIRST net in the port connection value
                 fix_success = fix_corrupted_port_value_in_gz(stage_gz, lineno)
+            elif check == "F6_invalid_net_name":
+                # **F6 auto-fix (invalid net name containing '/'):**
+                # 1. Parse the invalid net: split on '/' to get <cell_name> and <pin_name>
+                # 2. grep -m1 "<cell_name>" <REF_DIR>/data/PreEco/Synthesize.v.gz → find cell instantiation
+                # 3. Read .<pin_name>(<actual_wire>) → extract <actual_wire>
+                # 4. Replace the invalid net name with <actual_wire> in PostEco at the error line
+                # 5. Re-validate
+                #
+                # Only escalate to ROUND_ORCHESTRATOR if <actual_wire> cannot be found
+                # in any PreEco stage. The inline fix for F6 is fast and prevents wasting
+                # an entire FM round on a Verilog syntax error.
+                invalid_net = parse_invalid_net_from_error(err_line)   # e.g. "<cell_name>/<pin_name>"
+                if '/' in invalid_net:
+                    cell_name, pin_name = invalid_net.split('/', 1)
+                    actual_wire = grep_pin_connection_from_preeco(
+                        cell_name=cell_name, pin_name=pin_name,
+                        preeco_stages=[f"{REF_DIR}/data/PreEco/Synthesize.v.gz",
+                                       f"{REF_DIR}/data/PreEco/PrePlace.v.gz",
+                                       f"{REF_DIR}/data/PreEco/Route.v.gz"]
+                    )  # returns None if not found
+                    if actual_wire:
+                        fix_success = replace_net_in_gz(stage_gz, lineno,
+                                                        old_net=invalid_net, new_net=actual_wire)
+                    else:
+                        fix_success = False  # escalate below — actual wire not in any PreEco stage
 
             if fix_success:
                 issues_fixed.append({"check": f"check8_{check}", "line": lineno, "stage": stage})

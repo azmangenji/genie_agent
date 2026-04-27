@@ -160,6 +160,9 @@ def validate_module(mod_name, mod_lines, start_lineno):
     # Check 9: direction declaration not in port list header
     errors.extend(check_declaration_not_in_header(mod_lines, mod_name, start_lineno))
 
+    # F6: invalid net names containing '/' or '\' (always runs — not suppressed by --strict)
+    errors.extend(check_invalid_net_names(mod_lines, mod_name, start_lineno))
+
     # F2: wire X conflicts with implicit wire from port connection
     wire_implicit_conflicts = set(wire_decls.keys()) & port_conn_nets
     for net in wire_implicit_conflicts:
@@ -219,6 +222,25 @@ def validate_file(path, quiet=False, max_errors=50, skip_checks=None, target_mod
 
 
 
+def check_invalid_net_names(mod_lines, mod_name, start_lineno):
+    """F6: Net names containing '/' or '\\' are invalid Verilog identifiers → FM SVR-4 → FM-599.
+    Common cause: FM equivalent-nets cell/pin path (e.g. cell/ZN) stored verbatim as wire name."""
+    errors = []
+    for i, line in enumerate(mod_lines):
+        # Strip trailing comments before scanning
+        line_no_comment = line.split('//')[0]
+        for m in re.finditer(r'\.\s*\w+\s*\(\s*(\S+?)\s*\)', line_no_comment):
+            net = m.group(1).strip(',) ')
+            if '/' in net or '\\' in net:
+                errors.append({
+                    'check': 'F6_invalid_net_name',
+                    'module': mod_name,
+                    'msg': f"Net name contains invalid character ('/' or '\\'): '{net[:60]}' — FM SVR-4 syntax error → FM-599",
+                    'line': start_lineno + i
+                })
+    return errors
+
+
 def check_declaration_not_in_header(mod_lines, mod_name, start_lineno):
     """Check 9: Every input/output declaration in body must appear in port list header.
     FM-599 when reading as -r (reference): port declared in body but missing from terminal list."""
@@ -255,7 +277,8 @@ def main():
     parser.add_argument('--strict', action='store_true',
                         help='Run ALL checks including F1/F2/F4 which may have pre-existing false positives. '
                              'Default: only F3 (decl inside instance) and F5 (corrupted port value) — '
-                             'these are ALWAYS eco_applier bugs, never pre-existing.')
+                             'these are ALWAYS eco_applier bugs, never pre-existing. '
+                             'F6 (invalid net name) always runs regardless of --strict.')
     parser.add_argument('--modules', nargs='*',
                         help='Only validate these module names (fast mode). '
                              'Pass the modules eco_applier touched to avoid scanning entire netlist. '
@@ -264,7 +287,8 @@ def main():
 
     target_modules = set(args.modules) if args.modules else None
 
-    # Default: only F3 and F5 (always eco_applier bugs). --strict adds F1/F2/F4.
+    # Default: only F3, F5, F6 (always eco_applier bugs). --strict adds F1/F2/F4.
+    # F6 is NEVER in skip_checks — it runs in all modes (default and --strict).
     skip_checks = set()
     if not args.strict:
         skip_checks = {'F1_dup_wire', 'F2_implicit_wire_conflict', 'F4_dup_port_conn'}

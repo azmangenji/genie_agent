@@ -84,6 +84,8 @@ Instance naming: DFF → use `<target_register>_reg` (instance) / `<target_regis
 
 ### 3c — UNDO Logic (Surgical Patch Mode Only)
 
+**Prior-round SKIPPED entries are NEVER ALREADY_APPLIED:** In Surgical Patch mode, before marking any entry ALREADY_APPLIED, read its status from `data/<TAG>_eco_applied_round<ROUND-1>.json`. If `prior_status == "SKIPPED"` → the change was never applied → mark as SKIPPED (carry forward the prior reason). Only run the standard ALREADY_APPLIED checks when `prior_status` was APPLIED, INSERTED, or ALREADY_APPLIED.
+
 Before re-applying a `force_reapply: true` entry: check prior status in `data/<TAG>_eco_applied_round<ROUND-1>.json`. If prior status = `SKIPPED` → skip UNDO entirely, go straight to RE-APPLY. If prior status = `APPLIED`/`INSERTED` → verify element exists before removing; if not found → log and skip UNDO, proceed to RE-APPLY.
 
 | change_type | Undo action |
@@ -304,21 +306,23 @@ Verification steps:
    Parse the last `.PIN(net)` in that instance — that is the actual output pin.
 6. PreEco grep wins over table if they disagree (library is authoritative).
 
-**WIRE DECLARATION PREVENTION (run before every gate insertion — CRITICAL):**
+**WIRE DECLARATION — TWO CASES (run before every gate insertion — CRITICAL):**
 
-The output net of the new gate (`n_eco_<jira>_<seq>`) will be created IMPLICITLY by the gate's output pin connection — do NOT add explicit wire declarations.
+**Case 1 — `needs_explicit_wire_decl: true` (set by eco_netlist_studier for new intermediate nets):**
+The net does not exist anywhere in the netlist yet. Add `wire <net_name>;` immediately before the gate insertion line. After insertion, verify count of explicit `wire <net_name>;` = 1.
 
-Before inserting, verify `n_eco_<jira>_<seq>` does NOT already have an explicit wire declaration in the module buffer:
+**Case 2 — all other nets (port-connection implicit wires, renamed driver outputs, `no_wire_decl_needed: true`):**
+NEVER add `wire <net_name>;`. These nets are created implicitly by port connections or cell output bindings.
+
+Before inserting, verify the output net does NOT already have an explicit wire declaration in the module buffer:
 ```bash
-grep -c "wire\s\+n_eco_<jira>_<seq>\s*;" <module_buffer>
+grep -c "wire\s\+<output_net>\s*;" <module_buffer>
 ```
 If count > 0 → remove the existing explicit wire declaration FIRST, then insert. Record `"removed_explicit_wire_declaration": true` in the entry JSON.
 
-After inserting, scan the module buffer for any new explicit wire declarations that reference `n_eco_<jira>_<seq>`:
-```bash
-grep -c "wire\s\+n_eco_<jira>_<seq>" <module_buffer_after_insertion>
-```
-If count > 0 → VERIFY_FAILED — eco_applier accidentally added a wire declaration.
+After insertion, verify count of explicit `wire <output_net>;` = 0. If count > 0 → VERIFY_FAILED — eco_applier accidentally added a wire declaration.
+
+In both cases: after gate insertion, verify the output net appears in the module buffer (from the gate's output pin).
 
 **Step 3 — Insert** (same pattern as Pass 1c Step 7). **Step 4 — Compute `inv_inst_full_path`** and verify instance in module buffer.
 
@@ -509,6 +513,7 @@ Run ALL checks against the ORIGINAL module buffer (pre-snapshot from S4), never 
 
 | change_type | ALREADY_APPLIED condition |
 |-------------|--------------------------|
+| Pre-check (ALL types, Surgical Patch mode only) | Read `prior_status` from prior round JSON (`data/<TAG>_eco_applied_round<ROUND-1>.json`). If `"SKIPPED"` → skip ALREADY_APPLIED check; mark SKIPPED with `reason: "Carried from Round <N>: <prior_reason>"`. Only proceed to type-specific ALREADY_APPLIED checks when prior_status ∈ {APPLIED, INSERTED, ALREADY_APPLIED}. |
 | `new_logic_dff` / `new_logic_gate` / `new_logic` | **Step 1:** instance exists: `grep -c "^\s*<cell_type>\s*<instance_name>\s*("` >= 1. **Step 2 (MANDATORY):** for each input pin in `port_connections_per_stage[stage]`, verify expected net is on that pin using `\.<pin>\s*\(\s*<expected_net>\s*\)`. Step 1 passes but Step 2 fails for ANY pin → NOT ALREADY_APPLIED; set `force_reapply: true`. |
 | `rewire` | `re.search(r'\.<pin>\s*\(\s*<new_net>\s*\)', cell_block)` — found = ALREADY_APPLIED. Still on old_net → `force_reapply: true`. |
 | `port_declaration` (`input`/`output`) | Signal in MODULE PORT LIST (not just body). Parse from `mod_idx` to `port_list_close_idx`. Signal only in body as wire/DFF output does NOT count. |

@@ -33,6 +33,18 @@ valid_nets = [n for n in rtl_diff["nets_to_query"]
 
 Drop any `nets_to_query` entry that does not correspond to `old_token` or `new_token`.
 
+### STEP A2 — Document new_logic_dff entries that bypass FM
+
+For each change with `change_type: "new_logic"` (DFF insertion) where the target register does not exist in PreEco (not in `nets_to_query` after the valid_tokens filter), add a dedicated section to the Step 2 RPT:
+
+```
+NEW LOGIC DFF ENTRIES — NO FM QUERY REQUIRED:
+  <target_register>: new signal not present in PreEco reference
+    -> eco_netlist_studier Phase 0 handles insertion directly from RTL diff JSON
+```
+
+This ensures no DFF insertions are silently skipped or forgotten between Step 2 and Step 3.
+
 ---
 
 ## STEP B — Phase A: Initial Run (BLOCKING)
@@ -162,6 +174,8 @@ spec_sources = {
 ---
 
 ## STEP E — Write eco_step2_fenets.rpt and copy
+
+**ECO type reclassification (GAP-9):** Before writing the per-net summary, check each `wire_swap` change for a non-null `mux_select_gate_function` (set by rtl_diff_analyzer Step D-MUX). When present, the ECO requires BOTH a new gate insertion AND a pin rewire — classify as `new_logic_gate_with_rewire` in the RPT (not `wire_swap`). Include in the per-net description: "Requires new `<gate_function>` gate insertion AND rewire of `<target_register>` MUX select pin." This prevents eco_netlist_studier from treating it as a simple net substitution.
 
 Write `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` covering all nets queried, retry history, FM results per stage, qualifying cells per stage, and a **SPEC_SOURCES section**.
 

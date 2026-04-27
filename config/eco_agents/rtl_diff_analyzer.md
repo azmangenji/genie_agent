@@ -394,6 +394,15 @@ for (parent_module, net), conn_list in port_conn_by_net.items():
         for c in conn_list:
             c["implicit_wire"] = True
             c["no_wire_decl_needed"] = True
+        # Also mark any port_declaration entry for this net as skip: true
+        # eco_applier must NOT add 'wire <net>;' for implicit wires (GAP-7)
+        for c in changes:
+            if (c.get("change_type") == "port_declaration"
+                    and c.get("module_name") == parent_module
+                    and c.get("new_token") == net
+                    and c.get("declaration_type") == "wire"):
+                c["skip"] = True
+                c["no_wire_decl_needed"] = True
 ```
 
 **Also flag single port_connection entries** where the `new_token` net is also the `new_token` of a `port_promotion` change in a child module — the promoted output creates an implicit wire in the parent when connected:
@@ -407,11 +416,13 @@ for change in changes:
 
 **Record in RPT for each implicit wire detected:**
 ```
-IMPLICIT WIRE WARNING: net '<new_token>' in module '<module_name>'
+IMPLICIT WIRE: '<new_token>' in '<module_name>' — created implicitly by port connections; eco_applier must NOT add explicit wire declaration.
   Appears in <N> port_connection entries — Verilog creates this as an implicit wire.
-  eco_applier must NOT add explicit 'wire <new_token>;' declaration.
+  Any port_declaration entry for this net with declaration_type "wire" is marked skip: true.
   Explicit declaration alongside an implicit wire causes FM-599 ABORT_NETLIST.
 ```
+
+> **GAP-7 note:** When a net appears as `<new_token>` in ≥ 2 `port_connection` entries within the same parent module scope, it is an implicit wire — `no_wire_decl_needed: true` is set on the net AND any matching `port_declaration` entry is marked `skip: true`. eco_applier must never add `wire <net>;` for implicit wires. There is no scenario where a port-connection-implicit wire requires an explicit wire declaration.
 
 eco_applier reads `no_wire_decl_needed: true` on each `port_connection` entry and skips wire declaration for that net. eco_pre_fm_checker Check F (sub-check F2) is the safety net if eco_applier adds one anyway.
 

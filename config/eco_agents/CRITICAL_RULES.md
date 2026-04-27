@@ -547,3 +547,20 @@ grep -rw "<net_name>" <REF_DIR>/data/PreEco/SynRtl/ | grep -v "^Binary"
 2. Only if count = 0 → fall back to P&R alias search via Priority 2/3 structural trace.
 
 **Why:** HFS aliases change between P&R runs. Using an alias in Round 1 that gets renamed in Round 2 causes SKIPPED/UNRESOLVABLE entries. Real RTL-named nets are stable across rounds, make eco_fm_analyzer diagnosis cleaner, and avoid false Mode H classifications.
+
+---
+
+## RULE 33 — Wire Declaration: Three Categories, No Exceptions
+
+**Applies to:** eco_applier, eco_netlist_studier, and rtl_diff_analyzer.
+
+**NEVER add explicit `wire <net_name>;` for:**
+- Nets created implicitly by port connections (a net appearing as the connected signal in ≥ 2 `port_connection` entries in the same parent module scope) — Verilog creates these implicitly; an explicit `wire <net_name>;` causes FM-599
+- Nets created by renaming an original driver cell's output (the renamed cell binding `.<output_pin>(<new_name>)` creates the implicit wire)
+
+**MUST add explicit `wire <net_name>;` for:**
+- New intermediate nets between ECO-inserted gates where `needs_explicit_wire_decl: true` is set in the study JSON — these nets are coined fresh; they do not appear in any port connection or cell binding yet, so Verilog cannot create them implicitly
+
+eco_applier reads the `needs_explicit_wire_decl` flag to implement this rule. eco_pre_fm_checker Check F (`--strict`) catches any violations.
+
+> **This rule prevents:** FM-599 errors caused by either (a) adding explicit `wire <net_name>;` for nets already created implicitly by port connections, or (b) omitting explicit `wire <net_name>;` for brand-new intermediate nets that have no other declaration path.

@@ -71,6 +71,15 @@ i:/FMWORK_IMPL_<TILE>/<TILE>/<INST_A>/<INST_B>/<cell_name>/<pin> (+)
                                                          cell_name  pin
 ```
 
+**MANDATORY: Convert FM cell/pin path to actual wire name**
+FM returns results in format `i:/FMWORK.../<cell_name>/<pin_name>`. This is a LOCATION address — NOT a valid Verilog net name. Before storing any FM result as a port connection:
+1. Extract `<cell_name>` from the path
+2. `grep -m1 "<cell_name>" /tmp/eco_study_<TAG>_<Stage>.v` — find the cell instantiation
+3. Read `.<pin_name>(<actual_wire>)` from that block
+4. Use `<actual_wire>` as the net name — never use `<cell_name>/<pin_name>`
+
+If `<actual_wire>` cannot be found in PreEco → try other PreEco stages → if still not found → use the RTL signal name from `old_token` or `new_token` as fallback.
+
 ---
 
 ## RE-STUDY MODE (Round N — triggered by ROUND_ORCHESTRATOR after FM failure)
@@ -227,6 +236,11 @@ entry["re_study_note"] = f"Mode H fix on pin {input_pin}: {source_net} inaccessi
 
 **Step H4 — Verify Synthesize stage is NOT modified:** `source_net` has a direct primitive driver in Synthesize (confirmed in Step H1). Do NOT set `force_reapply` for Synthesize unless that stage was also diagnosed with the same issue.
 
+**Original register preference in Mode H:** When searching for a P&R-renamed register output net, prefer the original register over P&R-created duplicates:
+- **Skip** cells with `_dup<N>` suffix — these are scan-chain duplicate registers, not the original
+- **For merged multi-bit DFF cells** (`_MB_` in instance name): the LAST `_MB_<reg_name>` segment identifies the original register. Use the output pin of that last segment. Verify by checking FM's `reg_map` or `matched_points` — the chosen net should map to the correct PreEco register.
+Record the selection rationale in `re_study_note`.
+
 **Step H5 — Re-read `mode_H_risk` flags from eco_rtl_diff.json (MANDATORY at RE_STUDY start):**
 
 Before processing eco_fm_analyzer's `revised_changes`, re-read the original RTL diff JSON and check `mode_H_risk: true` on any gate chain entry. For each gate with `mode_H_risk: true` whose `port_connections_per_stage` has NOT already been updated for the listed stages → proactively apply Priority 3 structural trace and update NOW, without waiting for another FM failure:
@@ -307,6 +321,24 @@ Read all entries in `changes[]` and process by type:
 - If the new term is a `new_port` on the declaring module → use the **PORT NAME** (the `new_token` as declared in the module header). Do NOT use `flat_net_name` (parent-scope net) — that name is invisible inside the child module.
 - Read `and_term_gate_input` from the RTL diff JSON entry if present — this field already stores the correct module-internal name.
 
+**MODULE PORT DIRECT GATING — Mandatory check for and_term:**
+Before building `port_connections_per_stage` for an `and_term` new gate:
+
+```
+Check: is <old_token> a module output port?
+  grep -cw "output.*\b<old_token>\b" <module_body_lines>
+  OR: is <old_token> in the module header port list?
+```
+
+If YES → the gate output net MUST be `<old_token>` (the existing port name). Pattern:
+1. Find the cell currently driving `<old_token>`
+2. Rename that cell's output from `<old_token>` to any valid new intermediate net name (implicit wire — no `wire N;` declaration needed since the cell output creates it implicitly)
+3. Gate inputs: intermediate net + new AND-term signal. Gate output: `<old_token>`
+4. ALL consumers automatically see the gated value. No individual `rewire` entries needed for this change.
+Set `and_term_strategy: "module_port_direct_gating"` in the study entry.
+
+If NO → normal and_term: gate drives a new net (`n_eco_<jira>_<seq>`), rewire specific consumers.
+
 **Strategy A — DIRECT REWIRE (use when cells are inside the declaring module):**
 1. **`new_logic_gate`** — AND/NAND gate with inputs `[<existing_output_net>, <and_term_gate_input>]`, output `n_eco_<jira>_<seq>`
 2. **`rewire`** — consuming cells inside the declaring module switch from `<existing_output_net>` to `n_eco_<jira>_<seq>`
@@ -351,7 +383,14 @@ After building the input net list for any `new_logic_gate` entry (including `and
 | 1 | Direct name match in stage PreEco | Use directly |
 | 2 | Trace driver cell in Synthesize → find same cell output in this stage | Use stage output net |
 | 3 | P&R alias search (partial name match excluding declarations) | Use alias |
+| 4 | Backward cone trace from target DFF's `.D(<net>)` pin in the failing stage — walk the driver chain up to 10 hops; at each gate, check if its inputs appear in other stages by instance name | If found → use that net as the stage-specific alias |
 | — | Unresolved | Flag as `UNRESOLVED_IN_<Stage>:<net>` |
+
+> **UNRESOLVABLE vs manual_only — critical distinction:**
+> - `UNRESOLVABLE`: signal and its entire driver cone are genuinely absent from the failing stage PreEco after all 4 priorities — P&R eliminated the cone. Use `1'b0` as a conservative placeholder if the gate still has valid other inputs.
+> - `manual_only`: the fix is structurally achievable but requires SVF — prohibited by RULE 27.
+>
+> Never use `manual_only` when `UNRESOLVABLE` is the correct label. Only declare `UNRESOLVABLE` after Priority 4 fails.
 
 Record `port_connections_per_stage` in the study JSON entry. **Do NOT use Synthesize nets for all stages without verification** — nets renamed by P&R silently cause gate insertion failures.
 
@@ -382,11 +421,20 @@ For each gate in `d_input_gate_chain` (d001 → d00N), create a `new_logic_gate`
 
 After all chain gates, set DFF entry `port_connections.D = "n_eco_<jira>_d<last>"`. If `d_input_decompose_failed: true`: set `d_input_net = "SKIPPED_DECOMPOSE_FAILED"`, `confirmed: false`.
 
+**Wire declaration flag for intermediate nets:** For each new gate in the chain whose output net does not exist anywhere in the PreEco netlist (it is a freshly coined name, not an existing wire or port), set `needs_explicit_wire_decl: true` in the study JSON entry. eco_applier uses this flag to add `wire <net_name>;` in the module body. Do NOT set this flag for:
+- Gate outputs that drive port connections (implicit from the connection)
+- Renamed original driver output nets (implicit from the cell's output pin binding)
+
 ### 0c — Find suitable cell type from PreEco netlist
 
 **For DFF:** `zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -E "^[[:space:]]*(DFF|DFQD|SDFQD|SDFFQ|DFFR|DFFRQ)[A-Z0-9]* [a-z]" | head -5` — verify clock, data, reset, output pins.
 
 **For combinational gate:** Determine function from RTL expression (`A & B` → AND2, `~A | ~B` → NAND2, etc.), then search PreEco for matching cell pattern.
+
+**SE/SI scan chain stage mismatch detection:** After resolving auxiliary pins for all 3 stages, compare the SE net in PrePlace vs Route. If both differ AND both match P&R-generated alias patterns (not declared in RTL source — verify with `grep -rw "<se_net>" data/PreEco/SynRtl/` → count = 0):
+- Set `needs_se_tune: true` in the DFF study JSON entry
+- Do not attempt to unify SE across stages — HFS aliases are intentionally stage-specific
+- eco_fm_analyzer reads `needs_se_tune: true` to classify any SE cone mismatch as `SCAN_CHAIN_MISMATCH` (not Mode H) and auto-generate tune file entries
 
 ---
 
@@ -555,6 +603,14 @@ def needs_named_wire(net_name, stage_lines):
     )
     return in_port_bus  # True → FM cannot trace through port bus in P&R
 ```
+
+**Submodule bus output check (run before declaring any net undriven):**
+A net can be driven by a submodule through a concatenated port bus — this does NOT appear as a `.<pin>(<net>)` single-pin pattern. Before declaring a net has no driver, check:
+```python
+# Signal appears as element in submodule output bus
+re.search(rf'\.\s*\w+\s*\(\s*\{{[^}}]*\b{re.escape(signal)}\b', module_line)
+```
+If found → set `driven_by_submodule: true`, `driver_type: "submodule_bus_output"`, `confirmed: true`. The signal IS driven. The fix is to rename the net (usually an `UNCONNECTED_<N>` placeholder) to a meaningful eco name — no new gate needed. Set `needs_named_wire: true` for the eco_applier wire declaration.
 
 **CRITICAL — Nets driven only through hierarchical submodule output port buses must never be used directly as gate inputs in P&R stages.** In P&R, hierarchical submodules are black boxes to FM — a net only in a port bus appears undriven, causing DFFs to be classified as `DFF0X`. Fix: declare a named wire, connect it in the port bus, use the named wire as gate input. eco_applier handles this when `needs_named_wire: true` is set.
 
@@ -832,6 +888,15 @@ When find_equivalent_nets returns no qualifying cells for any stage, use confirm
 - count = 1 → `"confirmed": true`, `"source": "<ref>_fallback"`
 - count = 0 → check for P&R-renamed net (search signal root, read actual net on pin, record as `old_net` with `"net_name_differs": true`)
 - count > 1 → `"confirmed": false`, `"reason": "AMBIGUOUS"`
+
+**Priority 4 — Secondary structural trace for Stage Fallback (rewire entries only):**
+When a rewire cell cannot be confirmed in a P&R stage (count = 0 after Priorities 1–3):
+1. Find the Synthesize driver cell of the confirmed `<old_net>` → `grep -n "\.ZN\|\.Z\|\.Q" <PreEco/Synth> | grep "<old_net>"`
+2. Read that driver's cell instance name (e.g., `<driver_cell>`)
+3. Grep that same cell instance name in the missing stage's PreEco netlist
+4. If found → read its output pin net → use as `<old_net>` for that stage with flag `net_name_differs: true`
+
+Only after Priority 4 fails → Stage Fallback applies (use Synthesize result, mark `source: "stage_fallback"`).
 
 **Step F4 — Cleanup** and repeat F1–F5 for every missing stage independently. Never leave any stage array empty if any other stage has confirmed cells.
 
