@@ -42,9 +42,9 @@
     "H_eco_cell_pin_names":          "PASS | FAIL | FIXED | N/A",
     "I_se_cone_mismatch":            "WARN | N/A",
     "check8_verilog_validator": {
-      "Synthesize": "PASS | FAIL | SKIPPED",
-      "PrePlace":   "PASS | FAIL | SKIPPED",
-      "Route":      "PASS | FAIL | SKIPPED",
+      "Synthesize": "PASS | FAIL",
+      "PrePlace":   "PASS | FAIL",
+      "Route":      "PASS | FAIL",
       "errors":     []
     }
   }
@@ -57,15 +57,15 @@
 - `FIXED` — check found issues, all were fixed inline (FM proceeds)
 - `WARN` — non-blocking issue noted (FM proceeds but eco_fm_analyzer may diagnose in next round)
 - `N/A` — check not applicable to this ECO (e.g., no new ports → Check G is N/A)
-- `SKIPPED` — validator script unavailable (checks 1–7 still ran)
+- `SKIPPED` — **INVALID** — validator must always run. If script not found → RuntimeError. Never SKIPPED.
 
 **MANDATORY SELF-CHECK before writing JSON:**
 ```python
 assert "check_summary" in result, "MISSING check_summary — do not exit without it"
 assert "check8_verilog_validator" in result["check_summary"], "MISSING validator result"
-assert result["check_summary"]["check8_verilog_validator"]["Synthesize"] in ("PASS","FAIL","SKIPPED")
-assert result["check_summary"]["check8_verilog_validator"]["PrePlace"]   in ("PASS","FAIL","SKIPPED")
-assert result["check_summary"]["check8_verilog_validator"]["Route"]      in ("PASS","FAIL","SKIPPED")
+assert result["check_summary"]["check8_verilog_validator"]["Synthesize"] in ("PASS","FAIL"), "SKIPPED is not valid — validator must always run"
+assert result["check_summary"]["check8_verilog_validator"]["PrePlace"]   in ("PASS","FAIL"), "SKIPPED is not valid — validator must always run"
+assert result["check_summary"]["check8_verilog_validator"]["Route"]      in ("PASS","FAIL"), "SKIPPED is not valid — validator must always run"
 ```
 If any assertion fails — **complete the missing sections before writing**. Do not exit with an incomplete JSON.
 
@@ -694,7 +694,17 @@ touched_modules = set(
 modules_arg = list(touched_modules)
 
 validator_errors = []
-validator_result_synth = validator_result_pplace = validator_result_route = "SKIPPED"
+# MANDATORY existence check — SKIPPED is NOT an option if the script exists
+import os
+_validator_path = os.path.join(BASE_DIR, "script", "validate_verilog_netlist.py")
+if not os.path.isfile(_validator_path):
+    raise RuntimeError(
+        f"CRITICAL: validate_verilog_netlist.py not found at {_validator_path}. "
+        "Check 8 CANNOT be skipped. Fix the script path. "
+        "Do NOT proceed to FM without running the validator."
+    )
+# Script confirmed present — always run, never set SKIPPED
+validator_result_synth = validator_result_pplace = validator_result_route = "FAIL"  # default until proven PASS
 try:
     import subprocess, json as _json
     result_c8 = subprocess.run(
