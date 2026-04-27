@@ -422,7 +422,19 @@ For the `net_name` being connected: `grep -cw "<net_name>"` in module buffer. If
 
 **ALREADY_APPLIED:** `re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*{re.escape(net_name)}\s*\)', instance_block)` — found → ALREADY_APPLIED. If still on `old_net` → set `force_reapply: true`.
 
-**Insert:** `', .<port_name>( <net_name> )'` before last `)` on close line.
+**CRITICAL — Check for existing port before inserting (prevents FM-599 duplicate port):**
+Before inserting, check whether `<port_name>` already exists in the instance block with ANY net:
+```python
+existing = re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*(\S+?)\s*\)', instance_block)
+```
+- If `existing` found AND current_net == `net_name` → ALREADY_APPLIED (no action)
+- If `existing` found AND current_net ≠ `net_name` → **REWIRE** the existing connection:
+  Replace `.<port_name>(<current_net>)` with `.<port_name>(<net_name>)` (scoped to instance block).
+  Record status=APPLIED, reason="rewired existing port connection from `<current_net>` to `<net_name>`".
+  **Do NOT insert a second `.port_name(...)` line** — this creates FM-599 duplicate port error.
+- If `existing` NOT found → ADD new connection (normal path).
+
+**Insert (only when port does NOT already exist):** `', .<port_name>( <net_name> )'` before last `)` on close line.
 
 **Verify (instance-scoped, flexible whitespace):** `re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*{re.escape(net_name)}\s*\)', instance_block)` — not found → VERIFY_FAILED.
 
