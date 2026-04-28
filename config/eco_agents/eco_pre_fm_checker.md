@@ -334,67 +334,36 @@ for stage in ["Synthesize","PrePlace","Route"]:
 scan_modules = directly_touched | parent_modules
 ```
 
-**Run Check 8 using EXACTLY these steps — do NOT substitute manual grepping:**
+**Run Check 8 using the eco_check8.sh script — single command, no manual parsing:**
 
-**Step 8a — Extract touched modules:**
 ```bash
 cd <BASE_DIR>
-python3 -c "
-import json
-d = json.load(open('data/<TAG>_eco_applied_round<ROUND>.json'))
-mods = set()
-for v in d.values():
-    if isinstance(v, list):
-        for e in v:
-            if e.get('module_name'): mods.add(e['module_name'])
-print(' '.join(sorted(mods)))
-"
-```
-Save the output as `MODS` (space-separated module names).
-
-**Step 8b — Run the validator (copy-paste this exact command):**
-```bash
-cd <BASE_DIR>
-python3 script/validate_verilog_netlist.py \
-  --strict \
-  --modules $MODS \
-  <REF_DIR>/data/PostEco/Synthesize.v.gz \
-  <REF_DIR>/data/PostEco/PrePlace.v.gz \
-  <REF_DIR>/data/PostEco/Route.v.gz \
-  2>&1 | tee /tmp/check8_<TAG>.txt
-echo "EXIT:$?"
+bash script/eco_scripts/eco_check8.sh \
+    <BASE_DIR> \
+    <REF_DIR> \
+    <TAG> \
+    <ROUND> \
+    data/<TAG>_eco_applied_round<ROUND>.json
+CHECK8_EXIT=$?
 ```
 
-**Step 8c — Parse per-stage results from /tmp/check8_<TAG>.txt:**
-
-The script prints one line per stage:
-- `  PASS: N modules checked, 0 errors` → stage PASS
-- `  FAIL: N error(s) in M modules` → stage FAIL
-
-Parse the per-stage result:
-```bash
-synth_result=$(grep -A5 "Validating:.*Synthesize" /tmp/check8_<TAG>.txt | grep -q "PASS:" && echo PASS || echo FAIL)
-pplace_result=$(grep -A5 "Validating:.*PrePlace" /tmp/check8_<TAG>.txt | grep -q "PASS:" && echo PASS || echo FAIL)
-route_result=$(grep -A5 "Validating:.*Route" /tmp/check8_<TAG>.txt | grep -q "PASS:" && echo PASS || echo FAIL)
-```
-
-**Step 8d — Write to JSON (MANDATORY — exact field names):**
+This script runs `validate_verilog_netlist.py --strict`, parses per-stage results, and writes:
+`data/<TAG>_eco_check8_round<ROUND>.json` with exact format:
 ```json
-"check8_verilog_validator": {
-  "Synthesize": "<PASS|FAIL>",
-  "PrePlace":   "<PASS|FAIL>",
-  "Route":      "<PASS|FAIL>",
-  "errors":     ["<error line 1>", "<error line 2>", ...]
-}
+{"Synthesize": "PASS|FAIL", "PrePlace": "PASS|FAIL", "Route": "PASS|FAIL", "errors": [...]}
 ```
 
-**Do NOT write `"status": "PASS"` or any other format — the ORCHESTRATOR asserts `result["Synthesize"] in ("PASS","FAIL")` and will raise RuntimeError if the field is missing or wrong format.**
-
-If timeout occurs on all 3 stages together, run each stage individually:
-```bash
-timeout 120 python3 script/validate_verilog_netlist.py --strict --modules $MODS \
-  <REF_DIR>/data/PostEco/Synthesize.v.gz 2>&1
+**Read the output JSON and merge into check_summary:**
+```python
+check8 = json.load(open(f"data/{TAG}_eco_check8_round{ROUND}.json"))
+result["check_summary"]["check8_verilog_validator"] = check8
+# check8["Synthesize"] / check8["PrePlace"] / check8["Route"] are "PASS" or "FAIL"
+# check8["errors"] is a list of error strings
 ```
+
+**CHECK8_EXIT=0 → all stages PASS. CHECK8_EXIT=1 → at least one FAIL → block FM.**
+
+Do NOT write `"status": "PASS"` — always use the per-stage format from the script output.
 
 **ALWAYS run with `--strict`** — this enables F1 (duplicate wire) detection in addition to F3/F5/Check9. F1 catches cases where an explicit `wire n_eco_*;` declaration was added alongside a cell that already creates the net implicitly (eco_applier UNIVERSAL RULE violation). Without `--strict`, duplicate wire errors reach FM and cause FM-599 → ABORT_NETLIST.
 

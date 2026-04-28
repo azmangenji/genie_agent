@@ -229,18 +229,27 @@ cp <BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt <AI_ECO_F
 
 This check runs FIRST. If it fires, RETURN IMMEDIATELY and HARD STOP all other strategy evaluation. There is no else branch, no fallthrough, no "also consider parent_scope". The RETURN is unconditional.
 
-**Run these exact bash commands NOW before choosing any strategy:**
+**Read the GAP-15 pre-check result from file (passed in your prompt as GAP15_CHECK_PATH):**
 
 ```bash
-# Command 1 — RTL source check
+# The ORCHESTRATOR already ran eco_gap15_check.py before spawning you.
+# Read the result directly — do NOT re-derive is_output_port yourself:
+cat <GAP15_CHECK_PATH>
+# Find the entry for <old_token> and read:
+#   "is_output_port": true|false
+#   "strategy": "module_port_direct_gating" | "proceed_to_selection"
+```
+
+If `GAP15_CHECK_PATH` is not provided or file does not exist, run the fallback bash commands:
+
+```bash
+# Fallback Command 1 — RTL source check
 rtl_check=$(grep -c "output.*\b<old_token>\b" <REF_DIR>/data/SynRtl/<rtl_file>.v 2>/dev/null || echo 0)
 
-# Command 2 — Gate-level PreEco module header check
+# Fallback Command 2 — Gate-level PreEco module header check
 gatelvl_check=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
   awk '/^module <posteco_module_name>/,/\)\s*;/' | \
   grep -c "\boutput\b.*\b<old_token>\b" || echo 0)
-
-echo "STEP0_RESULT: rtl_check=$rtl_check  gatelvl_check=$gatelvl_check"
 ```
 
 **Decision rule (MANDATORY — write this exact line to the Step 3 RPT):**

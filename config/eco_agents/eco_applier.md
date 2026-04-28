@@ -144,7 +144,39 @@ Process ALL changes for a stage in 4 passes. Never mix order.
 - **S2 — Backup:** Round 1: `cp <Stage>.v.gz <Stage>.v.gz.bak_<TAG>_round1`. Round 2+: skip (ROUND_ORCHESTRATOR already backed up).
 - **S3 — ALREADY_APPLIED pre-check:** Before building the Perl spec, grep the compressed stage file for each `new_logic` instance_name. If found → ALREADY_APPLIED (skip from Perl spec). For Round 1 entries flagged ALREADY_APPLIED → add `"warning": "UNEXPECTED in Round 1 — concurrent agent suspected"`.
 
-## Phase A — Collect Gate Spec (Agent Reasoning — no file touch)
+## Phase A — Generate Perl Spec (Script — no agent reasoning)
+
+**Run `eco_perl_spec.py` for each stage. This replaces all Phase A agent reasoning:**
+
+```bash
+cd <BASE_DIR>
+for STAGE in Synthesize PrePlace Route; do
+    python3 script/eco_scripts/eco_perl_spec.py \
+        --study      data/<TAG>_eco_preeco_study.json \
+        --ref-dir    <REF_DIR> \
+        --tag        <TAG> \
+        --jira       <JIRA> \
+        --stage      ${STAGE} \
+        --round      <ROUND> \
+        --output     runs/eco_apply_<TAG>_${STAGE}.pl \
+        --status     data/<TAG>_eco_perl_spec_${STAGE}.json \
+        ${PREV_APPLIED:+--prev-applied $PREV_APPLIED}
+    echo "Exit: $?"
+done
+```
+
+Where `PREV_APPLIED=data/<TAG>_eco_applied_round<ROUND-1>.json` for Round 2+ (omit for Round 1).
+
+Read each `data/<TAG>_eco_perl_spec_<Stage>.json` to see INSERTED/SKIPPED/ALREADY_APPLIED decisions. The script handles:
+- ALREADY_APPLIED detection via `grep -cw <inst_name> PostEco/<Stage>.v.gz`
+- SKIPPED checks (missing input nets)
+- wire_decls exclusion (SVR-9 prevention via grep + buffer check in Perl)
+- wire_removes for remove_wire_decl entries
+- Gate line building from study JSON port_connections_per_stage
+
+Passes 2-4 (port_declaration, port_connection, rewire) are still agent text operations on the decompressed file — the script only handles Pass 1 (new_logic gate/DFF insertions).
+
+## Phase A — Collect Gate Spec (Legacy pseudocode — for reference only)
 
 Before generating the Perl script, decide the status of every `new_logic_gate`, `new_logic_dff`, and `remove_wire_decl` entry for this stage:
 

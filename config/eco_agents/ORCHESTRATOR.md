@@ -502,6 +502,16 @@ If any net returns `Error: Unknown name ... (FM-036)`:
 
 ## STEP 3 — Study PreEco Gate-Level Netlist
 
+**MANDATORY pre-Step 3: Run GAP-15 check script (do this BEFORE spawning eco_netlist_studier):**
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_gap15_check.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir  <REF_DIR> \
+    --output   data/<TAG>_eco_gap15_check.json
+```
+Read the output JSON and **pass it explicitly to the eco_netlist_studier sub-agent prompt** as `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`. The studier reads this file to get `is_output_port` and `strategy` for each `and_term` change — it does NOT re-derive these itself.
+
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_studier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - The RTL diff JSON at `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (provides old_net/new_net per change)

@@ -175,6 +175,16 @@ Verify JSON contains `condition_input_resolutions` array. Do NOT proceed to Step
 
 ## STEP 6f — Re-Study (eco_netlist_studier_round_N)
 
+**MANDATORY pre-Step 6f: Run GAP-15 check script:**
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_gap15_check.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir  <REF_DIR> \
+    --output   data/<TAG>_eco_gap15_check.json
+```
+Pass `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json` to the studier sub-agent prompt.
+
 **ALWAYS spawn eco_netlist_studier in RE_STUDY_MODE regardless of failure mode.** The studier reads the eco_fm_analyzer output, inspects the actual PostEco netlist, and updates `eco_preeco_study.json` with corrected/forced entries. This replaces the previous approach of manually patching the study JSON in ROUND_ORCHESTRATOR.
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_netlist_studier.md` prepended. Pass:

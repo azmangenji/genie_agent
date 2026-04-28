@@ -1,0 +1,97 @@
+#!/bin/bash
+# eco_check8.sh — Run Verilog validator for Step 5 Check 8.
+# Replaces agent reasoning with deterministic script invocation.
+# Outputs per-stage PASS/FAIL JSON for eco_pre_fm_checker to include in its JSON.
+#
+# Usage:
+#   bash script/eco_check8.sh \
+#       <BASE_DIR> <REF_DIR> <TAG> <ROUND> <eco_applied_json>
+#
+# Output:
+#   Writes <BASE_DIR>/data/<TAG>_eco_check8_round<ROUND>.json:
+#   {
+#     "Synthesize": "PASS|FAIL",
+#     "PrePlace":   "PASS|FAIL",
+#     "Route":      "PASS|FAIL",
+#     "errors":     ["<error line>", ...]
+#   }
+#   Exit 0 = all PASS, Exit 1 = any FAIL
+
+BASE_DIR=$1
+REF_DIR=$2
+TAG=$3
+ROUND=$4
+APPLIED_JSON=$5
+
+SCRIPT="${BASE_DIR}/script/validate_verilog_netlist.py"
+OUT_JSON="${BASE_DIR}/data/${TAG}_eco_check8_round${ROUND}.json"
+TMP_LOG="/tmp/eco_check8_${TAG}_${ROUND}.txt"
+
+# Extract touched module names from applied JSON
+MODS=$(python3 -c "
+import json, sys
+d = json.load(open('${APPLIED_JSON}'))
+mods = set()
+for v in d.values():
+    if isinstance(v, list):
+        for e in v:
+            if e.get('module_name'): mods.add(e['module_name'])
+print(' '.join(sorted(mods)))
+" 2>/dev/null)
+
+# Run validator
+python3 "${SCRIPT}" \
+    --strict \
+    ${MODS:+--modules $MODS} \
+    "${REF_DIR}/data/PostEco/Synthesize.v.gz" \
+    "${REF_DIR}/data/PostEco/PrePlace.v.gz" \
+    "${REF_DIR}/data/PostEco/Route.v.gz" \
+    2>&1 | tee "${TMP_LOG}"
+VALIDATOR_EXIT=${PIPESTATUS[0]}
+
+# Parse per-stage results
+parse_stage() {
+    local stage=$1
+    local log=$2
+    # Find the section for this stage and check PASS/FAIL
+    awk "/Validating:.*${stage}/{found=1} found && /PASS:/{print \"PASS\"; exit} found && /FAIL:/{print \"FAIL\"; exit} found && /Validating:.*[^${stage}]/{exit}" "${log}"
+}
+
+SYNTH=$(parse_stage "Synthesize" "${TMP_LOG}")
+PPLACE=$(parse_stage "PrePlace" "${TMP_LOG}")
+ROUTE=$(parse_stage "Route" "${TMP_LOG}")
+
+# Default to FAIL if parsing failed
+[ -z "$SYNTH"  ] && SYNTH="FAIL"
+[ -z "$PPLACE" ] && PPLACE="FAIL"
+[ -z "$ROUTE"  ] && ROUTE="FAIL"
+
+# Collect error lines
+ERRORS=$(grep -E "^\s+\[F[0-9]|Error:|SVR-[0-9]" "${TMP_LOG}" 2>/dev/null | head -20 | python3 -c "
+import sys, json
+lines = [l.rstrip() for l in sys.stdin]
+print(json.dumps(lines))
+")
+[ -z "$ERRORS" ] && ERRORS="[]"
+
+# Write output JSON
+python3 -c "
+import json
+result = {
+    'Synthesize': '${SYNTH}',
+    'PrePlace':   '${PPLACE}',
+    'Route':      '${ROUTE}',
+    'errors':     ${ERRORS}
+}
+print(json.dumps(result, indent=2))
+" > "${OUT_JSON}"
+
+echo "eco_check8.sh: Synthesize=${SYNTH}  PrePlace=${PPLACE}  Route=${ROUTE}"
+echo "Output: ${OUT_JSON}"
+
+# Exit 0 if all PASS, 1 if any FAIL
+if [ "$SYNTH" = "PASS" ] && [ "$PPLACE" = "PASS" ] && [ "$ROUTE" = "PASS" ]; then
+    exit 0
+else
+    exit 1
+fi
