@@ -363,6 +363,8 @@ result["check_summary"]["check8_verilog_validator"] = check8
 
 **CHECK8_EXIT=0 → all stages PASS. CHECK8_EXIT=1 → at least one FAIL → block FM.**
 
+**Verify script ran:** The script prints `ECO_SCRIPT_LAUNCHED: eco_check8.sh` and writes a `_marker.txt` sidecar at `data/<TAG>_eco_check8_round<ROUND>_marker.txt`. The Step 5 RPT MUST contain `ECO_SCRIPT_LAUNCHED: eco_check8.sh`. If absent — script was NOT called — the manual check result is invalid; re-run the script.
+
 Do NOT write `"status": "PASS"` — always use the per-stage format from the script output.
 
 **ALWAYS run with `--strict`** — this enables F1 (duplicate wire) detection in addition to F3/F5/Check9. F1 catches cases where an explicit `wire n_eco_*;` declaration was added alongside a cell that already creates the net implicitly (eco_applier UNIVERSAL RULE violation). Without `--strict`, duplicate wire errors reach FM and cause FM-599 → ABORT_NETLIST.

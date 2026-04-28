@@ -512,6 +512,8 @@ python3 script/eco_scripts/eco_gap15_check.py \
 ```
 Read the output JSON and **pass it explicitly to the eco_netlist_studier sub-agent prompt** as `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json`. The studier reads this file to get `is_output_port` and `strategy` for each `and_term` change — it does NOT re-derive these itself.
 
+**Verify script ran:** The script prints `ECO_SCRIPT_LAUNCHED: eco_gap15_check.py` to stdout and writes a `_marker.txt` sidecar. The Step 3 RPT MUST contain a line starting with `ECO_SCRIPT_LAUNCHED: eco_gap15_check.py`. If this line is absent from the RPT, the script was NOT called — the agent must re-run it before spawning eco_netlist_studier.
+
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_netlist_studier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - The RTL diff JSON at `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (provides old_net/new_net per change)

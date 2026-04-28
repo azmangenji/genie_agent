@@ -86,8 +86,14 @@ result = {
 print(json.dumps(result, indent=2))
 " > "${OUT_JSON}"
 
-echo "eco_check8.sh: Synthesize=${SYNTH}  PrePlace=${PPLACE}  Route=${ROUTE}"
-echo "Output: ${OUT_JSON}"
+# Write launch marker — agent includes this in Step 5 RPT to prove script ran
+MARKER="ECO_SCRIPT_LAUNCHED: eco_check8.sh
+  Synthesize: ${SYNTH}
+  PrePlace:   ${PPLACE}
+  Route:      ${ROUTE}
+  output:     ${OUT_JSON}"
+echo "${MARKER}"
+echo "${MARKER}" > "${OUT_JSON%.json}_marker.txt"
 
 # Exit 0 if all PASS, 1 if any FAIL
 if [ "$SYNTH" = "PASS" ] && [ "$PPLACE" = "PASS" ] && [ "$ROUTE" = "PASS" ]; then

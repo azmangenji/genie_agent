@@ -167,7 +167,9 @@ done
 
 Where `PREV_APPLIED=data/<TAG>_eco_applied_round<ROUND-1>.json` for Round 2+ (omit for Round 1).
 
-Read each `data/<TAG>_eco_perl_spec_<Stage>.json` to see INSERTED/SKIPPED/ALREADY_APPLIED decisions. The script handles:
+Read each `data/<TAG>_eco_perl_spec_<Stage>.json` to see INSERTED/SKIPPED/ALREADY_APPLIED decisions.
+
+**Verify script ran:** Each script run prints `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` and writes a `_marker.txt` sidecar. The Step 4 RPT MUST contain `ECO_SCRIPT_LAUNCHED: eco_perl_spec.py` for each stage. If absent — script was NOT called — re-run before proceeding to Passes 2-4. The script handles:
 - ALREADY_APPLIED detection via `grep -cw <inst_name> PostEco/<Stage>.v.gz`
 - SKIPPED checks (missing input nets)
 - wire_decls exclusion (SVR-9 prevention via grep + buffer check in Perl)

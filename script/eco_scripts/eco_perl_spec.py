@@ -254,9 +254,20 @@ def main():
     inserted = sum(1 for s in statuses if s['status'] == 'INSERTED')
     skipped  = sum(1 for s in statuses if s['status'] == 'SKIPPED')
     already  = sum(1 for s in statuses if s['status'] == 'ALREADY_APPLIED')
-    print(f"eco_perl_spec.py: {args.stage} — {inserted} INSERTED, {skipped} SKIPPED, {already} ALREADY_APPLIED")
-    print(f"Perl script: {args.output}")
-    print(f"Status JSON: {args.status}")
+
+    # Write launch marker — agent includes this in Step 4 RPT to prove script ran
+    marker = (
+        f"ECO_SCRIPT_LAUNCHED: eco_perl_spec.py\n"
+        f"  stage:    {args.stage}\n"
+        f"  round:    {args.round}\n"
+        f"  INSERTED: {inserted}\n"
+        f"  SKIPPED:  {skipped}\n"
+        f"  ALREADY:  {already}\n"
+        f"  perl:     {args.output}\n"
+        f"  status:   {args.status}"
+    )
+    print(marker)
+    Path(args.status.replace('.json', '_marker.txt')).write_text(marker + '\n')
     return 0
 
 

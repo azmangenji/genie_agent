@@ -156,7 +156,23 @@ def main():
               f"  → {strategy}")
 
     Path(args.output).write_text(json.dumps(results, indent=2))
-    print(f"\nWrote GAP-15 check results to {args.output}")
+
+    # Write launch marker — agent includes this in Step 3 RPT to prove script ran
+    marker_lines = [
+        f"ECO_SCRIPT_LAUNCHED: eco_gap15_check.py",
+        f"  output:   {args.output}",
+        f"  changes:  {len(results)}",
+    ]
+    for tok, r in results.items():
+        marker_lines.append(
+            f"  {tok}: is_output_port={r['is_output_port']}  rtl={r['rtl_check']}  "
+            f"gatelvl={r['gatelvl_check']}  → {r['strategy']}"
+        )
+    marker = '\n'.join(marker_lines)
+    print(marker)
+
+    # Also write to sidecar marker file for RPT to include
+    Path(args.output.replace('.json', '_marker.txt')).write_text(marker + '\n')
     return 0
 
 
