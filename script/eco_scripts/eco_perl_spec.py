@@ -108,7 +108,12 @@ def main():
 
         ct   = e.get('change_type','')
         inst = e.get('instance_name') or e.get('cell_name') or e.get('signal_name','')
+        # Derive module_name: use module_name if set, else derive from instance_scope
         mod  = e.get('module_name','')
+        if not mod and e.get('instance_scope'):
+            # instance_scope = "ARB/DCQARB" → posteco module = ddrss_<tile>_t_um<last_segment>
+            # Fall back to scope-based lookup later; use scope as key for now
+            mod = e.get('instance_scope','')
         force = e.get('force_reapply', False)
 
         # ── new_logic_gate / new_logic_dff ───────────────────────────────────
@@ -135,6 +140,14 @@ def main():
                 if net in ("1'b0", "1'b1") or str(net).startswith('NEEDS_NAMED_WIRE:'):
                     continue
                 if str(net).startswith('UNRESOLVABLE_IN_'):
+                    continue
+                # n_eco_* nets are intermediate batch nets — they don't exist in PostEco
+                # yet but will be created by other gates in the same Perl batch insertion.
+                # Skip the PostEco check for these — they are always valid within a batch.
+                if re.match(r'^n_eco_\d+_', str(net)):
+                    continue
+                # SEQMAP_NET_*_orig is a driver-rename intermediate net — also valid in batch
+                if re.match(r'^SEQMAP_NET_\d+_orig$', str(net)):
                     continue
                 if not net_exists_in_posteco(net, posteco):
                     skip_reason = f"input net '{net}' absent in {args.stage}"

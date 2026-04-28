@@ -234,11 +234,34 @@ This check runs FIRST. If it fires, RETURN IMMEDIATELY and HARD STOP all other s
 ```bash
 # The ORCHESTRATOR already ran eco_gap15_check.py before spawning you.
 # Read the result directly — do NOT re-derive is_output_port yourself:
-cat <GAP15_CHECK_PATH>
-# Find the entry for <old_token> and read:
-#   "is_output_port": true|false
-#   "strategy": "module_port_direct_gating" | "proceed_to_selection"
+python3 -c "
+import json, sys
+d = json.load(open('<GAP15_CHECK_PATH>'))
+tok = '<old_token>'
+if tok in d:
+    r = d[tok]
+    print(f'GAP15: {tok}  is_output_port={r[\"is_output_port\"]}  strategy={r[\"strategy\"]}')
+    if r['is_output_port']:
+        print(f'  → output_net MUST BE SET TO: {tok}  (NOT n_eco_<jira>_<seq>)')
+        print(f'  → module_port_direct_gating: gate.Z = {tok}, driver rename to {tok}_orig')
+else:
+    print(f'GAP15: {tok} not in check file — run fallback')
+"
 ```
+
+**CRITICAL — when `is_output_port=True`, the JSON study entry for the new gate MUST have:**
+```json
+{
+  "output_net": "<old_token>",         ← EXACTLY the port name, NOT n_eco_<jira>_<seq>
+  "and_term_strategy": "module_port_direct_gating",
+  "port_connections": {
+    "<input_pin_A>": "eco_<jira>_<seq>_orig",   ← renamed driver output
+    "<input_pin_B>": "<new_and_term_net>",        ← the new gating signal
+    "<output_pin>": "<old_token>"                 ← SAME as old_token
+  }
+}
+```
+If you write `"output_net": "n_eco_<jira>_<seq>"` when `is_output_port=True` → **WRONG** → all downstream DFFs see ungated value → cascade failures.
 
 If `GAP15_CHECK_PATH` is not provided or file does not exist, run the fallback bash commands:
 
