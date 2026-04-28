@@ -773,6 +773,12 @@ else:
 
 ## STEP 6 — PostEco Formality Verification
 
+**MANDATORY pre-FM gate — verify Step 5 JSON exists and passed:**
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_pre_fm_check_round1.json
+```
+If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre_fm_checker. **FM must NEVER be submitted without a passing Step 5 JSON.** No exceptions.
+
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=1`
 - `ECO_TARGETS=FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace`

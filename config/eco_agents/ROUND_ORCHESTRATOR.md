@@ -290,6 +290,12 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt
 
 Do NOT proceed to Step 5 until the RPT is confirmed in both data/ and AI_ECO_FLOW_DIR.
 
+**MANDATORY pre-Step 5 gate — verify eco_applier JSON exists:**
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json
+```
+If this file does NOT exist — eco_applier failed to write its output JSON. Do NOT proceed to Step 5 or FM. Re-spawn eco_applier with the same inputs. **NEVER submit FM without this JSON existing** — the pre-FM checker reads it and without it Step 5 cannot run.
+
 ---
 
 ## STEP 5 — Pre-FM Quality Checker (MANDATORY)
@@ -334,6 +340,12 @@ else:
 ---
 
 ## STEP 6 — PostEco Formality Verification
+
+**MANDATORY pre-FM gate — verify Step 5 JSON exists and passed:**
+```bash
+ls <BASE_DIR>/data/<TAG>_eco_pre_fm_check_round<NEXT_ROUND>.json
+```
+If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre_fm_checker. **FM must NEVER be submitted without a passing Step 5 JSON.** No exceptions.
 
 > **HARD RULE: Each ROUND_ORCHESTRATOR instance runs PostEco FM EXACTLY ONCE for its round.**
 > If FM fails after this one run: do NOT re-run FM. Do NOT spawn another eco_fm_runner.
