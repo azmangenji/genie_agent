@@ -39,10 +39,20 @@ for v in d.values():
 print(' '.join(sorted(mods)))
 " 2>/dev/null)
 
-# Run validator
+# Build modules array safely
+MODS_ARGS=()
+if [ -n "$MODS" ]; then
+    MODS_ARGS=(--modules)
+    for m in $MODS; do
+        MODS_ARGS+=("$m")
+    done
+fi
+
+# Run validator — use -- to separate --modules args from netlist positional args
 python3 "${SCRIPT}" \
     --strict \
-    ${MODS:+--modules $MODS} \
+    "${MODS_ARGS[@]}" \
+    -- \
     "${REF_DIR}/data/PostEco/Synthesize.v.gz" \
     "${REF_DIR}/data/PostEco/PrePlace.v.gz" \
     "${REF_DIR}/data/PostEco/Route.v.gz" \
