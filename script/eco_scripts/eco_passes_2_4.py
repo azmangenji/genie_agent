@@ -124,7 +124,11 @@ def apply_port_declaration(lines, entry):
     last_paren = close_line.rfind(')')
     if last_paren < 0:
         return lines, 'SKIPPED', f'no ) on port close line {port_close}'
-    lines[port_close] = close_line[:last_paren] + f' , {signal}\n)\n'
+    # Preserve original close suffix (e.g. ') ;' or ');') — must keep the semicolon
+    orig_suffix = close_line[last_paren:]          # e.g. ') ;' or ') ;\n'
+    if ';' not in orig_suffix:
+        orig_suffix = ') ;\n'                       # ensure semicolon always present
+    lines[port_close] = close_line[:last_paren] + f' , {signal}\n' + orig_suffix
 
     # Insert direction declaration after port list close
     decl_line = f'  {direction} {signal} ;\n'
@@ -162,7 +166,7 @@ def apply_port_connection(lines, entry, gz_path=None):
     # Find instance close — depth track from inst_start (max 5000 lines)
     depth = 0
     inst_close = -1
-    for i in range(inst_start, min(inst_start + 5000, len(lines))):
+    for i in range(inst_start, min(inst_start + 20000, len(lines))):
         clean = lines[i].split('//')[0]
         for ch in clean:
             if ch == '(': depth += 1
@@ -174,7 +178,7 @@ def apply_port_connection(lines, entry, gz_path=None):
         if inst_close >= 0:
             break
     if inst_close < 0:
-        for i in range(inst_start + 1, min(inst_start + 5000, len(lines))):
+        for i in range(inst_start + 1, min(inst_start + 20000, len(lines))):
             if re.match(r'^\)\s*;', lines[i].strip()):
                 inst_close = i
                 break
@@ -213,7 +217,9 @@ def apply_rewire(lines, entry, stage='Synthesize'):
     # Use per-stage cell name if available (handles P&R renamed cells)
     per_stage = entry.get('per_stage_cell_name', {})
     cell_name = per_stage.get(stage, '') or entry.get('cell_name', '')
-    pin_name  = entry.get('pin', '')
+    # Use per-stage pin name if available (e.g., ZN in Synthesize vs ZN1 in PrePlace/Route)
+    per_stage_pin = entry.get('per_stage_pin', {})
+    pin_name  = per_stage_pin.get(stage, '') or entry.get('pin', '')
     # Use per-stage nets if available
     old_net   = (entry.get('per_stage_old_net', {}) or {}).get(stage, '') or entry.get('old_net', '')
     new_net   = (entry.get('per_stage_new_net', {}) or {}).get(stage, '') or entry.get('new_net', '')
