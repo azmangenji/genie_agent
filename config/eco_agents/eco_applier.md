@@ -156,6 +156,7 @@ for STAGE in Synthesize PrePlace Route; do
         --ref-dir    <REF_DIR> \
         --tag        <TAG> \
         --jira       <JIRA> \
+        --tile       <TILE> \
         --stage      ${STAGE} \
         --round      <ROUND> \
         --output     runs/eco_apply_<TAG>_${STAGE}.pl \

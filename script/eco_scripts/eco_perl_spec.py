@@ -33,10 +33,12 @@ from pathlib import Path
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def zgrep_count(pattern, gz_path, timeout=60):
-    """grep -cw pattern in gzipped file. Returns int."""
+    """grep -cF (fixed string) pattern in gzipped file. Returns int.
+    Uses -F to treat pattern as literal string — prevents brackets like [2]
+    from being interpreted as character classes by grep."""
     try:
         proc = subprocess.run(
-            f'zcat {gz_path} | grep -cw {repr(pattern)}',
+            f'zcat {gz_path} | grep -cF {repr(pattern)}',
             shell=True, capture_output=True, text=True, timeout=timeout
         )
         return int(proc.stdout.strip() or '0')
@@ -150,6 +152,7 @@ def main():
     p.add_argument('--prev-applied', default=None)
     p.add_argument('--output',       required=True)
     p.add_argument('--status',       required=True)
+    p.add_argument('--tile',         default='', help='Tile name for tile-root module resolution')
     args = p.parse_args()
 
     study    = json.loads(Path(args.study).read_text())
@@ -167,6 +170,25 @@ def main():
     entries  = study.get(args.stage, [])
     # Build scope → module_name map from PostEco for module resolution
     scope_to_mod = build_scope_to_module_map(posteco)
+
+    # Find the tile-root module name (for entries with empty instance_scope)
+    # Tile-root module follows pattern: ddrss_<tile>_t_<tile> (or with _0 suffix in Route)
+    tile_root_module = ''
+    if args.tile:
+        # Tile-root module is ddrss_<tile>_t (or ddrss_<tile>_t_0 in Route)
+        # It does NOT have a submodule suffix after _t
+        for pat in [f'ddrss_{args.tile}_t ', f'ddrss_{args.tile}_t_0 ']:
+            try:
+                proc = subprocess.run(
+                    f'zcat {posteco} | grep -m1 "^module {pat}" | awk \'{{print $2}}\'',
+                    shell=True, capture_output=True, text=True, timeout=60
+                )
+                candidate = proc.stdout.strip().rstrip('(').rstrip()
+                if candidate:
+                    tile_root_module = candidate
+                    break
+            except Exception:
+                pass
     # {module_name: {wire_decls, wire_removes, gates}}
     changes    = {}
     port_decls = {}   # Pass 2: {module_name: [{signal, direction}]}
@@ -184,6 +206,9 @@ def main():
         inst = e.get('instance_name') or e.get('cell_name') or e.get('signal_name','')
         # Resolve gate-level module name (generic — works for any tile)
         mod   = resolve_module_name(e, scope_to_mod, posteco)
+        # For tile-root entries (empty scope, scope_is_tile_root=True), use tile root module
+        if not mod and (e.get('scope_is_tile_root') or not e.get('instance_scope','')):
+            mod = tile_root_module
         force = e.get('force_reapply', False)
 
         # ── new_logic_gate / new_logic_dff ───────────────────────────────────
@@ -204,7 +229,11 @@ def main():
             # Check all input nets exist in PostEco
             out_pin = output_pin_key(pcs)
             skip_reason = None
-            for pin, net in pcs.items():
+            # skip_input_net_check: gate inputs depend on new ports (Pass 2) or renamed
+            # driver nets (Pass 4) — they will exist after those passes run.
+            # Verilog allows forward reference; insert the gate unconditionally.
+            if not e.get('skip_input_net_check'):
+              for pin, net in pcs.items():
                 if pin == out_pin:
                     continue
                 if net in ("1'b0", "1'b1") or str(net).startswith('NEEDS_NAMED_WIRE:'):
@@ -218,6 +247,9 @@ def main():
                     continue
                 # SEQMAP_NET_*_orig is a driver-rename intermediate net — also valid in batch
                 if re.match(r'^SEQMAP_NET_\d+_orig$', str(net)):
+                    continue
+                # eco_<jira>_*_orig nets are renamed driver outputs — valid after Pass 4 rewire
+                if re.match(r'^eco_\d+_\w+_orig$', str(net)):
                     continue
                 if not net_exists_in_posteco(net, posteco):
                     skip_reason = f"input net '{net}' absent in {args.stage}"
