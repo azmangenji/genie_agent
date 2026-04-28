@@ -302,8 +302,8 @@ if is_output_port:
     # 4. NO individual consumer rewires — ALL consumers see gated value via port automatically
     # 5. needs_explicit_wire_decl = False for <old_token> (it IS the port — already declared)
     # 6. needs_explicit_wire_decl = False for eco_<jira>_<seq>_orig (implicit from driver rename)
-    # 7. DO NOT rename A2234246.ZN or similar driver to <old_token>_orig in eco_preeco_study.json
-    #    UNTIL confirming the renamed net (eco_<jira>_<seq>_orig) is used as the AND gate input.
+    # 7. DO NOT rename the original driver output to eco_<jira>_<seq>_orig in eco_preeco_study.json
+    #    UNTIL confirming the renamed net is used as the AND gate input.
 
     # HARD VERIFICATION — run this grep BEFORE writing the study JSON:
     # zcat PreEco/Synthesize.v.gz | grep -c "\beco_<jira>_<seq>\b" → must return 0 (not yet inserted)
@@ -421,7 +421,7 @@ if resolved_nets["PrePlace"] != resolved_nets["Route"]:
             resolved_nets[stage] = common_input
         log(f"CROSS_STAGE_NORMALIZE: {resolved_nets['PrePlace']} / {resolved_nets['Route']} → {common_input}")
 ```
-This prevents the failure mode where PrePlace uses `test_so4927` and Route uses `IReset_m1` for the same functional signal — FM sees different D-input cones → NeedFreqAdj_reg non-equivalent.
+This prevents the failure mode where PrePlace uses a scan alias (`test_so*`) and Route uses a primary input port (`<net>_m1`) for the same functional signal — FM sees different D-input cones → the target DFF is non-equivalent across stages.
 
 > **GAP-13 — UNRESOLVABLE vs manual_only distinction:**
 > - `UNRESOLVABLE`: signal and its entire driver cone are genuinely absent from the failing stage PreEco after all 4 priorities — P&R eliminated the cone. Use `1'b0` as a conservative placeholder if the gate still has valid other inputs.
