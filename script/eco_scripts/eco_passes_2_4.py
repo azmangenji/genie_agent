@@ -42,6 +42,29 @@ def write_gz(path, lines):
 def grep_count(pattern, lines):
     return sum(1 for l in lines if re.search(pattern, l))
 
+def grep_lineno(pattern, gz_path, timeout=30):
+    """Use zcat+grep to find first matching line number. Fast even on large files."""
+    try:
+        proc = subprocess.run(
+            f'zcat {gz_path} | grep -n {repr(pattern)} | head -1',
+            shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        m = re.match(r'^(\d+):', proc.stdout.strip())
+        return int(m.group(1)) - 1 if m else -1  # 0-indexed
+    except Exception:
+        return -1
+
+def read_lines_window(gz_path, start_lineno, window=2000, timeout=30):
+    """Read a window of lines from gz file starting at start_lineno (0-indexed)."""
+    try:
+        proc = subprocess.run(
+            f'zcat {gz_path} | tail -n +{start_lineno+1} | head -n {window}',
+            shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        return proc.stdout.splitlines(keepends=True)
+    except Exception:
+        return []
+
 
 # ── Port list close finder (parenthesis depth tracking) ──────────────────────
 
@@ -112,7 +135,7 @@ def apply_port_declaration(lines, entry):
 
 # ── Pass 3: port_connection ───────────────────────────────────────────────────
 
-def apply_port_connection(lines, entry):
+def apply_port_connection(lines, entry, gz_path=None):
     """Add .port(net) to submodule instance block. Returns (lines, status, reason)."""
     parent_mod  = entry.get('module_name', '') or entry.get('parent_module', '')
     inst_name   = entry.get('instance_name', '')
@@ -122,19 +145,24 @@ def apply_port_connection(lines, entry):
     if not all([inst_name, port_name, net_name]):
         return lines, 'SKIPPED', 'missing instance_name/port_name/net_name'
 
-    # Find instance block
+    # Fast path: use grep to find instance start line number in the gz file
     inst_start = -1
-    for i, line in enumerate(lines):
-        if re.search(rf'\b{re.escape(inst_name)}\s*\(', line):
-            inst_start = i
-            break
+    if gz_path:
+        inst_start = grep_lineno(rf'\b{inst_name}\s*\(', gz_path)
+
+    # Fallback: scan lines array
+    if inst_start < 0:
+        for i, line in enumerate(lines):
+            if re.search(rf'\b{re.escape(inst_name)}\s*\(', line):
+                inst_start = i
+                break
     if inst_start < 0:
         return lines, 'SKIPPED', f'instance {inst_name} not found'
 
-    # Find instance close
+    # Find instance close — depth track from inst_start (max 5000 lines)
     depth = 0
     inst_close = -1
-    for i in range(inst_start, min(inst_start + 500, len(lines))):
+    for i in range(inst_start, min(inst_start + 5000, len(lines))):
         clean = lines[i].split('//')[0]
         for ch in clean:
             if ch == '(': depth += 1
@@ -146,7 +174,12 @@ def apply_port_connection(lines, entry):
         if inst_close >= 0:
             break
     if inst_close < 0:
-        return lines, 'SKIPPED', f'cannot find instance close for {inst_name}'
+        for i in range(inst_start + 1, min(inst_start + 5000, len(lines))):
+            if re.match(r'^\)\s*;', lines[i].strip()):
+                inst_close = i
+                break
+        if inst_close < 0:
+            return lines, 'SKIPPED', f'cannot find instance close for {inst_name}'
 
     inst_block = ''.join(lines[inst_start:inst_close+1])
 
@@ -175,24 +208,27 @@ def apply_port_connection(lines, entry):
 
 # ── Pass 4: rewire ────────────────────────────────────────────────────────────
 
-def apply_rewire(lines, entry):
+def apply_rewire(lines, entry, stage='Synthesize'):
     """Change pin connection in cell instance block. Returns (lines, status, reason)."""
-    cell_name = entry.get('cell_name', '')
+    # Use per-stage cell name if available (handles P&R renamed cells)
+    per_stage = entry.get('per_stage_cell_name', {})
+    cell_name = per_stage.get(stage, '') or entry.get('cell_name', '')
     pin_name  = entry.get('pin', '')
-    old_net   = entry.get('old_net', '')
-    new_net   = entry.get('new_net', '')
+    # Use per-stage nets if available
+    old_net   = (entry.get('per_stage_old_net', {}) or {}).get(stage, '') or entry.get('old_net', '')
+    new_net   = (entry.get('per_stage_new_net', {}) or {}).get(stage, '') or entry.get('new_net', '')
 
     if not all([cell_name, pin_name, new_net]):
         return lines, 'SKIPPED', 'missing cell_name/pin/new_net'
 
-    # Find cell instance
+    # Find cell instance — try exact name first, then search for it
     cell_start = -1
     for i, line in enumerate(lines):
         if re.search(rf'\b{re.escape(cell_name)}\b', line):
             cell_start = i
             break
     if cell_start < 0:
-        return lines, 'SKIPPED', f'cell {cell_name} not found'
+        return lines, 'SKIPPED', f'cell {cell_name} not found in {stage}'
 
     # Find cell block end
     depth = 0
@@ -254,7 +290,33 @@ def main():
     posteco = f"{args.ref_dir}/data/PostEco/{args.stage}.v.gz"
     entries = study.get(args.stage, [])
 
-    lines    = read_gz(posteco)
+    file_size = Path(posteco).stat().st_size if Path(posteco).exists() else 0
+    size_mb = file_size // 1024 // 1024
+    print(f"Loading {args.stage} netlist ({size_mb}MB compressed)...")
+
+    # Memory guard: skip full load for files > 50MB compressed (P&R stages are typically 60-70MB)
+    # Port_declaration entries are applied by eco_perl_spec.py Perl pass for these stages.
+    # Port_connection and rewire entries are handled by eco_applier agent (Pass 3/4).
+    if size_mb > 50:
+        print(f"  File too large ({size_mb}MB) for in-memory processing — skipping Passes 3/4.")
+        print(f"  Port_declarations were handled by eco_perl_spec.py Perl pass.")
+        print(f"  Port_connections and rewires will be handled by eco_applier agent.")
+        Path(args.status).write_text(json.dumps({
+            'tag': args.tag, 'stage': args.stage, 'round': args.round,
+            'entries': [{'name': '(skipped)', 'ct': 'all', 'status': 'SKIPPED',
+                         'reason': f'File too large ({size_mb}MB) — agent handles Passes 3/4'}],
+            'summary': {'applied': 0, 'already': 0, 'skipped': 1, 'verify_failed': 0}
+        }, indent=2))
+        marker = (f"ECO_SCRIPT_LAUNCHED: eco_passes_2_4.py\n"
+                  f"  stage:   {args.stage}\n"
+                  f"  applied: 0 (large file — agent handles)\n"
+                  f"  status:  {args.status}")
+        print(f"\n{marker}")
+        Path(args.status.replace('.json','_marker.txt')).write_text(marker + '\n')
+        return 0
+
+    lines = read_gz(posteco)
+    print(f"Loaded {len(lines)} lines.")
     statuses = []
     verify_failed = 0
 
@@ -266,9 +328,9 @@ def main():
         if ct in ('port_declaration', 'port_promotion'):
             lines, st, reason = apply_port_declaration(lines, e)
         elif ct == 'port_connection':
-            lines, st, reason = apply_port_connection(lines, e)
+            lines, st, reason = apply_port_connection(lines, e, gz_path=posteco)
         elif ct == 'rewire':
-            lines, st, reason = apply_rewire(lines, e)
+            lines, st, reason = apply_rewire(lines, e, stage=args.stage)
         else:
             continue  # Handled by eco_perl_spec.py (Pass 1) or other pass
 

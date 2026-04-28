@@ -168,8 +168,11 @@ def main():
     # Build scope → module_name map from PostEco for module resolution
     scope_to_mod = build_scope_to_module_map(posteco)
     # {module_name: {wire_decls, wire_removes, gates}}
-    changes  = {}
-    statuses = []  # list of {instance_name, status, reason}
+    changes    = {}
+    port_decls = {}   # Pass 2: {module_name: [{signal, direction}]}
+    port_conns = {}   # Pass 3: {instance_name: [{port, net}]}
+    rewires    = {}   # Pass 4: {cell_name: [{pin, old, new}]}
+    statuses   = []   # list of {instance_name, status, reason}
 
     for e in entries:
         if not e.get('confirmed', True):
@@ -252,10 +255,50 @@ def main():
             statuses.append({'name': sig, 'status':'APPLIED',
                              'reason': f'remove_wire_decl added to Perl wire_removes'})
 
-        # ── rewire / port_declaration / port_connection → handled by Passes 2-4 ─
+        # ── port_declaration / port_promotion (Pass 2) ───────────────────────────
+        elif ct in ('port_declaration', 'port_promotion'):
+            sig = e.get('signal_name', '')
+            direction = e.get('declaration_type', 'input')
+            if direction == 'wire':
+                statuses.append({'name': sig, 'status':'SKIPPED',
+                                 'reason':'wire — implicitly declared by port connections'})
+            elif sig and mod:
+                if mod not in port_decls:
+                    port_decls[mod] = []
+                port_decls[mod].append({'signal': sig, 'direction': direction})
+                statuses.append({'name': sig, 'status':'QUEUED',
+                                 'reason': f'port_declaration queued for Perl Pass 2 in {mod}'})
+
+        # ── port_connection (Pass 3) ─────────────────────────────────────────────
+        elif ct == 'port_connection':
+            inst_n   = e.get('instance_name', '')
+            port_n   = e.get('port_name', '')
+            net_n    = e.get('net_name', '')
+            if inst_n and port_n and net_n:
+                key = inst_n
+                if key not in port_conns:
+                    port_conns[key] = []
+                port_conns[key].append({'port': port_n, 'net': net_n})
+                statuses.append({'name': inst_n, 'status':'QUEUED',
+                                 'reason': f'.{port_n}({net_n}) queued for Perl Pass 3 on {inst_n}'})
+
+        # ── rewire (Pass 4) ──────────────────────────────────────────────────────
+        elif ct == 'rewire':
+            per_stage_cn = e.get('per_stage_cell_name', {})
+            cell_n = per_stage_cn.get(args.stage, '') or e.get('cell_name', '')
+            pin_n  = e.get('pin', '')
+            old_n  = e.get('old_net', '')
+            new_n  = e.get('new_net', '')
+            if cell_n and pin_n and new_n:
+                if cell_n not in rewires:
+                    rewires[cell_n] = []
+                rewires[cell_n].append({'pin': pin_n, 'old': old_n, 'new': new_n})
+                statuses.append({'name': cell_n, 'status':'QUEUED',
+                                 'reason': f'.{pin_n}({old_n}→{new_n}) queued for Perl Pass 4 on {cell_n}'})
+
         else:
-            statuses.append({'name': inst, 'status':'PASS_2_4',
-                             'reason': f'{ct} — handled by eco_applier Passes 2-4, not Perl'})
+            statuses.append({'name': inst, 'status':'UNHANDLED',
+                             'reason': f'{ct} — not handled by eco_perl_spec'})
 
     # ── Write Perl script ─────────────────────────────────────────────────────
     perl_lines = [
