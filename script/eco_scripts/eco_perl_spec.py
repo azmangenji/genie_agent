@@ -267,6 +267,17 @@ def main():
             if already_applied(inst, posteco, prev_st, force):
                 statuses.append({'name': inst, 'status':'ALREADY_APPLIED',
                                  'reason': f'grep found {inst} in PostEco {args.stage}'})
+                # CRITICAL: still process unconnected_rewires wire_decls even for
+                # ALREADY_APPLIED gates. The gate may be in PostEco but its associated
+                # wire declaration (from UNCONNECTED rename) might be missing if it was
+                # added in a prior round and not re-verified. Without the explicit wire
+                # FM cannot trace the REGCMD bus bit → DFF0X / globally unmatched.
+                for ur in e.get('unconnected_rewires', []):
+                    named = ur.get('named_net', '')
+                    if named and named not in changes[mod]['wire_decls']:
+                        changes[mod]['wire_decls'].append(named)
+                        statuses.append({'name': inst, 'status':'INFO',
+                                         'reason': f'unconnected_rewires wire_decl re-added for {named} (ALREADY_APPLIED gate)'})
                 continue
 
             # Per-stage port connections

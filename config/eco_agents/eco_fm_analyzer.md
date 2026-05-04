@@ -369,9 +369,10 @@ Use Step 2 results to classify:
 
 **Sub-causes (check in order):**
 1. **SKIPPED** — status=SKIPPED in eco_applied → find reason and fix
-2. **Wrong gate polarity** — inserted gate implements inverse of required logic → replace gate
-3. **Wrong net name** — new_net connected to cell is wrong → grep PostEco for correct net
-4. **Port missing** — port declaration/connection not applied. Before prescribing fix, check `eco_rtl_diff.json` for this signal:
+2. **Missing explicit wire for UNCONNECTED rename** — if failing DFF has a D-input gate with `unconnected_rewires` in study JSON, check PostEco for `wire <named_net>;`. If absent → add `force_wire_decl_reapply` action. **NEVER switch to constants or D-pin rewires before confirming the wire exists.** FM cannot trace `UNCONNECTED_*` across REGCMD hierarchy without explicit wire declaration — this produces globally unmatched, not Mode E.
+3. **Wrong gate polarity** — inserted gate implements inverse of required logic → replace gate
+4. **Wrong net name** — new_net connected to cell is wrong → grep PostEco for correct net
+5. **Port missing** — port declaration/connection not applied. Before prescribing fix, check `eco_rtl_diff.json` for this signal:
 
    - If `implicit_wire: true` or `no_wire_decl_needed: true` → signal is an **internal wire within the declaring module** (connects two child instances inside, not a cross-boundary port). **Fix: force_reapply the existing port_connection entries within that module + add explicit `wire <signal>;` decl. NEVER add as input port to parent or connect from grandparent** — the driver is inside the module, not outside.
    - If neither flag → signal is a genuine missing port. Fix: `force_port_decl` + `force_reapply`.
@@ -477,7 +478,10 @@ for token in and_term_tokens:
 **Condition 5 — Cascade count is not suspiciously large:**
 If `cascade_count >= 100` and all failing DFFs share a common module scope related to an `and_term` change → the cascade strongly suggests GAP-15 was not applied (not a pre-existing divergence). Do NOT classify as Mode E; classify as `INCOMPLETE_AND_TERM` and prescribe GAP-15 fix.
 
-Only after ALL five conditions confirmed → classify Mode E → `action: try_structural_insertion` (attempt alternative gate structure that avoids the pre-existing mismatch; if no structural fix exists → `action: conservative_constant` as last resort to make the gate functional).
+**Pre-condition 0 — Check UNCONNECTED wire_decl BEFORE classifying Mode E:**
+If the failing DFF's D-input gate has `unconnected_rewires` in study JSON → grep PostEco for `wire <named_net>;`. If absent, this is **Mode A sub-cause 2** (missing wire), NOT Mode E. Add `force_wire_decl_reapply` action. Do NOT proceed to Mode E classification until wire exists and FM still fails.
+
+Only after ALL five conditions confirmed AND pre-condition 0 cleared → classify Mode E → `action: try_structural_insertion` (attempt alternative gate structure that avoids the pre-existing mismatch; if no structural fix exists → `action: conservative_constant` as last resort to make the gate functional).
 
 ### Mode F — d_input_decompose_failed
 
