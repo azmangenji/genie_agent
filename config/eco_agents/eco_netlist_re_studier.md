@@ -61,6 +61,32 @@ If `rtl_check >= 1` OR `gatelvl_check >= 1` → entry was WRONG — correct it:
 3. If D = unexpected net → trace backward, update `new_net`
 4. For hierarchical netlists: set `force_reapply: true` on any port_declaration/port_connection marked APPLIED/ALREADY_APPLIED but still missing
 
+**Mode A sub-case — UNCONNECTED bus bit name wrong in a specific stage:**
+
+When Mode A sub-cause 2 (missing wire for UNCONNECTED rename) is diagnosed AND the wire exists in some stages but the bus_element rewire silently failed in another stage (DFF0X in Route vs PP but PP passes), the issue is that `original_per_stage[<stage>]` has the wrong UNCONNECTED name for that stage — studier fell back to Synthesize name.
+
+Fix: Re-search the failing stage's PreEco netlist for the actual UNCONNECTED_* name at the recorded `port_bus_bit` position:
+```bash
+# Find actual UNCONNECTED name at bit position in failing stage
+zcat <REF_DIR>/data/PreEco/<Stage>.v.gz | \
+  awk '/^module <port_bus_module>/,/^endmodule/' | \
+  grep -A5 ".<port_bus_name>\s*(" | \
+  grep -oP '\{[^}]+\}' | tr ',' '\n' | \
+  sed 's/[{} ]//g' | \
+  awk "NR==<total_elements - port_bus_bit>"
+# Use the result as the correct original_per_stage[<stage>]
+```
+
+Then update study JSON:
+```python
+for e in study["<Stage>"]:
+    for ur in e.get("unconnected_rewires", []):
+        if ur.get("port_bus_bit") is not None:
+            ur["original_per_stage"]["<Stage>"] = "<actual_unconnected_name>"
+            e["force_reapply"] = True
+            e["re_study_note"] = f"UNCONNECTED_BIT_FIX: Route original_per_stage corrected from <wrong> to <actual>"
+```
+
 **For `failure_mode: B` (regression — wrong cell rewired):** For each `exclude` in `revised_changes`:
 - Set `"confirmed": false, "reason": "excluded by eco_fm_analyzer round <ROUND> — Mode B regression"`
 - Do NOT delete — set `confirmed: false` so eco_applier skips it
