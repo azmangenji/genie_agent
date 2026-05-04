@@ -614,6 +614,27 @@ def setup_T16(jira, tag):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
+# T18 — FAIL: Ghost insert — JSON shows INSERTED but gate absent from PostEco netlist
+# Simulates eco_perl_spec marking INSERTED but Perl failing to find module
+# ─────────────────────────────────────────────────────────────────────────────
+def setup_T18(jira, tag):
+    # PostEco does NOT have the gate (module not found by Perl)
+    netlist = make_netlist([make_verilog('test_mod')])
+    ghost_inst = f'eco_{jira}_ghost'
+    study = {'Synthesize': [], 'PrePlace': [], 'Route': []}
+    # Applied JSON claims INSERTED but gate is NOT in the netlist
+    applied = {
+        'Synthesize': [{'change_type': 'new_logic_gate', 'name': ghost_inst,
+                        'status': 'INSERTED', 'reason': 'Added to Perl spec for module test_mod'}],
+        'PrePlace':   [{'change_type': 'new_logic_gate', 'name': ghost_inst,
+                        'status': 'INSERTED', 'reason': 'Added to Perl spec for module test_mod'}],
+        'Route':      [{'change_type': 'new_logic_gate', 'name': ghost_inst,
+                        'status': 'INSERTED', 'reason': 'Added to Perl spec for module test_mod'}],
+    }
+    return study, netlist, applied
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # T17 — PASS: undo_instance removes old gate + wire, new gate inserted cleanly
 # Simulates replacing a previously-inserted gate with a different one
 # ─────────────────────────────────────────────────────────────────────────────
@@ -700,6 +721,8 @@ def main():
              setup_T14, FAIL, expected_failures=['SVR4_SVR9'], **kw)
     run_test('T16', 'Port connection SKIPPED (net missing)',
              setup_T16, FAIL, expected_failures=['PORT_SKIP'], **kw)
+    run_test('T18', 'Ghost insert — INSERTED in JSON but absent from PostEco netlist',
+             setup_T18, FAIL, expected_failures=['GHOST_INSERT'], **kw)
 
     # Summary
     ran     = [r for r in RESULTS if args.filter is None or args.filter in r[0]]

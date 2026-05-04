@@ -182,6 +182,49 @@ def check_check8(check8_json_path):
     return failures
 
 
+def check_cells_in_netlist(applied, ref_dir):
+    """
+    FAIL if any gate marked INSERTED in applied JSON is physically absent
+    from the PostEco netlist. eco_perl_spec can mark INSERTED but fail to
+    actually inject the cell (e.g., module not found in large hierarchical netlist).
+    eco_pre_fm_check reads JSON status — this check reads the actual netlist.
+    """
+    gate_types = ('new_logic_gate', 'new_logic_dff', 'new_logic')
+    failures = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        entries = applied.get(stage, [])
+        if not isinstance(entries, list):
+            continue
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        inserted = [e.get('name','') for e in entries
+                    if e.get('change_type','') in gate_types
+                    and e.get('status','') == 'INSERTED'
+                    and e.get('name','')]
+        if not inserted:
+            continue
+        # Grep PostEco for each inserted instance name
+        for inst in inserted:
+            if not inst:
+                continue
+            try:
+                r = subprocess.run(
+                    f'zcat {gz} | grep -cF " {inst} ("',
+                    shell=True, capture_output=True, text=True, timeout=120
+                )
+                count = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
+                if count == 0:
+                    failures.append(
+                        f'[GHOST_INSERT] {stage}: {inst} marked INSERTED in JSON '
+                        f'but NOT found in PostEco/{stage}.v.gz — Perl spec generated '
+                        f'but module not found in netlist'
+                    )
+            except Exception:
+                pass
+    return failures
+
+
 def check_eco_cell_counts(applied):
     """
     WARN (not FAIL) if ECO cell counts differ significantly across stages.
@@ -264,6 +307,12 @@ def main():
     results['eco_cell_counts'] = 'PASS' if not fails else 'FAIL'
     warnings.extend(w)
     all_fails.extend([f'[ZERO_CELLS] {f}' for f in fails])
+
+    # Check 7 — Verify INSERTED gates actually exist in PostEco netlist
+    # Catches: eco_perl_spec marks INSERTED but Perl fails to find module (ghost insert)
+    fails = check_cells_in_netlist(applied, args.ref_dir)
+    results['cells_in_netlist'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
 
     passed = len(all_fails) == 0
 
