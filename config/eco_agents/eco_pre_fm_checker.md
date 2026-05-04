@@ -36,6 +36,13 @@ python3 script/eco_scripts/eco_pre_fm_check.py \
 
 **DO NOT** add agent judgment on top of script results. **DO NOT** reclassify FAIL as WARNING. **DO NOT** let FM proceed if exit code = 1.
 
+**MANDATORY COPY — always copy BOTH files to AI_ECO_FLOW_DIR regardless of PASS/FAIL:**
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt <AI_ECO_FLOW_DIR>/
+cp <BASE_DIR>/data/<TAG>_eco_pre_fm_check_round<ROUND>.json      <AI_ECO_FLOW_DIR>/
+```
+Do this BEFORE exiting. Failure to copy means ROUND_ORCHESTRATOR and FINAL_ORCHESTRATOR cannot read Step 5 results.
+
 **Inputs:** TAG, REF_DIR, BASE_DIR, ROUND, JIRA, AI_ECO_FLOW_DIR
 
 **Outputs (BOTH required before exiting):**
