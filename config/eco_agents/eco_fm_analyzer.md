@@ -935,10 +935,14 @@ Every `revised_changes` entry must name a specific cell or scope. Never write "a
 13. **Honest output over forced output** — describe every check done if root cause cannot be determined. Do NOT invent a fix.
 14. **Mode F exits the loop** — if all revised_changes are `manual_only`, ROUND_ORCHESTRATOR spawns FINAL_ORCHESTRATOR immediately.
 
-**PRIORITY RULE — NETLIST FIX FIRST, SVF/TUNE NEVER:**
+**PRIORITY RULE — NETLIST FIX FIRST, TUNE FILE AS LAST RESORT:**
 1. Fix the netlist — find the wrong/missing connection and correct it (fix_named_wire, rewire, re-insert)
-2. Only if Priority 3 structural trace confirms signal truly absent AND ECO is architecturally correct AND failure is stage-to-stage only → `set_dont_verify` on that specific DFF
-3. NEVER update tune files to work around FM failures — tune file changes mask netlist problems
-4. NEVER use `set_user_match` for ECO-inserted cells — an equivalence failure means the netlist is wrong
+2. If the SAME FM failure pattern persists across multiple rounds AND netlist analysis confirms it is structural (not a logical netlist error):
+   - Classify as `tune_file_required`
+   - Prescribe `action: tune_file_update` with `target: <FmTarget>` and `reason: <FM log evidence>`
+   - Do NOT specify exact TCL commands — let the agent read the FM log and determine what to add
+   - ROUND_ORCHESTRATOR applies the tune update to `tune/FmTargets/<target>.before.preverify.tcl` before next FM
+3. If both netlist fix and tune update exhausted → `manual_only`
+4. **NEVER** modify `EcoChange.svf` or any SVF file — SVF is engineer-only
 
 **HFS net rename is a NETLIST fix:** When an ECO gate uses a net that P&R renames (HFS distribution), fix with `fix_named_wire` — do NOT suppress with `set_dont_verify`.

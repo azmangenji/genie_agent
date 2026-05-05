@@ -202,6 +202,29 @@ Verify JSON contains `condition_input_resolutions` array. Do NOT proceed to Step
 
 ---
 
+## STEP 6e-TUNE — Apply Tune File Update (conditional)
+
+**Run this step ONLY if `eco_fm_analysis_round<ROUND>.json` has `"action": "tune_file_update"` entries.**
+
+For each `tune_file_update` action:
+1. Read `target` (e.g., `FmEqvEcoSynthesizeVsSynRtl`) and `reason` (FM log evidence) from the action
+2. Read the FM log for that target: `zcat <REF_DIR>/logs/<target>.log.gz | grep -E "Error|LatCG|Reverse.*Clock|unmatched|globally"`
+3. Based on the FM log evidence, determine what TCL directive to add (e.g., `set_dont_reverse`, `set_constant`, `set_user_match`)
+4. Append to `<REF_DIR>/tune/FmTargets/Fm.<ShortTarget>.before.preverify.tcl`:
+   ```tcl
+   # AI ECO Flow Round <ROUND> fix — <date>
+   # <reason from action>
+   <tcl_directive>
+   ```
+5. Log: `TUNE_FILE_UPDATED: <target> → added <directive> to Fm.<ShortTarget>.before.preverify.tcl`
+
+**Rules:**
+- Only add directives for STRUCTURAL failures (clock gating, scan chain SE mismatch, DFF matching) — never for logical netlist errors
+- Never modify `EcoChange.svf`
+- If unsure what to add → skip and let eco_fm_analyzer diagnose further in the next round
+
+---
+
 ## STEP 6f — Re-Study (eco_netlist_studier_round_N)
 
 **MANDATORY pre-Step 6f: Run GAP-15 check script:**
