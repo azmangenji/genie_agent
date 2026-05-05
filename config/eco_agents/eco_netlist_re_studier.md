@@ -44,6 +44,40 @@ If `rtl_check >= 1` OR `gatelvl_check >= 1` → entry was WRONG — correct it:
 
 ---
 
+## MANDATORY PRE-STEP — Two Safety Checks Before Any Fix
+
+### GAP-22: Fanout Check Before Driver Rename
+
+Before prescribing ANY rewire that renames a driver's output net (e.g., `old_net → new_orig`), count how many cells consume `old_net` in the declaring module scope:
+
+```bash
+fanout=$(zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | \
+  awk '/^module <module>/,/^endmodule/' | \
+  grep -c "\b<old_net>\b")
+```
+
+If `fanout > 10` → **DO NOT rename the driver**. High-fanout nets feed many downstream DFFs — renaming severs all connections. Use FM tuning (set_dont_reverse, set_constant) instead. Log: `FANOUT_BLOCK: <old_net> has <N> consumers — driver rename skipped`.
+
+### GAP-23: Paired undo_instance for force_reapply Gates
+
+When setting `force_reapply: true` on a `new_logic_gate` or `new_logic_dff` entry that is ALREADY in PostEco, **always add a paired `undo_instance` entry** before the re-insert entry. Without undo, eco_perl_spec either creates a duplicate gate (SVR-9) or skips silently (pin change not applied).
+
+```python
+# If gate already in PostEco AND force_reapply=True:
+undo = {
+    "change_type": "undo_instance",
+    "instance_name": entry["instance_name"],
+    "output_net":    entry.get("output_net", ""),
+    "module_name":   entry["module_name"],
+    "confirmed":     True
+}
+# Insert undo entry BEFORE the gate entry in the same stage list
+```
+
+Log: `FORCE_REAPPLY_UNDO: added undo_instance for <inst> before re-insert`.
+
+---
+
 ## Step 3 — Handle Each Failure Mode
 
 **For `ABORT_LINK` (missing port from port list):** For each `force_port_decl` in `revised_changes`:
