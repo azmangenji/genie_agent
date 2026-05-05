@@ -61,6 +61,8 @@ If `rtl_check >= 1` OR `gatelvl_check >= 1` → entry was WRONG — correct it:
 3. If D = unexpected net → trace backward, update `new_net`
 4. For hierarchical netlists: set `force_reapply: true` on any port_declaration/port_connection marked APPLIED/ALREADY_APPLIED but still missing
 
+**UNCONNECTED PARENT SCOPE RULE (MANDATORY for all Mode A UNCONNECTED fixes):** When fixing UNCONNECTED_* bus bit issues, only update `original_per_stage` at the declaring module scope (the parent that instantiates the submodule). NEVER search inside child modules to rename their internal UNCONNECTEDs. FM traces hierarchically from parent → child → internal DFF on its own. Editing child module internals breaks FM's clock/cone analysis.
+
 **Mode A sub-case — UNCONNECTED bus bit name wrong in a specific stage:**
 
 When Mode A sub-cause 2 (missing wire for UNCONNECTED rename) is diagnosed AND the wire exists in some stages but the bus_element rewire silently failed in another stage (DFF0X in Route vs PP but PP passes), the issue is that `original_per_stage[<stage>]` has the wrong UNCONNECTED name for that stage — studier fell back to Synthesize name.
@@ -129,12 +131,23 @@ synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<source_net
 
 **H2 — Find P&R alias:** For H-RENAME: find driver of `source_net` in Synthesize → search same driver instance in P&R → read its output net. For H-BUS: keep `source_net` as-is.
 
+**SCAN-RENAMED DFF Q EXCEPTION (MANDATORY in H2):** If the resolved P&R alias matches scan-assignment patterns (`test_so*`, `FxPrePlace_HFSNET_*`, `dftopt*`, `copt_net_*`, `aps_rename_*`, `ropt_net_*`, `FxOptCts_*`, `FxPlace_HFSNET_*`), do NOT use it as the alias. Keep the original `source_net` name. Scan-renamed nets expose the DFF's scan SI input to FM backward trace, contaminating the cone with unrelated scan chain DFFs.
+
+**SE/SI PIN EXCEPTION (MANDATORY in H2):** If `input_pin` is SE or SI on an ECO DFF entry, do NOT apply any alias — keep `1'b0`. SE/SI are scan infrastructure pins; per-stage scan nets make them inconsistent across stages and FM cannot prove equivalence.
+
 **H3 — Update study JSON:**
 ```python
 entry.setdefault("port_connections_per_stage", {
     s: dict(entry.get("port_connections", {})) for s in ["Synthesize", "PrePlace", "Route"]
 })
-if par_alias_found:
+# SE/SI exception: never override scan pins
+SCAN_ALIAS_PATTERNS = ('test_so', 'FxPrePlace_HFSNET_', 'dftopt', 'copt_net_',
+                       'aps_rename_', 'ropt_net_', 'FxOptCts_', 'FxPlace_HFSNET_')
+if input_pin in ('SE', 'SI'):
+    pass  # keep 1'b0, never update SE/SI
+elif par_alias_found and any(par_alias.startswith(p) for p in SCAN_ALIAS_PATTERNS):
+    pass  # scan-renamed DFF Q — keep original net, not scan alias
+elif par_alias_found:
     entry["port_connections_per_stage"][stage][input_pin] = par_alias
 else:
     entry["port_connections_per_stage"][stage][input_pin] = f"NEEDS_NAMED_WIRE:{source_net}"
@@ -159,7 +172,13 @@ for change in rtl_diff.get("changes", []):
                 entry = find_entry_by_instance(gate["instance_name"])
                 if entry and not already_updated(entry, stage, gate["inputs"]):
                     alias = priority3_structural_trace(gate["inputs"][0], stage)
-                    entry["port_connections_per_stage"][stage][gate["pin"]] = alias or f"NEEDS_NAMED_WIRE:{gate['inputs'][0]}"
+                    # SE/SI and scan-alias exceptions apply here too
+                    if gate["pin"] in ('SE', 'SI'):
+                        pass  # never override SE/SI
+                    elif alias and any(alias.startswith(p) for p in SCAN_ALIAS_PATTERNS):
+                        pass  # scan-renamed — keep original net
+                    else:
+                        entry["port_connections_per_stage"][stage][gate["pin"]] = alias or f"NEEDS_NAMED_WIRE:{gate['inputs'][0]}"
                     entry["force_reapply"] = True
 ```
 
@@ -176,6 +195,8 @@ for change in rtl_diff.get("changes", []):
 **For `action: update_gate_function`:**
 - **GF-1** — Find correct cell in PreEco Synthesize (same port-structure search)
 - **GF-2** — Update `gate_function`, `cell_type`, `re_study_note` for ALL stages
+
+**WIRE_SWAP GATE DIRECTION CHECK (MANDATORY in GF-2):** Before updating gate_function, verify the gate type matches the RTL operator direction. AND expression in RTL → must use AND2 (output pin `Z`). NEVER substitute De Morgan equivalents (NAND2, OR2) even if logically identical — they create different LatCG cone structures that cause FM gate-level equivalence failures. Verify by reading `mux_select_gate_function` from `eco_rtl_diff.json` and confirming gate polarity matches.
 
 **For `failure_mode: UNKNOWN`:** For each `target_register`: trace full forward/backward cone from DFF in PostEco Synthesize, re-parse FM result for this net, update study entry.
 
