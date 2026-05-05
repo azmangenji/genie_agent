@@ -207,21 +207,23 @@ Verify JSON contains `condition_input_resolutions` array. Do NOT proceed to Step
 **Run this step ONLY if `eco_fm_analysis_round<ROUND>.json` has `"action": "tune_file_update"` entries.**
 
 For each `tune_file_update` action:
-1. Read `target` (e.g., `FmEqvEcoSynthesizeVsSynRtl`) and `reason` (FM log evidence) from the action
-2. Read the FM log for that target: `zcat <REF_DIR>/logs/<target>.log.gz | grep -E "Error|LatCG|Reverse.*Clock|unmatched|globally"`
-3. Based on the FM log evidence, determine what TCL directive to add (e.g., `set_dont_reverse`, `set_constant`, `set_user_match`)
-4. Append to `<REF_DIR>/tune/FmTargets/Fm.<ShortTarget>.before.preverify.tcl`:
+1. Read `target` and `reason` from the action
+2. **Read the FM analyze_points report** for that target to get the EXACT FM hierarchy paths:
+   `zcat <REF_DIR>/rpts/<target>/<target>__analyze_points.rpt.gz | grep -E "globally unmatched|failing compare|r:/FMWORK|i:/FMWORK"`
+3. **Use the paths FM itself reports** — never hardcode or guess paths. FM's analyze_points output contains the exact `r:/FMWORK.../DFF` and `i:/FMWORK.../DFF` paths that are guaranteed to exist in FM's database.
+4. Build TCL using those exact paths:
    ```tcl
-   # AI ECO Flow Round <ROUND> fix — <date>
-   # <reason from action>
-   <tcl_directive>
+   # AI ECO Flow Round <ROUND> — <reason>
+   set x [get_pins -quiet {<exact_path_from_FM_report>/SE}]
+   if {[sizeof_collection $x] > 0} { set_constant -type pin $x 0 }
    ```
-5. Log: `TUNE_FILE_UPDATED: <target> → added <directive> to Fm.<ShortTarget>.before.preverify.tcl`
+5. Append to `<REF_DIR>/tune/FmTargets/Fm.<ShortTarget>.before.preverify.tcl`
 
-**Rules:**
-- Only add directives for STRUCTURAL failures (clock gating, scan chain SE mismatch, DFF matching) — never for logical netlist errors
+**Critical rules:**
+- Only add directives for STRUCTURAL failures (clock gating, scan chain SE, DFF matching) — never for logical netlist errors
+- **Always use paths from FM's own analyze_points output** — hardcoded paths silently fail with AMD-WARN if FM's elaboration differs from what was assumed
 - Never modify `EcoChange.svf`
-- If unsure what to add → skip and let eco_fm_analyzer diagnose further in the next round
+- If FM analyze_points doesn't show the path → skip and diagnose in next round
 
 ---
 
