@@ -158,6 +158,8 @@ P&R renames DFF outputs (scan insertion in PP, CTS/optimization in Route). A wir
 4. If upstream also absent → **CTS buffer search**: grep entire module scope for any cell whose output is the only driver of any net that feeds the same downstream consumers as `<net>` in Synthesize. CTS creates buffer chains (any cell type, not just BUF) with tool-generated output net names — accept the first driven net found in the P&R module scope that reaches the same fanout path.
 5. If aliases differ across stages → set `entry["net_per_stage"][pin] = {Syn: ..., PP: ..., Route: ...}`.
 
+**SCAN-RENAMED DFF Q EXCEPTION (MANDATORY):** If the resolved alias in step 2/3/4 matches scan-assignment naming patterns — nets starting with `test_so`, `FxPrePlace_HFSNET_`, `dftopt`, `copt_net_`, `aps_rename_`, `ropt_net_`, `FxOptCts_`, `FxPlace_HFSNET_` — do NOT record it as a per-stage alias. These are DFF Q outputs renamed by scan insertion. Using them exposes the DFF's scan SI input to FM's backward trace, contaminating the cone with unrelated scan chain DFFs. Instead, keep the original wire name from Synthesize scope in all stages. If the original wire is undriven in P&R stages, FM's structural name-matching handles equivalence without backward tracing.
+
 Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SAME` if identical.
 
 ---
@@ -173,6 +175,8 @@ FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → 
 4. Set on entry: `unconnected_rewires: [{original: <syn_name>, original_per_stage: {...}, named_net, needs_explicit_wire_decl:true, port_bus_instance, port_bus_instance_per_stage, port_bus_name, port_bus_bit}]`. Use `named_net` in `port_connections` for all stages.
 
 eco_perl_spec reads `unconnected_rewires`: declares `wire <named_net>;` once, applies `original_per_stage[stage]` → `named_net` replacement per stage in port bus `{ }` block.
+
+**PARENT SCOPE ONLY (MANDATORY):** Rename UNCONNECTED_* only at the module scope where the ECO gate is inserted — the parent that instantiates the submodule containing the bus. NEVER go inside the child module to rename its internal UNCONNECTEDs. FM traces hierarchically from parent → child → internal DFF automatically. Editing the child module's internal structure breaks FM's clock/cone analysis for that child module.
 
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
@@ -384,6 +388,11 @@ For each `wire_swap` whose `new_token` matches a `new_logic` output net, add `"n
 
 **MUX select polarity (when `mux_select_gate_function` is non-null in RTL diff):**
 Read `mux_select_gate_function` directly → create `new_logic_gate` entry. If null → set `mux_select_gate_function: null` and record `mux_select_i0_net`, `mux_select_i1_net` for eco_netlist_verifier's Check 4c.
+
+**WIRE_SWAP GATE DIRECTION RULE (MANDATORY):** After FM fenets returns a gate function for the wire_swap, verify the gate output polarity matches the RTL expression direction:
+- RTL expression is `A & B` (AND, non-inverting) → gate must be AND2 (output pin `Z`) — NEVER NAND2 or OR2 even if De Morgan equivalent
+- RTL expression is `~(A & B)` (NAND) → gate must be NAND2 (output pin `ZN`)
+- Using De Morgan equivalents (NAND2/OR2 for AND, etc.) produces logically identical output but creates different cone structures that interfere with FM's LatCG (Latch Clock Gating) reverse analysis, causing gate-level equivalence failures even when the logic is correct. The gate type must match the RTL operator directly, not via boolean algebraic transformation.
 
 ### 0g — Process `new_port` changes → `port_declaration` study entries
 
