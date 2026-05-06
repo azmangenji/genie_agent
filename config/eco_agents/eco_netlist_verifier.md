@@ -299,18 +299,18 @@ For every `new_logic_dff` entry, resolve ALL pins per stage. Studier-1 records S
 - Priority 2: P&R alias (only if Priority 1 absent)
 - Priority 3: Structural driver trace
 
-**Step C — SE and SI pins: ALWAYS keep `1'b0` across ALL stages. Do NOT resolve to per-stage P&R nets.**
+**Step C — SE and SI pins: UNCONDITIONALLY set `1'b0` across ALL stages. No conditions. No exceptions.**
 
-SE and SI are scan infrastructure pins — they are managed by the scan insertion tool, not by the ECO. Per-stage resolution produces inconsistent values (`FxPrePlace_HFSNET_N` in PP vs `FxOptCts_M` in Route) that FM cannot prove equivalent across stages. `1'b0` is consistent and trivially provable: `1'b0 == 1'b0`.
+SE and SI are scan infrastructure pins managed by the scan insertion tool, not by the ECO. Per-stage resolution produces inconsistent values (`FxPrePlace_HFSNET_N` in PP vs `FxOptCts_M` in Route) that FM cannot prove equivalent. `1'b0` is consistent and trivially provable.
 
 ```python
-# SE/SI: always 1'b0 — never resolve per stage
+# SE/SI: UNCONDITIONAL 1'b0 for ALL stages — no if, no conditions, no exceptions
 for scan_pin in ('SE', 'SI'):
-    if scan_pin in studier_port_connections and studier_port_connections[scan_pin] == "1'b0":
-        for stage in ('Synthesize', 'PrePlace', 'Route'):
-            port_connections_per_stage[stage][scan_pin] = "1'b0"
-        log(f"SCAN_PIN_STABLE: {scan_pin} kept 1'b0 in all stages — scan tool manages these pins")
-        # Do NOT search PreEco neighbours, do NOT pick up HFS/CTS/scan-renamed nets
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        port_connections_per_stage[stage][scan_pin] = "1'b0"
+    log(f"SCAN_PIN_FORCED: {scan_pin} = 1'b0 in ALL stages — unconditional, overrides any studier or P&R value")
+# Do NOT check what studier had. Do NOT search PreEco neighbours. Do NOT pick up HFS/CTS nets.
+# This override runs regardless of what eco_netlist_studier Phase 0b-STAGE-NETS resolved.
 ```
 
 **GAP-CTS-1 — Verify CP net exists in Route before recording:**
