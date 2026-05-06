@@ -839,11 +839,17 @@ awk '/^module <declaring_module>\b/,/^endmodule/' \
 # count = 0 → wire has NO direct primitive driver → only driven via submodule bus
 ```
 
-If count = 0 (no primitive driver in scope) → **MANDATORY: set preferred_insertion_scope — do NOT insert at declaring module scope.**
+If count = 0 (no primitive driver in scope):
+
+**EXCEPTION — UNCONNECTED_* bus bit wires:** If the resolved wire matches `^(SYNOPSYS_)?UNCONNECTED_\d+$`, do NOT set `preferred_insertion_scope`. These wires come from submodule port bus outputs — the correct fix is 0b-UNCONNECTED rename at the declaring module (parent) scope. The studier renames `UNCONNECTED_N → n_eco_<jira>_<hint>` as an explicit wire at parent scope, and FM traces hierarchically from parent → submodule → internal DFF. Going INSIDE the submodule breaks FM's clock/cone analysis and causes LatCG mismatches.
+- Set `preferred_insertion_scope: null`
+- Set `submodule_bus_driven: true` (flags studier to apply 0b-UNCONNECTED rename instead)
+
+**For all other signals (not UNCONNECTED_*):** → **MANDATORY: set preferred_insertion_scope**
 - Set `preferred_insertion_scope` to the submodule instance that drives this wire via port bus
 - Set `input_from_submodule: true`, `submodule_bus_driven: true`
-- Reason: FM black-boxes submodule in P&R → bus output wire appears undriven regardless of wire name → always DFF0X in P&R FM targets. This is NOT overridable — using UNCONNECTED_* directly at parent scope will fail.
-- **NEVER set `preferred_insertion_scope: null` when `submodule_bus_driven: true`**
+- Reason: FM black-boxes submodule in P&R → bus output wire appears undriven → always DFF0X in P&R FM targets.
+- **NEVER set `preferred_insertion_scope: null` when `submodule_bus_driven: true` and signal is not UNCONNECTED_***
 
 Find the driving submodule by searching for the wire in a port bus concatenation:
 ```bash

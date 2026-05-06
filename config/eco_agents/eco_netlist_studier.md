@@ -389,10 +389,16 @@ For each `wire_swap` whose `new_token` matches a `new_logic` output net, add `"n
 **MUX select polarity (when `mux_select_gate_function` is non-null in RTL diff):**
 Read `mux_select_gate_function` directly → create `new_logic_gate` entry. If null → set `mux_select_gate_function: null` and record `mux_select_i0_net`, `mux_select_i1_net` for eco_netlist_verifier's Check 4c.
 
-**WIRE_SWAP GATE DIRECTION RULE (MANDATORY):** After FM fenets returns a gate function for the wire_swap, verify the gate output polarity matches the RTL expression direction:
-- RTL expression is `A & B` (AND, non-inverting) → gate must be AND2 (output pin `Z`) — NEVER NAND2 or OR2 even if De Morgan equivalent
-- RTL expression is `~(A & B)` (NAND) → gate must be NAND2 (output pin `ZN`)
-- Using De Morgan equivalents (NAND2/OR2 for AND, etc.) produces logically identical output but creates different cone structures that interfere with FM's LatCG (Latch Clock Gating) reverse analysis, causing gate-level equivalence failures even when the logic is correct. The gate type must match the RTL operator directly, not via boolean algebraic transformation.
+**WIRE_SWAP GATE DIRECTION RULE (MANDATORY):** Read `mux_select_gate_function` from the RTL diff change JSON and use EXACTLY that function — no analysis, no substitution, no De Morgan alternatives:
+- `mux_select_gate_function: AND2` → gate must be AND2 (output pin `Z`) — NEVER NAND2 or OR2
+- `mux_select_gate_function: NAND2` → gate must be NAND2 (output pin `ZN`) — NEVER AND2 or INV+INV+OR2
+- The RTL diff analyzer already determined the correct function from MUX polarity analysis. Trust it. Using any De Morgan equivalent creates different LatCG cone structures that cause FM equivalence failures.
+
+**WIRE_SWAP OUTPUT NET RULE — GAP-22 (MANDATORY):** Before using any existing net as the gate output, check its fanout in the declaring module scope:
+```bash
+fanout=$(awk '/^module <module>/,/^endmodule/' PreEco/Synthesize.v.gz | grep -c "\b<net_name>\b")
+```
+If `fanout > 10` → **NEVER use this net as gate output**. High-fanout nets have many consumers — driving them with a new gate creates structural FM mismatches across hundreds of DFFs. Use a NEW intermediate wire as the gate output instead, then rewire the old driver to the new wire. Log: `FANOUT_BLOCK: <net> has <N> consumers — using new output net n_eco_<jira>_<seq> instead`.
 
 ### 0g — Process `new_port` changes → `port_declaration` study entries
 
