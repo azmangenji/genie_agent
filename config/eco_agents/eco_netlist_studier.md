@@ -152,6 +152,7 @@ for pin, net in port_connections.items():
 P&R renames DFF outputs (scan insertion in PP, CTS/optimization in Route). A wire may exist in scope but be **undriven** — FM sees X → DFF0X. For every non-ECO input net, verify it is driven in each stage and record per-stage aliases.
 
 **Rule:** For each input net (skip `n_eco_*` and `new_port_signals`):
+0. **RULE 32 PRE-CHECK (MANDATORY before any alias search).** If the bare RTL net name exists anywhere in the file (`grep -cw "<net>" /tmp/eco_study_<TAG>_<Stage>.v` ≥ 1) but is missing from the current module scope, treat it as a missing input port: emit a `port_declaration` study entry that adds `<net>` as an `input` to this module (and corresponding `port_connection` entries up to the scope where it IS visible). Use the bare name in `port_connections`. **Do NOT fall through to alias search — the real RTL-named net always wins over a P&R alias.** Only proceed to step 1 if the bare name is truly absent from the entire file.
 1. In each PreEco stage's module scope, check if any cell drives it: `grep -P '\.(Q|Z|ZN|ZN1|CO|S)\s*\(<net>\s*\)'`
 2. If driven → use as-is. If **not driven** → find the driver instance in Synthesize (same grep), then search that instance in the P&R stage and read its output pin → that is the alias.
 3. If driver instance also absent in P&R → search one hop upstream (grep driver's inputs in Synthesize → find those drivers in P&R → read output).
@@ -270,7 +271,18 @@ Then call `find_reset_capable_dff(module_scope_lines, reset_signal)`.
 ```
 
 **If `None` returned (no existing DFF in scope uses reset_signal):**
-Fall back — bake reset into D-input gate chain (current behavior). Set `reset_pin_used: false`. Log: `"RESET_PIN_FALLBACK: no DFF found in scope <module> using <reset_signal> — baking reset into D-input (GAP-CTS-2 risk in Route)"`
+Fall back — bake reset into D-input gate chain. Set `reset_pin_used: false`. Log: `"RESET_PIN_FALLBACK: no DFF found in scope <module> using <reset_signal> — baking reset into D-input (GAP-CTS-2 risk in Route)"`.
+
+**MANDATORY chain extension when `reset_pin_used: false`:** rtl_diff_analyzer Step E removes the reset term from `d_input_gate_chain` so it can be baked in here. The studier MUST append the reset-gating tail before the DFF .D pin — never connect `.D` to a chain output that omits the reset:
+
+1. Let `<chain_tail>` = current final gate output (`d_input_net` from Step 1, e.g. `n_eco_<jira>_d<N>`).
+2. Append two new gates with the next available `eco_<jira>_d<seq>` indices:
+   - `INV` of `<reset_signal>` → output `n_eco_<jira>_d<N+1>` (or reuse `<reset_signal>` directly via a NOR-style combiner — choose whichever cell type the library prefers; discover from PreEco like the rest of the chain).
+   - Final combiner that produces `chain_tail & ~<reset_signal>` (active_high reset) or `chain_tail & <reset_signal>` (active_low). Use AND2 + INV, or NR2 with the un-inverted reset, or any equivalent — the choice depends on what cell types exist in PreEco for this module.
+3. Update `d_input_net` to the final combiner's output net and connect that to the DFF `.D` pin.
+4. The same two-gate tail is reused across all 3 stages (per-stage net resolution still applies for the reset signal and intermediate nets via 0b-ALIAS / RULE 32).
+
+**Self-check (MANDATORY):** if `has_sync_reset == true` AND `reset_pin_used == false` AND no chain entry references `<reset_signal>` → the bake-in was NOT performed → fix the chain before writing the study JSON. The DFF must NEVER be left without a reset path.
 
 **Why this is strongly preferred:** Reset signals are heavily replicated by CTS in Route. When baked into the D-input cone, FM cannot trace through CTS-merged BBNet drivers → DFF non-equivalent in Route (GAP-CTS-2) → MANUAL_ONLY. Using the DFF reset pin bypasses the combinational cone entirely — immune to CTS restructuring.
 

@@ -96,19 +96,22 @@ def apply_port_declaration(lines, entry):
     if direction == 'wire':
         return lines, 'SKIPPED', 'wire type — implicitly declared by port connections'
 
-    # Find module start
+    # Find module start: try exact, _0 suffix (P&R rename), then any '<prefix>_<bare>' (tile-prefixed netlist)
+    re_bare   = re.compile(rf'^module\s+{re.escape(mod_name)}\b')
+    re_p0     = re.compile(rf'^module\s+{re.escape(mod_name)}_0\b')
+    re_prefix = re.compile(rf'^module\s+(\S+_{re.escape(mod_name)})\b')
     mod_start = -1
     for i, line in enumerate(lines):
-        if re.match(rf'^module\s+{re.escape(mod_name)}\b', line):
+        if re_bare.match(line):
             mod_start = i
             break
-    if mod_start < 0:
-        # Try with _0 suffix (P&R stage rename)
-        for i, line in enumerate(lines):
-            if re.match(rf'^module\s+{re.escape(mod_name)}_0\b', line):
-                mod_start = i
-                mod_name = mod_name + '_0'
-                break
+        if re_p0.match(line):
+            mod_start, mod_name = i, mod_name + '_0'
+            break
+        m = re_prefix.match(line)
+        if m:
+            mod_start, mod_name = i, m.group(1)
+            break
     if mod_start < 0:
         return lines, 'SKIPPED', f'module {mod_name} not found in stage'
 

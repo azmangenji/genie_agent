@@ -268,8 +268,6 @@ Read the first word of the driver cell type name. Answer only ONE question:
 
 **STOP HERE. Record `old_S_when_condition_true`. Do NOT read the new condition expression yet.**
 
-Why stop here: The gate function depends on both the old driver behavior AND the new condition. Processing them in the wrong order causes errors — the condition expression's visual form can mislead the gate selection. Committing to the old driver result first ensures the condition is applied correctly in Step D-MUX-5.
-
 **Step D-MUX-4 — Commit to gate direction (still without reading condition expression):**
 
 From Step D-MUX-3:
@@ -277,8 +275,6 @@ From Step D-MUX-3:
 - `old_S_when_condition_true = 1` → I1 = true-branch → **gate = condition itself**
 
 **STOP HERE. Record the gate direction: "NOT(condition)" or "condition itself". Do NOT read the RTL condition text yet.**
-
-Why stop here: This commitment is based solely on the old driver type — a physical property of the netlist. It must be made before the condition expression is visible so the direction cannot be influenced by the condition's visual form.
 
 **Step D-MUX-5 — NOW read the condition expression and apply the committed direction:**
 
@@ -294,19 +290,32 @@ Map the resulting boolean expression to a standard gate:
 - Single input negated → INV
 - More inputs → extend the gate count (AND3, NAND3, OR3, NOR3, etc.)
 
-**Why this three-step structure works:** Committing to the gate direction in Step D-MUX-4 before reading the condition expression means Step D-MUX-5 is purely mechanical — negate or not, then name the gate. The direction cannot be overridden by how the condition expression happens to look.
+**Step D-MUX-5b — Store result in JSON:**
 
-**Step D-MUX-5 — Store result in JSON:**
+All fields below are MANDATORY — every intermediate D-MUX-3/4 derivation value must be recorded so D-MUX-6 can verify the chain end-to-end:
 
 ```json
 "mux_select_gate_function": "<AND2|NAND2|OR2|NOR2|...>",
 "mux_select_i0_net": "<net_on_I0_pin>",
 "mux_select_i1_net": "<net_on_I1_pin>",
 "mux_select_branch_true_on": "I0|I1",
-"mux_select_reasoning": "<one sentence: branch_true on I0/I1, S=condition/NOT(condition), gate=result>"
+"mux_select_old_driver_cell_type": "<first uppercase token of old select net's driver cell, e.g. INR3D4...>",
+"mux_select_old_driver_inverting": true|false,
+"mux_select_old_S_when_condition_true": 0|1,
+"mux_select_reasoning": "<one sentence: driver cell + inverting → old_S → branch_true_on → gate>"
 ```
 
 Set `mux_select_polarity_pending: false` — the gate function is fully resolved here.
+
+**Step D-MUX-6 — Self-consistency check (MANDATORY before writing JSON):**
+
+Verify the full derivation chain. ANY failure → discard the entire derivation and re-run from D-MUX-3.
+
+1. **Inverter flag consistency:** `mux_select_old_driver_inverting` must be `true` iff `mux_select_old_driver_cell_type` starts with an inverting prefix (`NOR`, `NR`, `INR`, `INV`, `NAND`, `ND`, `IND`, `XNOR`, `XNR`).
+2. **Old-S consistency:** `mux_select_old_S_when_condition_true` must equal `0` if `mux_select_old_driver_inverting==true` else `1`.
+3. **Branch consistency:** `mux_select_branch_true_on` must be `"I0"` if `mux_select_old_S_when_condition_true==0` else `"I1"`.
+4. **Gate-function consistency:** Evaluate the chosen gate function at new_condition=TRUE; the output MUST equal `mux_select_old_S_when_condition_true` (the required new S).
+5. **Reasoning stability:** If `mux_select_reasoning` contains any backtracking phrase (`wait`, `actually`, `re-analyz`, `correcting`, `inverts`), the derivation was unstable → discard and retry.
 
 **Cleanup:**
 ```bash
@@ -363,8 +372,6 @@ for change in rtl_diff["changes"]:
 ```
 
 **CHECKPOINT:** After this step, verify `nets_to_query` count increased by the number of `condition_inputs_to_query` entries across all changes. If count is unchanged but `condition_inputs_to_query` was non-empty → this step was skipped → run it again.
-
-**Why this is separate from E4d:** E4d populates `condition_inputs_to_query` on individual change entries. Step D-POST aggregates those entries into `nets_to_query` so eco_fenets_runner submits them to FM. Without this step, the signals are recorded but never queried — FM results will be missing → eco_netlist_studier falls back to raw netlist lookup → may find `UNCONNECTED_xxx` nets → FM treats them as undriven in P&R stages.
 
 The studier reads these FM results in Step 0c-5: when a chain entry has `"PENDING_FM_RESOLUTION:<signal>"` as an input, it substitutes the gate-level net name returned by FM for that signal.
 
@@ -508,8 +515,6 @@ d_input_expr:   <sig_A> & ~<sig_B>  # reset term NOT included
 # WRONG (old approach): always bake reset in
 d_input_expr:   ~<rst_signal> & <sig_A> & ~<sig_B>  # exposes reset to CTS BBNet
 ```
-
-**Why this matters:** Reset signals (IReset, rst_n, etc.) are heavily replicated by CTS in Route stage. When a reset net is used in combinational logic (D-input cone), FM cannot trace through the CTS-merged BBNet drivers → DFF appears non-equivalent in Route → MANUAL_ONLY failure. Using the DFF cell's dedicated reset pin bypasses combinational cone entirely — FM handles it as a structural equivalence, not logic.
 
 ```
 Example always block (generic):
@@ -761,8 +766,6 @@ if not all_inputs_resolvable:
     fallback_strategy = null
 ```
 
-**Why use FM instead of setting null:** FM find_equivalent_nets is the authoritative way to map RTL signal names to gate-level net names — it's what Step 2 uses for all other signal resolutions. When synthesis renames a signal to an unpredictable internal name, FM can still find the gate-level equivalent by analyzing the logical cone. Using FM keeps the chain complete and avoids MANUAL_ONLY for signals that synthesis simply renamed.
-
 **CRITICAL — The chain structure MUST be preserved even when inputs have PENDING_FM_RESOLUTION placeholders.**
 
 The chain is built in two phases:
@@ -800,8 +803,6 @@ When `fallback_strategy: null`, the eco_netlist_studier marks this change as MAN
 ### E4b — Submodule Input Scope Check (MANDATORY after decomposition)
 
 For each resolved input signal in the gate chain, verify it is **directly accessible** in the declaring module's scope — not only reachable by crossing a child submodule boundary.
-
-**Why this matters:** If a gate chain input comes from a child submodule's output port bus (e.g., a register block output), FM black-boxes that submodule in P&R stages → the wire appears undriven (DFF0X) even when correctly renamed. Inserting the gate chain INSIDE the child submodule avoids this entirely — FM can trace internal signals without black-boxing.
 
 **Detection:**
 ```bash
@@ -944,6 +945,16 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
 **`flat_net_name` for `and_term` MUST be populated in Step C.7** — without it, eco_netlist_studier Phase 0 cannot create the `new_logic_gate` entry for the AND-term addition. If Step C.7 cannot resolve the connection (e.g., the new port connection is not yet in PreEco RTL), use the PostEco RTL parent module as the source.
 
 All `net_path` values must be verified hierarchy paths using instance names. Do NOT include unverified paths.
+
+---
+
+## Self-Validation (MANDATORY before writing the RPT)
+
+```bash
+cd <BASE_DIR> && python3 script/eco_scripts/eco_mux_polarity_check.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json --output data/<TAG>_eco_mux_polarity_check.json
+```
+If the output JSON's `overall_pass` is `false`: read each `entries[].issues[]`, re-run the affected D-MUX-3→5 with the field named in the issue, rewrite the JSON, re-invoke. Do NOT write the RPT until `overall_pass: true`.
 
 ---
 
