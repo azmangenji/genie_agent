@@ -343,6 +343,7 @@ def main():
                     existing = zgrep_count(out_net, posteco)
                     already_queued = out_net in changes[mod]['wire_decls']
                     if existing == 0 and not already_queued:
+                        changes[mod]['wire_decls'].append(out_net)
                     else:
                         statuses.append({'name': inst, 'status':'INFO',
                                          'reason': f'wire_decl SKIPPED for {out_net}: already referenced ({existing}x) — SVR-9 prevention'})
@@ -409,7 +410,7 @@ def main():
         # Used when eco_fm_analyzer replaces a gate strategy (e.g., MUX2→OA12).
         # Removes the named instance block AND its associated wire declarations
         # from the PostEco netlist. Must be paired with new gate insertion entries.
-        elif ct == 'undo_instance':
+        if ct == 'undo_instance':
             if mod not in changes:
                 changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': [],
                                 'undo_instances': []}
@@ -529,7 +530,7 @@ def main():
         "                    }",
         "                }",
         "                if ($undo_inst) {",
-        "                    $undo_depth += ($bl =~ tr/(//) - ($bl =~ tr/)/);",
+        "                    $undo_depth += ($bl =~ tr/(//) - ($bl =~ tr/\\)//) ;",
         "                    if ($undo_depth <= 0 && $bl =~ /\\)\\s*;/) {",
         "                        print STDERR \"UNDO_REMOVED $undo_inst\\n\";",
         "                        $undo_inst=''; $undo_depth=0; next;",
