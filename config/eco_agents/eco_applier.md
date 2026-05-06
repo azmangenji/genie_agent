@@ -320,6 +320,7 @@ If alias → grep the real RTL net (`old_net`/`new_net` from study JSON) in comp
 `zcat PostEco/<Stage>.v.gz | grep -cw "<clock_net>"` — if count=0 → SKIPPED.
 
 **Cell type resolution (new_logic_gate):**
+0. **WIRE gate check (before any cell lookup):** If `gate_function == "WIRE"` or `cell_type == ""` → record `status=SKIP_PHANTOM, reason="phantom WIRE gate injected by eco_expand_chains — output net not referenced by any other entry, no cell insertion needed"` and skip this entry entirely. Do NOT attempt PreEco lookup. Do NOT treat as an error.
 1. Use `cell_type` from study JSON if provided — verify it exists in this stage's PreEco: `zcat PreEco/<Stage>.v.gz | grep -cm1 "<cell_type>"`.
 2. If absent → search for variant with same gate function, different suffix.
 3. If still not found → SKIPPED. Never leave `cell_type: "?"`.
