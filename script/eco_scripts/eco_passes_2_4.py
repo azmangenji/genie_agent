@@ -218,7 +218,14 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
     old_at_pos = elements[pos]
     elements[pos] = new_net
     new_full = full.replace(m.group(0), '{' + ', '.join(elements) + '}', 1)
-    lines[open_line:end_line + 1] = new_full.splitlines(keepends=True)
+    candidate = new_full.splitlines(keepends=True)
+    # Verify candidate has new_net at expected position before commit (catches
+    # wrong-instance match — e.g. multiple instances with same port name).
+    cand_m = re.search(r'\{([^{}]*)\}', ''.join(candidate), re.DOTALL)
+    cand_elems = [e.strip() for e in cand_m.group(1).split(',')] if cand_m else []
+    if not cand_elems or cand_elems[pos] != new_net:
+        return lines, 'SKIPPED', f'bus_rename verify FAILED: position {pos} = {cand_elems[pos] if cand_elems else "?"} (expected {new_net}) — likely matched wrong instance'
+    lines[open_line:end_line + 1] = candidate
     return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name}[{bus_bit_index}] {old_at_pos}→{new_net}'
 
 

@@ -181,6 +181,23 @@ eco_perl_spec reads `unconnected_rewires`: declares `wire <named_net>;` once, ap
 
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
+**MANDATORY port_connection schema for bus-position renames** — eco_passes_2_4 dispatches to `_apply_bus_rename` based on these fields. Pin the shape (no variations):
+
+```json
+{
+  "change_type": "port_connection",
+  "instance_name": "<submodule_instance>",
+  "port_name": "<bus_port_name>",
+  "bus_bit_index": <int — MSB-first bit index of slot to rename>,
+  "net_name": "<n_eco_jira_named>",
+  "net_name_before": {"Synthesize": "<orig_syn>", "PrePlace": "<orig_pp>", "Route": "<orig_rt>"},
+  "net_name_after": "<n_eco_jira_named>",
+  "force_reapply": true
+}
+```
+
+`net_name_before` (per-stage map) is REQUIRED — eco_passes_2_4 prefers mode (a) scope-search by exact old name (more reliable than position parsing). Mode (b) bit-index parsing is a fallback when `net_name_before` is absent. Do NOT omit `net_name_before` — it disambiguates which instance to edit when multiple share the same port name.
+
 ---
 
 ### 0b-DFF — Process `d_input_gate_chain` (MANDATORY when present)

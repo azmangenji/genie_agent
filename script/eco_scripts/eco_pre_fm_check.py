@@ -225,6 +225,45 @@ def check_cells_in_netlist(applied, ref_dir):
     return failures
 
 
+def check_bus_concat_intact(ref_dir, applied):
+    """For port_connection entries with bus_bit_index, verify the netlist still
+    has a {...} bus concat at that port (not collapsed to a single net by a
+    broken rewire). Catches the bus-corruption pattern that count-based Check 8
+    misses when the consumer + corrupted-replacement keep total occurrences ≥ 2.
+    """
+    failures = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        bus_entries = [e for e in applied.get(stage, [])
+                       if e.get('change_type') == 'port_connection'
+                       and e.get('bus_bit_index') is not None]
+        if not bus_entries:
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        for e in bus_entries:
+            inst = e.get('instance_name') or e.get('submodule_instance', '')
+            port = e.get('port_name', '')
+            if not inst or not port:
+                continue
+            # Find the .port(...) connection nearest to the instance — it should contain {
+            inst_m = re.search(rf'\b{re.escape(inst)}\s*\(', text)
+            if not inst_m:
+                continue
+            slice_text = text[inst_m.start():inst_m.start() + 200000]
+            port_m = re.search(rf'\.\s*{re.escape(port)}\s*\(\s*([^)]{{0,50}})', slice_text)
+            if not port_m:
+                continue
+            opening = port_m.group(1)
+            if '{' not in opening:
+                failures.append(f'[BUS_CONCAT] {stage}: {inst}.{port} has no {{}} concat — likely collapsed to single net by broken rewire')
+    return failures
+
+
 def check_undriven_eco_nets(ref_dir):
     """
     FAIL if any n_eco_* net in PostEco netlist has < 2 occurrences. A driven net
@@ -344,6 +383,13 @@ def main():
     # but eco_passes_2_4.py didn't apply it to the netlist (driver missing).
     fails = check_undriven_eco_nets(args.ref_dir)
     results['undriven_eco_nets'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 9 — bus-concat integrity. For port_connection entries with
+    # bus_bit_index, the netlist must still have .port({...}) — not collapsed
+    # to a single net (catches broad-regex rewire corruption).
+    fails = check_bus_concat_intact(args.ref_dir, applied)
+    results['bus_concat_intact'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0
