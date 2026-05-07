@@ -138,6 +138,16 @@ def apply_port_declaration(lines, entry):
     decl_line = f'  {direction} {signal} ;\n'
     lines.insert(port_close + 1, decl_line)
 
+    # Post-edit verification: confirm BOTH the port-list addition AND the
+    # direction declaration are physically in the modified file. Catches
+    # silent failures where lines[port_close] edit didn't take or the index
+    # was wrong.
+    new_port_region = ''.join(lines[mod_start:port_close + 2])
+    in_port_list = bool(re.search(rf'\b{re.escape(signal)}\b', new_port_region))
+    has_direction = bool(re.search(rf'^\s*{direction}\s+{re.escape(signal)}\b', lines[port_close + 1]))
+    if not (in_port_list and has_direction):
+        return lines, 'SKIPPED', f'VERIFY_FAILED port_decl: in_port_list={in_port_list} has_direction={has_direction} for {signal} in {mod_name}'
+
     return lines, 'APPLIED', f'added {signal} to port list and {direction} decl in {mod_name}'
 
 
@@ -301,11 +311,15 @@ def apply_port_connection(lines, entry, gz_path=None, stage='Synthesize'):
         if re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*\{{', inst_block):
             return lines, 'SKIPPED', f'.{port_name} on {inst_name} is a {{}} bus concat — entry must set bus_bit_index for _apply_bus_rename'
         # Port exists with a single-net value — safe to rewire it
+        before_line = lines[inst_close]
         lines[inst_close] = re.sub(
             rf'\.\s*{re.escape(port_name)}\s*\([^)]*\)',
             f'.{port_name}( {net_name} )',
             lines[inst_close]
         )
+        # Post-edit verify: regex sub didn't actually fire if the line is unchanged
+        if lines[inst_close] == before_line or net_name not in lines[inst_close]:
+            return lines, 'SKIPPED', f'VERIFY_FAILED rewire: .{port_name} on {inst_name} — regex matched in inst_block but not on inst_close line {inst_close} (likely on different line)'
         return lines, 'APPLIED', f'rewired existing .{port_name} to ({net_name}) in {inst_name}'
 
     # Insert new port as a separate line before inst_close.
@@ -323,6 +337,11 @@ def apply_port_connection(lines, entry, gz_path=None, stage='Synthesize'):
     close_has_port = bool(re.search(r'\.\s*\w+\s*\(', lines[inst_close].split('//')[0]))
     trailing = ' ,' if close_has_port else ''
     lines.insert(inst_close, f'    .{port_name}( {net_name} ){trailing}\n')
+
+    # Post-edit verify: confirm the new line is actually in the modified instance block
+    new_inst_block = ''.join(lines[inst_start:inst_close + 2])
+    if not re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*{re.escape(net_name)}\s*\)', new_inst_block):
+        return lines, 'SKIPPED', f'VERIFY_FAILED port_conn insert: .{port_name}({net_name}) not found in {inst_name} after insert'
     return lines, 'APPLIED', f'added .{port_name}({net_name}) to {inst_name}'
 
 

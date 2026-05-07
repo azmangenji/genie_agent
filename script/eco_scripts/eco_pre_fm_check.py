@@ -225,6 +225,102 @@ def check_cells_in_netlist(applied, ref_dir):
     return failures
 
 
+def check_port_edits_in_netlist(ref_dir, applied):
+    """For every applied port_declaration / port_connection entry, verify the
+    edit is physically in the netlist. Catches the silent-failure pattern where
+    eco_passes_2_4.py reported APPLIED but the regex sub did nothing because
+    the target line wasn't in inst_close / port list spanned multiple lines.
+
+    Reads the entry's `reason` text to extract signal/port/net since the applied
+    JSON entries are minimal (only ct/status/name/reason).
+    """
+    failures = []
+    # Reason patterns:
+    #   'added NeedFreqAdj to port list and output decl in ddrss_umccmd_t_umcarbctrlsw'
+    #   'added .NeedFreqAdj(ARB_FEI_NeedFreqAdj) to CTRLSW'
+    #   'rewired existing .X to (Y) in INST'
+    #   'bus_rename: REGCMD.REG_UmcCfgEco[1] OLD→NEW'  (skipped — Check 9 covers)
+    pdec_re   = re.compile(r'added\s+(\S+)\s+to\s+port\s+list\s+and\s+(input|output|inout|wire)\s+decl\s+in\s+(\S+)')
+    pconn_add_re = re.compile(r'added\s+\.(\w+)\s*\(\s*(\S+?)\s*\)\s+to\s+(\w+)')
+    pconn_rew_re = re.compile(r'rewired\s+existing\s+\.(\w+)\s+to\s+\(\s*(\S+?)\s*\)\s+in\s+(\w+)')
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        for e in applied.get(stage, []):
+            if e.get('status') != 'APPLIED':
+                continue
+            # Support both 'ct' (passes_2_4 JSON) and 'change_type' (study JSON)
+            ct = e.get('ct') or e.get('change_type', '')
+            reason = e.get('reason', '')
+            if ct == 'port_declaration':
+                m = pdec_re.search(reason)
+                signal = m.group(1) if m else (e.get('signal_name') or e.get('name', ''))
+                direction = m.group(2) if m else e.get('declaration_type', 'input')
+                if direction == 'wire' or not signal:
+                    continue
+                if not re.search(rf'^\s*(input|output|inout)\s+{re.escape(signal)}\b', text, re.MULTILINE):
+                    failures.append(f'[PORT_DECL_MISSING] {stage}: port_declaration APPLIED for {signal!r} ({direction}) but no input/output decl found in netlist')
+            elif ct == 'port_connection':
+                # Skip bus_bit_index entries (handled by Check 9 / bus_concat_intact)
+                if e.get('bus_bit_index') is not None or 'bus_rename' in reason:
+                    continue
+                m = pconn_add_re.search(reason) or pconn_rew_re.search(reason)
+                if m:
+                    port, net, inst = m.group(1), m.group(2), m.group(3)
+                else:
+                    inst = e.get('instance_name') or e.get('submodule_instance')
+                    port = e.get('port_name')   or e.get('new_token')
+                    net  = e.get('net_name')    or e.get('flat_net_name')
+                if not all([inst, port, net]):
+                    continue
+                pat = rf'\.\s*{re.escape(port)}\s*\(\s*{re.escape(net)}\s*\)'
+                if not re.search(pat, text):
+                    failures.append(f'[PORT_CONN_MISSING] {stage}: port_connection APPLIED .{port}({net}) on {inst} but not found in netlist')
+    return failures
+
+
+def check_rewires_in_netlist(ref_dir, applied):
+    """For every applied rewire entry, verify the netlist's cell.pin actually
+    points to new_net (not old_net). Catches silent-rewire-no-op pattern where
+    apply_rewire's regex matched something but didn't change the right line.
+    """
+    failures = []
+    # Reason format from apply_rewire: '{cell}.{pin}: {old} → {new}' (Unicode arrow)
+    rew_re = re.compile(r'(\S+)\.(\w+):\s+(\S+)\s*(?:→|->|—>)\s*(\S+)')
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        for e in applied.get(stage, []):
+            if e.get('status') != 'APPLIED':
+                continue
+            ct = e.get('ct') or e.get('change_type', '')
+            if ct != 'rewire':
+                continue
+            m = rew_re.search(e.get('reason', ''))
+            if not m:
+                continue
+            cell, pin, old_net, new_net = m.groups()
+            # Find the cell instance in the netlist (best-effort by name)
+            inst_m = re.search(rf'\b{re.escape(cell)}\s*\(', text)
+            if not inst_m:
+                failures.append(f'[REWIRE_CELL_MISSING] {stage}: rewire APPLIED on {cell}.{pin} but cell not found in netlist')
+                continue
+            cell_block = text[inst_m.start():inst_m.start() + 50000]
+            if not re.search(rf'\.\s*{re.escape(pin)}\s*\(\s*{re.escape(new_net)}\s*\)', cell_block):
+                failures.append(f'[REWIRE_MISSING] {stage}: rewire APPLIED {cell}.{pin}: {old_net}→{new_net} but .{pin}({new_net}) not in cell block')
+    return failures
+
+
 def check_bus_concat_intact(ref_dir, applied):
     """For port_connection entries with bus_bit_index, verify the netlist still
     has a {...} bus concat at that port (not collapsed to a single net by a
@@ -390,6 +486,19 @@ def main():
     # to a single net (catches broad-regex rewire corruption).
     fails = check_bus_concat_intact(args.ref_dir, applied)
     results['bus_concat_intact'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 10 — every APPLIED port_declaration / port_connection entry must
+    # have its edit physically present in the netlist. Catches the silent
+    # APPLIED-but-no-edit failure mode.
+    fails = check_port_edits_in_netlist(args.ref_dir, applied)
+    results['port_edits_in_netlist'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 11 — every APPLIED rewire entry must have cell.pin → new_net
+    # physically in the netlist (closes the last "JSON trust" gap).
+    fails = check_rewires_in_netlist(args.ref_dir, applied)
+    results['rewires_in_netlist'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0
