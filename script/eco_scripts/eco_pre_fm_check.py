@@ -248,9 +248,10 @@ def check_port_edits_in_netlist(ref_dir, applied):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
         except Exception:
             continue
+        text = strip_verilog_comments(raw)  # Option A: comments don't count
         for e in applied.get(stage, []):
             if e.get('status') != 'APPLIED':
                 continue
@@ -284,6 +285,74 @@ def check_port_edits_in_netlist(ref_dir, applied):
     return failures
 
 
+def check_semantic_verify(study_path, ref_dir):
+    """Check 12 — Full semantic equivalence between Step 3 study JSON intent
+    and PostEco netlist. Wraps eco_semantic_verify.NetlistView + per-entry-type
+    verifiers. Catches what regex spot checks miss: comment-masked edits,
+    bus-bit-position mismatches, wrong-instance matches, port-direction
+    inconsistencies. Comprehensive — covers every confirmed study entry.
+    """
+    failures = []
+    if not os.path.exists(study_path):
+        return [f'[SEMANTIC] study JSON not found: {study_path}']
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import eco_semantic_verify as esv
+    except Exception as e:
+        return [f'[SEMANTIC] cannot import eco_semantic_verify: {e}']
+    try:
+        with open(study_path) as f:
+            study = json.load(f)
+    except Exception as e:
+        return [f'[SEMANTIC] cannot read study JSON: {e}']
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=300).stdout
+        except Exception as e:
+            failures.append(f'[SEMANTIC] {stage} netlist read err: {e}')
+            continue
+        view = esv.NetlistView(raw)
+        for entry in study.get(stage, []):
+            if not entry.get('confirmed', True):
+                continue
+            ct = entry.get('change_type', '')
+            verifier = esv.VERIFIERS.get(ct)
+            if verifier is None:
+                continue
+            err = verifier(entry, view, stage)
+            if err:
+                failures.append(f'[SEMANTIC_{ct.upper()}] {stage}: {err}')
+    return failures
+
+
+def strip_verilog_comments(text):
+    """Remove // line comments and /* */ block comments. Critical for any
+    semantic check on netlist content — Verilog comments don't count toward
+    signal references, port concat positions, or driver declarations.
+    """
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+    text = re.sub(r'//[^\n]*', '', text)
+    return text
+
+
+def parse_bus_concat_at_instance(text_no_comments, instance_name, port_name):
+    """Find .port_name({...}) on instance_name; return parsed list of nets.
+    Returns None if not found or not a {} concat. text_no_comments must already
+    be comment-stripped — caller's responsibility.
+    """
+    inst_m = re.search(rf'\b{re.escape(instance_name)}\s*\(', text_no_comments)
+    if not inst_m:
+        return None
+    block = text_no_comments[inst_m.start():inst_m.start() + 200000]
+    port_m = re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*\{{([^{{}}]*)\}}', block, re.DOTALL)
+    if not port_m:
+        return None
+    return [e.strip() for e in port_m.group(1).split(',')]
+
+
 def check_rewires_in_netlist(ref_dir, applied):
     """For every applied rewire entry, verify the netlist's cell.pin actually
     points to new_net (not old_net). Catches silent-rewire-no-op pattern where
@@ -297,9 +366,10 @@ def check_rewires_in_netlist(ref_dir, applied):
         if not os.path.exists(gz):
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
         except Exception:
             continue
+        text = strip_verilog_comments(raw)  # Option A: comments don't count
         for e in applied.get(stage, []):
             if e.get('status') != 'APPLIED':
                 continue
@@ -322,50 +392,58 @@ def check_rewires_in_netlist(ref_dir, applied):
 
 
 def check_bus_concat_intact(ref_dir, applied):
-    """For port_connection entries with bus_bit_index, verify the netlist still
-    has a {...} bus concat at that port (not collapsed to a single net by a
-    broken rewire). Catches the bus-corruption pattern that count-based Check 8
-    misses when the consumer + corrupted-replacement keep total occurrences ≥ 2.
+    """SEMANTIC bus-concat verification (Option B): comment-strip the netlist,
+    parse the {...} content, and verify the renamed net is at the correct
+    bus_bit_index position. Catches:
+      - Bus collapsed to single net (Check 9 v1 pattern)
+      - Rename text inside a comment (today's failure mode)
+      - Rename applied to wrong bit position
+      - Rename applied to wrong instance (multi-match)
     """
     failures = []
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
         if not os.path.exists(gz):
             continue
+        # Both 'change_type' (study schema) and 'ct' (passes_2_4 schema) supported
         bus_entries = [e for e in applied.get(stage, [])
-                       if e.get('change_type') == 'port_connection'
+                       if (e.get('change_type') == 'port_connection' or e.get('ct') == 'port_connection')
                        and e.get('bus_bit_index') is not None]
         if not bus_entries:
             continue
         try:
-            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+            raw = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
         except Exception:
             continue
+        text = strip_verilog_comments(raw)
         for e in bus_entries:
             inst = e.get('instance_name') or e.get('submodule_instance', '')
             port = e.get('port_name', '')
-            if not inst or not port:
+            new_net = e.get('net_name') or e.get('net_name_after', '')
+            bbi  = e.get('bus_bit_index')
+            if not all([inst, port, new_net]) or bbi is None:
                 continue
-            # Find the .port(...) connection nearest to the instance — it should contain {
-            inst_m = re.search(rf'\b{re.escape(inst)}\s*\(', text)
-            if not inst_m:
+            elements = parse_bus_concat_at_instance(text, inst, port)
+            if elements is None:
+                failures.append(f'[BUS_CONCAT_MISSING] {stage}: {inst}.{port} no {{}} concat found in active code (possibly collapsed or in comment)')
                 continue
-            slice_text = text[inst_m.start():inst_m.start() + 200000]
-            port_m = re.search(rf'\.\s*{re.escape(port)}\s*\(\s*([^)]{{0,50}})', slice_text)
-            if not port_m:
+            width = len(elements)
+            pos = width - 1 - bbi  # MSB-first
+            if pos < 0 or pos >= width:
+                failures.append(f'[BUS_BIT_RANGE] {stage}: {inst}.{port} bus_bit_index={bbi} out of range (width={width})')
                 continue
-            opening = port_m.group(1)
-            if '{' not in opening:
-                failures.append(f'[BUS_CONCAT] {stage}: {inst}.{port} has no {{}} concat — likely collapsed to single net by broken rewire')
+            actual = elements[pos]
+            if actual != new_net:
+                failures.append(f'[BUS_BIT_WRONG_NET] {stage}: {inst}.{port}[{bbi}] = {actual!r} but expected {new_net!r} — rename did not take effect at bit position')
     return failures
 
 
 def check_undriven_eco_nets(ref_dir):
     """
-    FAIL if any n_eco_* net in PostEco netlist has < 2 occurrences. A driven net
-    has at least one driver reference (cell output / wire decl / port concat slot)
-    AND at least one consumer reference. Fewer than 2 → likely no driver. Catches
-    bus-rename failures (REGCMD-style) where eco_passes_2_4 didn't apply the rename.
+    FAIL if any n_eco_* net in PostEco netlist has < 2 occurrences in ACTIVE
+    code (comments stripped). A driven net has at least one driver reference
+    (cell output / wire decl / port concat slot) AND at least one consumer
+    reference. Fewer than 2 in active code → likely no driver.
     """
     failures = []
     NET_RE = re.compile(r'\b(n_eco_[A-Za-z0-9_]+)\b')
@@ -377,11 +455,59 @@ def check_undriven_eco_nets(ref_dir):
             text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
         except Exception:
             continue
+        text = strip_verilog_comments(text)  # Option A: comments don't count
         from collections import Counter
         counts = Counter(NET_RE.findall(text))
         for net, c in sorted(counts.items()):
             if c < 2:
-                failures.append(f'[UNDRIVEN_NET] {stage}: {net} appears only {c} time(s) — no driver (bus-rename or driver insertion likely failed)')
+                failures.append(f'[UNDRIVEN_NET] {stage}: {net} appears only {c} time(s) in active code — no driver (bus-rename or driver insertion likely failed)')
+    return failures
+
+
+def check_eco_input_drivers(study_path, ref_dir):
+    """Check 13 — for every confirmed new_logic_gate / new_logic_dff entry in the
+    study JSON, verify each input pin's per-stage net actually has a driver in
+    the corresponding PostEco netlist (cell output, port, or wire decl).
+    Catches the "agent put test_so4927 but it doesn't exist after edits" class.
+    Constants like 1'b0/1'b1 are skipped."""
+    failures = []
+    OUT_PINS = {'Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO'}
+    try:
+        study = json.loads(Path(study_path).read_text())
+    except Exception as e:
+        return [f'[INPUT_DRIVER_READ_ERR] {e}']
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        text = strip_verilog_comments(text)
+        # All driven nets in the netlist: cell output pins, wire decls, port lists
+        driven = set()
+        for m in re.finditer(r'\.\s*(?:Z|ZN|ZN1|Q|QN|CO|Q1|Q2|Q3|Q4|Q5|Q6|Q7|Q8)\s*\(\s*(\w+)', text):
+            driven.add(m.group(1))
+        for m in re.finditer(r'^\s*wire\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', text, re.MULTILINE):
+            driven.add(m.group(1))
+        for m in re.finditer(r'^\s*(?:input|inout)\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', text, re.MULTILINE):
+            driven.add(m.group(1))
+        for entry in study.get(stage, []):
+            if entry.get('change_type') not in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
+                continue
+            if not entry.get('confirmed', True):
+                continue
+            inst = entry.get('instance_name', '?')
+            pcs = (entry.get('port_connections_per_stage') or {}).get(stage) or entry.get('port_connections') or {}
+            for pin, val in pcs.items():
+                if pin in OUT_PINS or not isinstance(val, str):
+                    continue
+                base = re.sub(r'\[[^\]]*\]', '', val).strip()
+                if not base or base.startswith(("1'b", "0'b", "1'h", "0'h")):
+                    continue
+                if base not in driven:
+                    failures.append(f'[INPUT_UNDRIVEN] {stage}: {inst}.{pin}={val!r} — net has no driver in netlist (cell output/port/wire)')
     return failures
 
 
@@ -499,6 +625,23 @@ def main():
     # physically in the netlist (closes the last "JSON trust" gap).
     fails = check_rewires_in_netlist(args.ref_dir, applied)
     results['rewires_in_netlist'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 12 — Full semantic equivalence between Step 3 study JSON and
+    # PostEco netlist (Option B). Comment-aware Verilog-semantic parser
+    # verifies every confirmed study entry's intent is physically present.
+    # Catches comment-masked edits, bit-position errors, wrong-instance
+    # matches that regex spot checks (Checks 8/9/10/11) can miss.
+    study_path = f'{base}/data/{tag}_eco_preeco_study.json'
+    fails = check_semantic_verify(study_path, args.ref_dir)
+    results['semantic_verify'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 13 — every ECO cell's per-stage input pin must have a real driver
+    # in the PostEco netlist (cell output / port / wire decl). Catches the
+    # "agent recorded a stale or non-existent per-stage net name" class of bug.
+    fails = check_eco_input_drivers(study_path, args.ref_dir)
+    results['eco_input_drivers'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0

@@ -150,6 +150,184 @@ def main():
                 if net in renames:
                     issues.append(f"HIGH: {e.get('instance_name','?')}.{pin}={net} in {stage} — net is being renamed to {renames[net]} by another entry; update this reference or skip the rename")
 
+    # ── 11. Mode I — UNCONNECTED bus rename at parent must be paired with
+    # child-scope wire-up entry when child output port is internally undriven.
+    # Without the pair, parent renames a dangling pin → FM sees X → DFF0X.
+    # Detect by netlist scan: open child module body and check whether the
+    # matching bit slot at any sub-instance bus is also UNCONNECTED_*.
+    import gzip, re as _re, os as _os2
+    _child_bodies = {}  # module_name → comment-stripped body text
+    def _load_child_body(mod):
+        if mod in _child_bodies:
+            return _child_bodies[mod]
+        body = ''
+        for stage in ('Synthesize',):
+            # Prefer round-1 backup (pristine pre-Step4); fall back to current PostEco
+            base = _os2.path.join(args.ref_dir, 'data', 'PostEco')
+            cands = sorted(_os2.path.join(base, n) for n in (_os2.listdir(base) if _os2.path.isdir(base) else []) if n.startswith(f'{stage}.v.gz.bak_'))
+            gz = cands[0] if cands else _os2.path.join(base, f'{stage}.v.gz')
+            if not _os2.path.exists(gz):
+                continue
+            try:
+                with gzip.open(gz, 'rt') as fh: text = fh.read()
+            except Exception:
+                continue
+            text = _re.sub(r'/\*.*?\*/', '', text, flags=_re.DOTALL)
+            text = _re.sub(r'//[^\n]*', '', text)
+            m = _re.search(rf'^module\s+{_re.escape(mod)}\b.*?^endmodule\b', text, _re.DOTALL | _re.MULTILINE)
+            if m:
+                body = m.group(0); break
+        _child_bodies[mod] = body
+        return body
+    if _os2.path.isdir(_os2.path.join(args.ref_dir, 'data', 'PostEco')):
+        for stage in ['Synthesize']:
+            for e in study.get(stage, []):
+                if e.get('change_type') != 'port_connection': continue
+                if not e.get('confirmed', True): continue
+                if e.get('bus_bit_index') is None: continue
+                orig = e.get('original_unconnected_net', '') or ''
+                if not orig.startswith(('UNCONNECTED_', 'SYNOPSYS_UNCONNECTED_')): continue
+                child_mod = e.get('submodule_type') or ''
+                bbi = e.get('bus_bit_index')
+                port = e.get('port_name') or ''
+                if not child_mod or not port: continue
+                # Look for the paired child-scope entry: module_name=child_mod, bus_bit_index=bbi
+                paired = any(
+                    p.get('change_type') == 'port_connection'
+                    and (p.get('module_name') == child_mod or p.get('parent_module') == child_mod)
+                    and p.get('bus_bit_index') == bbi
+                    and (p.get('net_name') or '') == f"{port}[{bbi}]"
+                    for p in study.get(stage, []))
+                if paired: continue
+                # Confirm child body has UNCONNECTED at this bit position of any sub-inst bus
+                body = _load_child_body(child_mod)
+                if not body: continue
+                # Heuristic: any sub-instance with bus port containing UNCONNECTED_\d+ at the same MSB-first position
+                hit = False
+                for cm in _re.finditer(r'\.\s*(\w+)\s*\(\s*\{([^{}]+)\}\s*\)', body):
+                    elems = [x.strip() for x in cm.group(2).split(',') if x.strip()]
+                    pos = len(elems) - 1 - bbi
+                    if 0 <= pos < len(elems) and _re.match(r'^(SYNOPSYS_)?UNCONNECTED_\d+$', elems[pos]):
+                        hit = True; break
+                if hit:
+                    issues.append(f"CRITICAL: Mode I gap — parent rename of {orig} at {child_mod}.{port}[{bbi}] but no paired child-scope port_connection wires {port}[{bbi}] internally. Add entry: module_name={child_mod}, bus_bit_index={bbi}, net_name={port}[{bbi}]")
+
+    # ── 12. (REMOVED) — earlier rule "force same CP across stages" was wrong.
+    # Engineer's pattern: CP per stage matches whatever the closest existing DFF
+    # in the same module scope uses for THAT stage (may differ across stages).
+    # New ECO DFFs should follow the same per-stage value as neighboring DFFs.
+
+    # ── 13. (REMOVED) — earlier rule "P&R-rename alias prohibition for input
+    # pins" was wrong. New ECO cell inputs that connect to existing signals
+    # SHOULD use the per-stage actual driver net name — including scan/DFT/CTS
+    # renames like test_so*, dftopt*. These are real signal names, not bugs.
+    # The per-stage name just reflects how the upstream driver got renamed by
+    # P&R/scan tools; FM's cell-matching reconciles them via the parent DFF.
+
+    # ── 14. Cell truth-table check: every new_logic_gate's cell_type must
+    # actually compute the claimed gate_function. Catches the case where a
+    # cell name suggests one boolean function but the library cell computes
+    # a different one (common for inverter-input compound cells).
+    sys.path.insert(0, _os2.path.dirname(_os2.path.abspath(__file__)))
+    try:
+        import eco_cell_truth_tables as _ett
+    except ImportError:
+        _ett = None
+    if _ett is not None:
+        for stage in ['Synthesize']:  # truth table is stage-invariant
+            for e in study.get(stage, []):
+                if e.get('change_type') not in ('new_logic_gate', 'new_logic'): continue
+                if not e.get('confirmed', True): continue
+                cell = e.get('cell_type', '')
+                fn = e.get('gate_function', '')
+                if not cell or not fn: continue
+                m, why = _ett.cell_function_matches(cell, fn)
+                inst = e.get('instance_name', '?')
+                if m is False:
+                    issues.append(f"CRITICAL: ECO {inst} cell_type={cell!r} does NOT compute claimed gate_function={fn!r} — {why}. Pick a cell whose family matches, or update gate_function to reflect actual cell logic.")
+                elif m is None and _ett.family_of(cell) and fn not in _ett.ABSTRACT_GATE_FUNCTIONS:
+                    # Both unknown → uncovered cell; warn so the library JSON can be extended
+                    issues.append(f"MEDIUM: ECO {inst} cell_type={cell!r} (family={_ett.family_of(cell)!r}) and gate_function={fn!r} not covered — cannot verify functional correctness. Add to script/eco_scripts/cell_libraries/<your_lib>.json.")
+
+    # ── 15. Scan-bridge SE/SI for new ECO DFFs in P&R: in PrePlace/Route, SE/SI
+    # should connect to neighboring DFFs' real scan-chain wires (per-stage names)
+    # NOT '1'b0'. Tying to constants makes the new DFF an isolated island that
+    # FM can't reconcile against the existing scan chain → cone divergence.
+    # Synthesize stage = 1'b0 is correct (RTL-clean view).
+    for stage in ['PrePlace', 'Route']:
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'): continue
+            if not e.get('confirmed', True): continue
+            inst = e.get('instance_name', '?')
+            pcs = (e.get('port_connections_per_stage') or {}).get(stage) or e.get('port_connections') or {}
+            for pin in ('SE', 'SI'):
+                v = pcs.get(pin)
+                if isinstance(v, str) and v.strip() in ("1'b0", "1'b1", "0", "1"):
+                    issues.append(f"HIGH: ECO DFF {inst}.{pin} in {stage} = {v!r} (constant) — should hook to a neighboring DFF's per-stage {pin} net for scan-chain consistency. Look up an existing DFF in the same module scope and copy its {pin} value for this stage.")
+
+    # ── 16. Per-stage CP/SE/SI must come from an existing DFF in the same scope
+    # for each stage. Catches "force same-as-Synthesize" anti-pattern and
+    # ensures per-stage net names actually exist.
+    if _os2.path.isdir(_os2.path.join(args.ref_dir, 'data', 'PostEco')):
+        import gzip as _gz
+        # Cache: (stage, module_name) → set of CP/SE/SI per pin used by existing DFFs
+        neighbor_cache = {}
+        def _neighbors(stage, mod):
+            key = (stage, mod)
+            if key in neighbor_cache:
+                return neighbor_cache[key]
+            base = _os2.path.join(args.ref_dir, 'data', 'PostEco')
+            cands = sorted(_os2.path.join(base, n) for n in (_os2.listdir(base) if _os2.path.isdir(base) else []) if n.startswith(f'{stage}.v.gz.bak_'))
+            gz = cands[0] if cands else _os2.path.join(base, f'{stage}.v.gz')
+            sets = {'CP': set(), 'SE': set(), 'SI': set()}
+            if _os2.path.exists(gz):
+                try:
+                    with _gz.open(gz, 'rt') as f: text = f.read()
+                    text = _re.sub(r'/\*.*?\*/', '', text, flags=_re.DOTALL)
+                    text = _re.sub(r'//[^\n]*', '', text)
+                    body_m = _re.search(rf'^module\s+{_re.escape(mod)}(?:_0)?\b.*?^endmodule\b', text, _re.DOTALL | _re.MULTILINE)
+                    if body_m:
+                        body = body_m.group(0)
+                        for pin in ('CP', 'SE', 'SI'):
+                            for m in _re.finditer(rf'\.\s*{pin}\s*\(\s*([^)]+?)\s*\)', body):
+                                sets[pin].add(m.group(1).strip())
+                except Exception:
+                    pass
+            neighbor_cache[key] = sets
+            return sets
+        for stage in ['Synthesize', 'PrePlace', 'Route']:
+            for e in study.get(stage, []):
+                if e.get('change_type') not in ('new_logic_dff', 'new_logic'): continue
+                if not e.get('confirmed', True): continue
+                inst = e.get('instance_name', '?')
+                mod  = e.get('module_name')
+                if not mod: continue
+                pcs = (e.get('port_connections_per_stage') or {}).get(stage) or e.get('port_connections') or {}
+                neigh = _neighbors(stage, mod)
+                for pin in ('CP', 'SE', 'SI'):
+                    v = pcs.get(pin)
+                    if not isinstance(v, str) or not neigh.get(pin):
+                        continue
+                    # Constant on SE/SI in Synthesize is OK; elsewhere should match a neighbor
+                    if v.strip() in ("1'b0", "1'b1") and pin in ('SE', 'SI') and stage == 'Synthesize':
+                        continue
+                    if v.strip() not in neigh[pin]:
+                        sample = list(neigh[pin])[:3]
+                        issues.append(f"HIGH: ECO DFF {inst}.{pin} in {stage}={v!r} not used by any existing DFF in module {mod!r}. Existing values include {sample}. Pick one of those for per-stage consistency.")
+
+    # ── 17. Every confirmed entry must have non-empty `reason`, `notes`, and
+    # `source` — these populate the Step 3 RPT and serve as the audit trail for
+    # round-N re-studier. Empty fields = un-traceable change.
+    REQUIRED_CTX = ('reason', 'notes', 'source')
+    for stage in ['Synthesize']:  # check Synthesize as canonical; per-stage entries inherit
+        for e in study.get(stage, []):
+            if not e.get('confirmed', True): continue
+            inst = e.get('instance_name') or e.get('cell_name') or e.get('signal_name', '?')
+            ct = e.get('change_type', '?')
+            missing = [k for k in REQUIRED_CTX if not (e.get(k) or '').strip()]
+            if missing:
+                issues.append(f"MEDIUM: {ct} {inst} missing context field(s) {missing} — studier must populate `reason`/`notes`/`source` per eco_netlist_studier.md 0e.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

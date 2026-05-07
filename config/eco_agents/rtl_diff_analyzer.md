@@ -642,6 +642,10 @@ zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
 ```
 Record `cell_type_from_preeco: true` when using a discovered compound type.
 
+**MANDATORY truth-table verification before recording any compound cell:** call `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py`. `False` means the cell does NOT compute the claimed function (cell name and logic don't always agree across libraries — particularly for inverter-input compound families) — pick a different cell or update `gate_function` to the cell's real logic; never write a `False` choice into the chain. `None` means the cell is not in the loaded library JSON — extend `script/eco_scripts/cell_libraries/<lib>.json` with the verified expression from the cell library, do not guess. This rule is the primary gate for cell choice; Step 3 validate enforces it as a backstop.
+
+**MANDATORY signal-in-scope check before recording any chain input:** every input signal MUST exist in the target module's scope — as a port, wire decl, or cell output net. If a referenced signal isn't visible (a frequent case is the registered version of an upstream port), look for an existing local DFF whose Q already produces the same logical signal and use its per-stage Q net name as the chain input. If no local source exists, propose a port promotion (`new_port` change + a `port_connection` from the parent that wires it). Never reference a signal name that won't resolve to an in-scope driver. Step 1 validate enforces this as a backstop.
+
 **For each new condition `<cond_expr> ? <val> : <next_condition>`:**
 
 1. Decompose `<cond_expr>` into a gate chain — prefer compound gates from PreEco that implement the boolean in fewer cells; use E3 table simple gates only as last resort
@@ -847,6 +851,7 @@ If count = 0 (no primitive driver in scope):
 **EXCEPTION — UNCONNECTED_* bus bit wires:** If the resolved wire matches `^(SYNOPSYS_)?UNCONNECTED_\d+$`, do NOT set `preferred_insertion_scope`. These wires come from submodule port bus outputs — the correct fix is 0b-UNCONNECTED rename at the declaring module (parent) scope. The studier renames `UNCONNECTED_N → n_eco_<jira>_<hint>` as an explicit wire at parent scope, and FM traces hierarchically from parent → submodule → internal DFF. Going INSIDE the submodule breaks FM's clock/cone analysis and causes LatCG mismatches.
 - Set `preferred_insertion_scope: null`
 - Set `submodule_bus_driven: true` (flags studier to apply 0b-UNCONNECTED rename instead)
+- **Mode I pre-check:** if the bus port is `output` of the child AND the child body's matching bit slot is also `UNCONNECTED_M` (grep child for `UNCONNECTED_\d+` at same `bus_bit_index` of any sub-instance bus), set `needs_child_internal_wireup: true`. Studier emits a paired child-scope `port_connection` (net_name=`<port>[<bit>]`) so the child output pin gets an internal driver — without this the parent rename leaves FM seeing X.
 
 **For all other signals (not UNCONNECTED_*):** → **MANDATORY: set preferred_insertion_scope**
 - Set `preferred_insertion_scope` to the submodule instance that drives this wire via port bus
@@ -953,10 +958,10 @@ All `net_path` values must be verified hierarchy paths using instance names. Do 
 ## Self-Validation (MANDATORY before writing the RPT)
 
 ```bash
-cd <BASE_DIR> && python3 script/eco_scripts/eco_mux_polarity_check.py \
-    --rtl-diff data/<TAG>_eco_rtl_diff.json --output data/<TAG>_eco_mux_polarity_check.json
+cd <BASE_DIR> && python3 script/eco_scripts/eco_validate_step1.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json --ref-dir <REF_DIR> --output data/<TAG>_eco_validate_step1.json
 ```
-If the output JSON's `overall_pass` is `false`: read each `entries[].issues[]`, re-run the affected D-MUX-3→5 with the field named in the issue, rewrite the JSON, re-invoke. Do NOT write the RPT until `overall_pass: true`.
+If the output JSON's `overall_pass` is `false`: read every issue list (`entries[].issues[]` for MUX polarity, plus the top-level `phantom_wire_issues`, `new_port_issues`, `port_conn_issues`, `truth_table_issues`), correct the affected entries in `eco_rtl_diff.json`, and re-invoke. Do NOT write the RPT until `overall_pass: true`.
 
 ---
 

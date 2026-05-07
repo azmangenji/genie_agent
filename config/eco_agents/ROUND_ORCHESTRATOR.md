@@ -133,6 +133,8 @@ for stage in Synthesize PrePlace Route:
 - `failure_mode: UNKNOWN` → NOT a reason to stop — eco_fm_analyzer MUST have run Step 3b deep investigation before returning UNKNOWN. If `revised_changes` is non-empty, apply them and continue. If empty, treat same as MAX_ROUNDS.
 - `failure_mode: ABORT_LINK` → NOT a reason to stop — `revised_changes` contains `force_port_decl` entries; apply them in Step 6e (`force_reapply: true` in study JSON), continue to next round
 - `failure_mode: ABORT_CELL_TYPE` → NOT a reason to stop — `revised_changes` contains `fix_cell_type` entries; eco_netlist_studier_round_N re-searches PreEco for correct cell type and updates study JSON, continue to next round
+- `failure_mode: T` (compound-cell truth-table mismatch) → NOT a reason to stop — `revised_changes` contains `swap_compound_cell` entries; eco_netlist_studier_round_N overrides `cell_type` (and re-permutes `port_connections` per `port_remap` if present) for all 3 stages in study JSON, continue to next round. If Check T could not find a same-family match, eco_fm_analyzer escalates to Mode F with action `try_structural_decomposition` (rebuild chain with simpler 2/3-input primitives) — never `manual_only`.
+- `failure_mode: I` (child output port internally undriven) → NOT a reason to stop — `revised_changes` contains a second `port_connection` entry with `module_name=<child>`, `bus_bit_index`, `net_name=<port>[<bit>]`. eco_netlist_studier_round_N appends it to study JSON; existing `_apply_bus_rename` in eco_passes_2_4 wires the child's internal slot to its own output pin. Continue to next round.
 - `failure_mode: H` (hierarchical port bus input) → NOT a reason to stop — `revised_changes` contains `fix_named_wire` entries; eco_netlist_studier_round_N sets `needs_named_wire: true` in study JSON, eco_apply_fix_round_N declares named wire and rewires port bus, continue to next round
 - `needs_rerun_fenets: true` → NOT a reason to stop — Step 6f-FENETS re-queries the missing signals; eco_netlist_studier_round_N resolves PENDING_FM_RESOLUTION inputs from the rerun results; continue to next round
 - `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
@@ -320,50 +322,16 @@ This agent is `eco_apply_fix_round_N` — it applies the fix strategy identified
 ls <BASE_DIR>/data/<TAG>_eco_applied_round<NEXT_ROUND>.json
 ```
 
-**Generate Step 4 RPT from JSON — do this yourself, do NOT rely on eco_applier. Use the same detailed format as ORCHESTRATOR.md Step 4 RPT (show reason/detail for every status, not just SKIPPED):**
-
-```python
-applied = load("data/<TAG>_eco_applied_round<NEXT_ROUND>.json")
-s = applied["summary"]
-with open("data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt", "w") as f:
-    f.write(f"STEP 4 — ECO APPLIED (Round <NEXT_ROUND>)\nTag: <TAG>\n{'='*80}\n")
-    f.write(f"Summary: {s['applied']} applied / {s['inserted']} inserted / "
-            f"{s.get('already_applied',0)} already_applied / "
-            f"{s['skipped']} skipped / {s['verify_failed']} verify_failed\n\n")
-    for stage in ["Synthesize", "PrePlace", "Route"]:
-        f.write(f"[{stage}]\n")
-        for e in applied[stage]:
-            ct = e.get('change_type', '?')
-            status = e['status']
-            name = (e.get('instance_name') or e.get('cell_name') or
-                    e.get('signal_name') or e.get('port_name') or '?')
-            f.write(f"  {status:15s} {name:40s} type={ct}\n")
-            if status == 'INSERTED':
-                f.write(f"    → cell_type={e.get('cell_type','?')}  output={e.get('output_net','?')}  scope={e.get('instance_scope','?')}\n")
-                if e.get('reason'): f.write(f"    → {e['reason']}\n")
-            elif status == 'APPLIED':
-                if e.get('reason'): f.write(f"    → {e['reason']}\n")
-                elif ct == 'rewire': f.write(f"    → {e.get('old_net','?')} → {e.get('new_net','?')} on pin {e.get('pin','?')}\n")
-                elif ct in ('port_declaration','port_promotion'): f.write(f"    → module={e.get('module_name','?')}  decl_type={e.get('declaration_type','?')}\n")
-                elif ct == 'port_connection': f.write(f"    → .{e.get('port_name','?')}({e.get('net_name','?')}) on instance {e.get('instance_name','?')}\n")
-            elif status == 'ALREADY_APPLIED':
-                ar = e.get('already_applied_reason', e.get('reason', 'no reason recorded'))
-                f.write(f"    → {ar}\n")
-            elif status == 'SKIPPED':
-                f.write(f"    → REASON: {e.get('reason', 'no reason recorded')}\n")
-            elif status == 'VERIFY_FAILED':
-                f.write(f"    → VERIFY FAILED: {e.get('reason', 'no reason recorded')}\n")
-        f.write("\n")
-```
+**Generate Step 4 RPT from JSON — do this yourself, do NOT rely on eco_applier:**
 
 ```bash
-# Write RPT
-# ... (read JSON and format RPT content)
+cd <BASE_DIR> && python3 script/eco_scripts/eco_rpt_generator.py step4 \
+    --applied data/<TAG>_eco_applied_round<NEXT_ROUND>.json \
+    --tag <TAG> --jira <JIRA> --round <NEXT_ROUND> \
+    --output  data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt
 
-# Copy to AI_ECO_FLOW_DIR immediately
+# Copy to AI_ECO_FLOW_DIR
 cp <BASE_DIR>/data/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt <AI_ECO_FLOW_DIR>/
-
-# Verify copy
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step4_eco_applied_round<NEXT_ROUND>.rpt
 ```
 

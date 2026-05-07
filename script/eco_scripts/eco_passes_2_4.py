@@ -196,18 +196,27 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
     # Mode (b): bus_bit_index → parse {...} concat by position
     if bus_bit_index is None:
         return lines, 'SKIPPED', f'bus_rename: neither old_net nor bus_bit_index given'
+
+    # Comment-aware: strip Verilog //... and /*...*/ comments before brace tracking
+    # and content extraction. Critical for handling comment-mess corruption from
+    # prior agent inline-fix attempts.
+    def _strip_v_comments(s):
+        s = re.sub(r'/\*.*?\*/', '', s, flags=re.DOTALL)
+        s = re.sub(r'//[^\n]*', '', s)
+        return s
+
     # Locate `.port_name(` line
     port_pat = re.compile(rf'\.\s*{re.escape(port_name)}\s*\(')
     open_line = -1
     for i in range(inst_start, inst_close + 1):
-        if port_pat.search(lines[i]):
+        if port_pat.search(_strip_v_comments(lines[i])):
             open_line = i; break
     if open_line < 0:
         return lines, 'SKIPPED', f'bus_rename: .{port_name}( not found in {inst_name}'
-    # Find matching `}` closing the {...} concat (depth-aware)
+    # Find matching `}` closing the {...} concat — depth-track on comment-stripped text
     end_line, br_depth, started = -1, 0, False
     for i in range(open_line, inst_close + 1):
-        for ch in lines[i]:
+        for ch in _strip_v_comments(lines[i]):
             if ch == '{': started = True; br_depth += 1
             elif ch == '}' and started:
                 br_depth -= 1
@@ -215,20 +224,27 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
         if end_line >= 0: break
     if end_line < 0:
         return lines, 'SKIPPED', f'bus_rename: {inst_name}.{port_name} not a {{}} concat'
-    # Extract content between { and matching }
-    full = ''.join(lines[open_line:end_line + 1])
-    m = re.search(r'\{([^{}]*)\}', full, re.DOTALL)
+    # Extract content from comment-stripped joined text. Output overwrites the
+    # multi-line region with a single clean line — comments inside the bus
+    # range are discarded (they're typically corruption artifacts anyway).
+    full       = ''.join(lines[open_line:end_line + 1])
+    full_clean = _strip_v_comments(full)
+    m = re.search(r'\{([^{}]*)\}', full_clean, re.DOTALL)
     if not m:
         return lines, 'SKIPPED', f'bus_rename: cannot parse {{}} content for {inst_name}.{port_name}'
-    elements = [e.strip() for e in m.group(1).split(',')]
+    elements = [e.strip() for e in m.group(1).split(',') if e.strip()]
     width = len(elements)
     pos = width - 1 - bus_bit_index  # MSB-first
     if pos < 0 or pos >= width:
         return lines, 'SKIPPED', f'bus_rename: bit_index {bus_bit_index} out of range (width={width})'
     old_at_pos = elements[pos]
     elements[pos] = new_net
-    new_full = full.replace(m.group(0), '{' + ', '.join(elements) + '}', 1)
-    candidate = new_full.splitlines(keepends=True)
+    # Build new content from comment-stripped text. This overwrites the original
+    # (potentially comment-corrupted) multi-line region with a single clean line.
+    new_full_clean = full_clean.replace(m.group(0), '{' + ', '.join(elements) + '}', 1)
+    candidate = new_full_clean.splitlines(keepends=True)
+    if not candidate:  # safety: if splitlines returns empty (rare), keep one line
+        candidate = [new_full_clean if new_full_clean.endswith('\n') else new_full_clean + '\n']
     # Verify candidate has new_net at expected position before commit (catches
     # wrong-instance match — e.g. multiple instances with same port name).
     cand_m = re.search(r'\{([^{}]*)\}', ''.join(candidate), re.DOTALL)

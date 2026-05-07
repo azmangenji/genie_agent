@@ -670,53 +670,24 @@ python3 script/eco_scripts/eco_validate_step3.py \
     --tag      <TAG> \
     --output   data/<TAG>_eco_validate_step3.json
 ```
-If exit code = 1 → issues found → fix before proceeding. Read `data/<TAG>_eco_validate_step3.json` for specific issues. Common fixes: re-run eco_expand_chains.py, re-spawn eco_netlist_studier for incomplete entries.
+If exit code = 1 → issues found → fix before proceeding. Read `data/<TAG>_eco_validate_step3.json` for specific issues. Common fixes:
+- Incomplete chain entries → re-run `eco_expand_chains.py`
+- Missing fields (module_name, port_connections_per_stage, etc.) → re-spawn `eco_netlist_studier`
+- **Mode I gap** (`parent rename ... but no paired child-scope port_connection`) → the validator message includes the exact JSON entry to add: `module_name=<child>`, `bus_bit_index=<N>`, `net_name=<port>[<bit>]`. Append it to the study JSON OR re-spawn studier with `MODE_I_HINT="add paired child-scope port_connection per validator output"`.
+- **Per-stage CP/SE/SI not from neighbor** (Check 16, `not used by any existing DFF`) → the validator message lists 3 sample neighbor values. Pick one of those for the failing pin/stage and patch `port_connections_per_stage[<stage>][<pin>]` in the study JSON OR re-spawn studier with `NEIGHBOR_LOOKUP_HINT="<inst>:<pin>:<stage> use one of <samples>"`.
+- **Scan-bridge SE/SI = constant in P&R** (Check 15, `should hook to a neighboring DFF's per-stage SE/SI net`) → same fix as above: copy a neighbor DFF's per-stage SE/SI value into `port_connections_per_stage`. Synth stays `1'b0`; PP/Route get the real scan-chain bridge wire.
+- **Signal-in-scope failure** (Step 1 `signal_in_scope_issues`, `input X NOT in scope of module Y`) → look for a local DFF whose Q drives the same logical signal in the target module; use its per-stage Q net name as the chain input. If no local source exists, propose a `new_port` change to promote the signal in.
+- **ECO input pin undriven** (Step 5 Check 13, `[INPUT_UNDRIVEN]`) → the per-stage net the studier picked doesn't have a driver in that stage's netlist. Re-look up the neighbor DFF's per-stage value (most likely a stale name), patch `port_connections_per_stage`, re-run Step 4.
 
 **Generate Step 3 RPT from JSON (ORCHESTRATOR responsibility):**
 
-Read `data/<TAG>_eco_preeco_study.json` and write `data/<TAG>_eco_step3_netlist_study_round1.rpt`:
-
-```python
-def entry_label(e, stage):
-    """Return the human-readable identifier for a study entry."""
-    ct = e.get("change_type", "")
-    if ct == "rewire":
-        return e.get("per_stage_cell_name", {}).get(stage) or e.get("cell_name", "?")
-    if ct in ("port_declaration", "port_promotion"):
-        return e.get("signal_name", "?")
-    return e.get("instance_name") or e.get("cell_name") or e.get("signal_name", "?")
-
-def entry_detail(e, stage):
-    """Return a one-line detail string showing the key fields per change_type."""
-    ct = e.get("change_type", "")
-    if ct == "rewire":
-        return f"pin={e.get('pin','?')}  {e.get('old_net','?')} → {e.get('new_net','?')}  scope={e.get('instance_scope','?')}"
-    if ct in ("new_logic_gate", "new_logic"):
-        return f"fn={e.get('gate_function','?')}  out={e.get('output_net','?')}  scope={e.get('instance_scope','?')}"
-    if ct == "new_logic_dff":
-        return f"reg={e.get('target_register','?')}  out={e.get('output_net','?')}  scope={e.get('instance_scope','?')}"
-    if ct in ("port_declaration", "port_promotion"):
-        return f"module={e.get('module_name','?')}  dir={e.get('declaration_type','output')}"
-    if ct == "port_connection":
-        return f".{e.get('port_name','?')}({e.get('net_name','?')})  parent={e.get('parent_module','?')}"
-    return ""
-
-study = load("data/<TAG>_eco_preeco_study.json")
-with open("data/<TAG>_eco_step3_netlist_study_round1.rpt", "w") as f:
-    f.write(f"STEP 3 — PREECO NETLIST STUDY\nTag: <TAG>  |  JIRA: <JIRA>  |  Tile: <TILE>\n{'='*80}\n\n")
-    for stage in ["Synthesize", "PrePlace", "Route"]:
-        confirmed = [e for e in study.get(stage, []) if e.get("confirmed")]
-        excluded  = [e for e in study.get(stage, []) if not e.get("confirmed")]
-        f.write(f"[{stage}] — {len(confirmed)} confirmed, {len(excluded)} excluded\n")
-        for e in confirmed:
-            label  = entry_label(e, stage)
-            detail = entry_detail(e, stage)
-            f.write(f"  CONFIRMED: {label:<40} type={e.get('change_type','?'):<20} {detail}\n")
-        for e in excluded:
-            label  = entry_label(e, stage)
-            f.write(f"  EXCLUDED:  {label:<40} reason={e.get('reason', e.get('unresolvable_reason','?'))}\n")
-        f.write("\n")
+```bash
+cd <BASE_DIR> && python3 script/eco_scripts/eco_rpt_generator.py step3 \
+    --study  data/<TAG>_eco_preeco_study.json \
+    --tag    <TAG> --jira <JIRA> --tile <TILE> \
+    --output data/<TAG>_eco_step3_netlist_study_round1.rpt
 ```
+Output format: `[stage] — N confirmed, M excluded` header per stage, then one `CONFIRMED:` / `EXCLUDED:` line per entry showing label, type, and detail (per-change_type formatter inside the script).
 
 Then copy to AI_ECO_FLOW_DIR and verify:
 ```bash
@@ -740,48 +711,13 @@ Wait for eco_applier sub-agent to complete.
 
 **Generate Step 4 RPT from JSON (ORCHESTRATOR responsibility — NOT eco_applier):**
 
-The RPT must be human-readable and self-explanatory — every entry shows WHY it has that status. Do NOT produce one-liners with no context.
-
-```python
-applied = load("data/<TAG>_eco_applied_round<ROUND>.json")
-s = applied["summary"]
-with open("data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt", "w") as f:
-    f.write(f"STEP 4 — ECO APPLIED (Round <ROUND>)\nTag: <TAG>  |  JIRA: <JIRA>\n{'='*80}\n")
-    f.write(f"Summary: {s['applied']} applied / {s['inserted']} inserted / "
-            f"{s.get('already_applied', 0)} already_applied / "
-            f"{s['skipped']} skipped / {s['verify_failed']} verify_failed\n\n")
-    for stage in ["Synthesize", "PrePlace", "Route"]:
-        f.write(f"[{stage}]\n")
-        for e in applied[stage]:
-            ct = e.get('change_type', '?')
-            status = e['status']
-            # Build display name from whatever identifier exists
-            name = (e.get('instance_name') or e.get('cell_name') or
-                    e.get('signal_name') or e.get('port_name') or '?')
-            f.write(f"  {status:15s} {name:40s} type={ct}\n")
-            # Detail line — always shown, content varies by change_type and status
-            if status == 'INSERTED':
-                f.write(f"    → cell_type={e.get('cell_type','?')}  output={e.get('output_net','?')}  scope={e.get('instance_scope','?')}\n")
-                if e.get('reason'):
-                    f.write(f"    → {e['reason']}\n")
-            elif status == 'APPLIED':
-                if e.get('reason'):
-                    f.write(f"    → {e['reason']}\n")
-                elif ct == 'rewire':
-                    f.write(f"    → {e.get('old_net','?')} → {e.get('new_net','?')} on pin {e.get('pin','?')}\n")
-                elif ct in ('port_declaration', 'port_promotion'):
-                    f.write(f"    → module={e.get('module_name','?')}  decl_type={e.get('declaration_type','?')}\n")
-                elif ct == 'port_connection':
-                    f.write(f"    → .{e.get('port_name','?')}({e.get('net_name','?')}) on instance {e.get('instance_name','?')}\n")
-            elif status == 'ALREADY_APPLIED':
-                ar = e.get('already_applied_reason', e.get('reason', 'no reason recorded — eco_applier must provide already_applied_reason'))
-                f.write(f"    → {ar}\n")
-            elif status == 'SKIPPED':
-                f.write(f"    → REASON: {e.get('reason', 'no reason recorded')}\n")
-            elif status == 'VERIFY_FAILED':
-                f.write(f"    → VERIFY FAILED: {e.get('reason', 'no reason recorded')}\n")
-        f.write("\n")
+```bash
+cd <BASE_DIR> && python3 script/eco_scripts/eco_rpt_generator.py step4 \
+    --applied data/<TAG>_eco_applied_round<ROUND>.json \
+    --tag <TAG> --jira <JIRA> --round <ROUND> \
+    --output  data/<TAG>_eco_step4_eco_applied_round<ROUND>.rpt
 ```
+Output format: header with summary counts, then `[stage]` sections each listing every entry as `STATUS name type=...` plus a `→` detail line (cell_type for INSERTED, rename for rewire APPLIED, reason for ALREADY_APPLIED/SKIPPED/VERIFY_FAILED). Every entry is self-explanatory — no one-liners without context.
 
 Copy to AI_ECO_FLOW_DIR and verify:
 ```bash

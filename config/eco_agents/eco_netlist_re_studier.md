@@ -153,6 +153,11 @@ for e in study["<Stage>"]:
   ```
 - **CT-2 — Update** `cell_type` for all stages where `entry["instance_name"] == gate_instance`, add `re_study_note`
 
+**For `failure_mode: T`:** For each `swap_compound_cell` entry — fm_analyzer Check T already picked `correct_cell_type`; no PreEco re-search needed:
+- **T-1 — Override `cell_type`** to `correct_cell_type` for all 3 stages where `entry["instance_name"] == gate_instance`.
+- **T-2 — If `port_remap` present**, rebuild `port_connections` (and `port_connections_per_stage[*]`) by remapping pin names: for each `(old_pin, new_pin)` in `port_remap`, the value previously at `old_pin` moves to `new_pin`. Apply atomically to avoid clobbering when remap is a permutation.
+- **T-3 — Add `re_study_note: "swap_compound_cell <wrong>→<correct>"`.** Do NOT touch `gate_function` text, output_net, or scope.
+
 **For `failure_mode: H` (gate input inaccessible in P&R stage):** For each `fix_named_wire` entry:
 
 **H1 — Confirm structural issue:**
@@ -165,22 +170,19 @@ synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<source_net
 
 **H2 — Find P&R alias:** For H-RENAME: find driver of `source_net` in Synthesize → search same driver instance in P&R → read its output net. For H-BUS: keep `source_net` as-is.
 
-**SCAN-RENAMED DFF Q EXCEPTION (MANDATORY in H2):** If the resolved P&R alias matches scan-assignment patterns (`test_so*`, `FxPrePlace_HFSNET_*`, `dftopt*`, `copt_net_*`, `aps_rename_*`, `ropt_net_*`, `FxOptCts_*`, `FxPlace_HFSNET_*`), do NOT use it as the alias. Keep the original `source_net` name. Scan-renamed nets expose the DFF's scan SI input to FM backward trace, contaminating the cone with unrelated scan chain DFFs.
-
-**SE/SI PIN EXCEPTION (MANDATORY in H2):** If `input_pin` is SE or SI on an ECO DFF entry, do NOT apply any alias — keep `1'b0`. SE/SI are scan infrastructure pins; per-stage scan nets make them inconsistent across stages and FM cannot prove equivalence.
+**P&R PER-STAGE ALIAS RULE (MANDATORY in H2 — all input pins):** Copy per-stage values from a pre-existing DFF in the same module scope (find one whose Synth pin matches the ECO entry's logical signal; use its per-stage net names verbatim, including scan/DFT/CTS renames). For SE/SI on new ECO DFFs: Synth=`1'b0`, PP/Route=neighbor DFF's per-stage SE/SI (NOT `1'b0` — see eco_netlist_studier.md `0b-STAGE-NETS`).
 
 **H3 — Update study JSON:**
 ```python
 entry.setdefault("port_connections_per_stage", {
     s: dict(entry.get("port_connections", {})) for s in ["Synthesize", "PrePlace", "Route"]
 })
-# SE/SI exception: never override scan pins
-SCAN_ALIAS_PATTERNS = ('test_so', 'FxPrePlace_HFSNET_', 'dftopt', 'copt_net_',
-                       'aps_rename_', 'ropt_net_', 'FxOptCts_', 'FxPlace_HFSNET_')
-if input_pin in ('SE', 'SI'):
-    pass  # keep 1'b0, never update SE/SI
-elif par_alias_found and any(par_alias.startswith(p) for p in SCAN_ALIAS_PATTERNS):
-    pass  # scan-renamed DFF Q — keep original net, not scan alias
+# SE/SI on new ECO DFFs: Synth='1'b0', PP/Route=neighbor DFF's per-stage SE/SI
+# (real scan-bridge wires — NOT '1'b0' in P&R, which would isolate from scan chain).
+# All other input pins: copy per-stage value from a neighbor DFF whose Synth value
+# matches the entry's logical signal — including scan/DFT/CTS-renamed names.
+if input_pin in ('SE', 'SI') and stage == 'Synthesize':
+    entry["port_connections_per_stage"][stage][input_pin] = "1'b0"
 elif par_alias_found:
     entry["port_connections_per_stage"][stage][input_pin] = par_alias
 else:
@@ -206,11 +208,11 @@ for change in rtl_diff.get("changes", []):
                 entry = find_entry_by_instance(gate["instance_name"])
                 if entry and not already_updated(entry, stage, gate["inputs"]):
                     alias = priority3_structural_trace(gate["inputs"][0], stage)
-                    # SE/SI and scan-alias exceptions apply here too
-                    if gate["pin"] in ('SE', 'SI'):
-                        pass  # never override SE/SI
-                    elif alias and any(alias.startswith(p) for p in SCAN_ALIAS_PATTERNS):
-                        pass  # scan-renamed — keep original net
+                    # P&R PER-STAGE ALIAS RULE: copy from neighbor's per-stage value
+                    # (scan/DFT/CTS-renamed names ARE the right answer in P&R).
+                    # Only Synth-stage SE/SI uses the constant '1'b0'.
+                    if gate["pin"] in ('SE', 'SI') and stage == 'Synthesize':
+                        entry["port_connections_per_stage"][stage][gate["pin"]] = "1'b0"
                     else:
                         entry["port_connections_per_stage"][stage][gate["pin"]] = alias or f"NEEDS_NAMED_WIRE:{gate['inputs'][0]}"
                     entry["force_reapply"] = True

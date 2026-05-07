@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-eco_mux_polarity_check.py — Deterministic validator for MUX-select polarity
-fields in eco_rtl_diff.json. Catches the recurring NAND vs AND class of bugs
-at Step 1 instead of waiting for FM to fail 6 hours later.
+eco_validate_step1.py — Deterministic Step 1 validator for eco_rtl_diff.json.
+Runs as the post-rtl_diff_analyzer self-check; fails the orchestrator on any
+defect so wrong RTL-diff data never reaches Step 2/3/4.
 
-Runs the D-MUX-6 cross-checks from rtl_diff_analyzer.md as pure data checks:
-  Check 1: mux_select_old_driver_inverting matches cell_type prefix
-  Check 2: mux_select_old_S_when_condition_true follows from inverting flag
-  Check 3: mux_select_branch_true_on follows from old_S
-  Check 4: mux_select_gate_function output @ new_cond=TRUE equals old_S
-           (only enforced when gate is in the simple table below)
-  Check 5: mux_select_reasoning has no backtracking phrases
+Checks performed:
+  - MUX-select polarity (D-MUX-6 cross-checks 1-5; the original purpose)
+  - Phantom WIRE/BUF pseudo-cells in any gate chain
+  - new_port hygiene (declaration_type set; no duplicates)
+  - port_connection completeness (inst/port/net populated)
+  - Cell truth-table match: every gate in d_input_gate_chain /
+    new_condition_gate_chain has preeco_cell_type whose actual boolean function
+    equals the claimed gate_function (per script/eco_scripts/cell_libraries/*.json)
 
 Usage:
-    python3 script/eco_scripts/eco_mux_polarity_check.py \
+    python3 script/eco_scripts/eco_validate_step1.py \
         --rtl-diff data/<TAG>_eco_rtl_diff.json \
-        --output   data/<TAG>_eco_mux_polarity_check.json
+        --output   data/<TAG>_eco_validate_step1.json
 
 Exit: 0 = all wire_swap entries pass, 1 = any failure.
 """
@@ -133,9 +134,34 @@ def check_entry(entry):
     return issues
 
 
+def signals_in_module(text, module_name):
+    """Return set of signal names visible in the given module: ports + wire decls
+    + cell output nets. Uses comment-stripped Verilog text."""
+    m = re.search(rf'^module\s+{re.escape(module_name)}(?:_0)?\b.*?^endmodule\b',
+                  text, re.MULTILINE | re.DOTALL)
+    if not m:
+        return set()
+    body = m.group(0)
+    sigs = set()
+    # Ports: `input [...] foo;` / `output [...] foo;` / `inout [...] foo;`
+    for pm in re.finditer(r'^\s*(?:input|output|inout)\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]',
+                          body, re.MULTILINE):
+        sigs.add(pm.group(1))
+    # Wire decls: `wire [...] foo;`
+    for wm in re.finditer(r'^\s*wire\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]',
+                          body, re.MULTILINE):
+        sigs.add(wm.group(1))
+    # Cell outputs: any `.Z(net)` / `.ZN(net)` / `.Q(net)` / `.QN(net)` / `.CO(net)`
+    for cm in re.finditer(r'\.\s*(?:Z|ZN|ZN1|Q|QN|CO)\s*\(\s*(\w+)\s*\)', body):
+        sigs.add(cm.group(1))
+    return sigs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--rtl-diff', required=True)
+    ap.add_argument('--ref-dir',  default=None,
+                    help='REF_DIR with data/PreEco/<stage>.v.gz for signal-in-scope check')
     ap.add_argument('--output',   required=True)
     args = ap.parse_args()
 
@@ -185,6 +211,82 @@ def main():
     if pc_issues:
         overall_pass = False
 
+    # Signal-in-scope check: every input signal referenced by a chain entry must
+    # exist in the target module — as a port, wire decl, or cell output. Missing
+    # signals cause undriven inputs in the inserted gate → FM cone divergence.
+    sis_issues = []
+    if args.ref_dir:
+        import gzip as _gz, os as _os
+        # Load Synthesize PreEco module text once (per module — cache by name)
+        gz = _os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
+        if not _os.path.exists(gz):
+            gz = _os.path.join(args.ref_dir, 'data', 'PostEco', 'Synthesize.v.gz')
+        if _os.path.exists(gz):
+            try:
+                with _gz.open(gz, 'rt') as f:
+                    raw = f.read()
+                raw = re.sub(r'/\*.*?\*/', '', raw, flags=re.DOTALL)
+                raw = re.sub(r'//[^\n]*', '', raw)
+            except Exception:
+                raw = ''
+            mod_sig_cache = {}
+            def _sigs(mod):
+                if mod not in mod_sig_cache:
+                    mod_sig_cache[mod] = signals_in_module(raw, mod) if raw else set()
+                return mod_sig_cache[mod]
+            for idx, c in enumerate(rtl_diff.get('changes', [])):
+                target_mod = c.get('declaring_module') or c.get('module_name')
+                if not target_mod:
+                    continue
+                sigs = _sigs(target_mod)
+                if not sigs:
+                    continue  # module not found — silent skip (probably a tile-prefix variant)
+                for fld in ('d_input_gate_chain', 'new_condition_gate_chain'):
+                    for g in (c.get(fld) or []):
+                        for inp in (g.get('inputs') or []):
+                            if not isinstance(inp, str):
+                                continue
+                            base = re.sub(r'\[[^\]]*\]', '', inp).strip()  # strip bit select
+                            if not base or base.startswith(('1\'b', '0\'b')):
+                                continue
+                            if base.startswith('n_eco_'):
+                                continue  # internal ECO net, may not yet exist
+                            if base not in sigs:
+                                # Suggest closest in-scope match (heuristic: same prefix)
+                                cand = next((s for s in sigs if s.startswith(base) or base.startswith(s)), None)
+                                hint = f' (closest in-scope: {cand!r})' if cand else ''
+                                sis_issues.append(
+                                    f'changes[{idx}].{fld} seq={g.get("seq")}: input {inp!r} '
+                                    f'NOT in scope of module {target_mod!r}{hint}. '
+                                    f'Pick the in-scope alias or promote the signal as a new port.')
+    if sis_issues:
+        overall_pass = False
+
+    # Truth-table check: every gate in d_input_gate_chain / new_condition_gate_chain
+    # must have preeco_cell_type whose actual boolean function matches the claimed
+    # gate_function. Catches the case where Step 1 picked a cell whose name suggests
+    # one logic family but the cell actually computes something different.
+    tt_issues = []
+    try:
+        import os as _os, sys as _sys
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        import eco_cell_truth_tables as _ett
+    except ImportError:
+        _ett = None
+    if _ett is not None:
+        for idx, c in enumerate(rtl_diff.get('changes', [])):
+            for fld in ('d_input_gate_chain', 'new_condition_gate_chain'):
+                for g in (c.get(fld) or []):
+                    cell = g.get('preeco_cell_type') or g.get('cell_type') or ''
+                    fn   = g.get('gate_function') or ''
+                    if not cell or not fn:
+                        continue
+                    m, why = _ett.cell_function_matches(cell, fn)
+                    if m is False:
+                        tt_issues.append(f'changes[{idx}].{fld} seq={g.get("seq")}: cell={cell!r} does NOT compute claimed {fn!r} — {why}')
+    if tt_issues:
+        overall_pass = False
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'wire_swap' or c.get('mux_select_polarity_pending'):
             continue
@@ -209,21 +311,29 @@ def main():
         'new_port_issues':       decl_issues,
         'port_conn_issue_count': len(pc_issues),
         'port_conn_issues':      pc_issues,
+        'truth_table_issue_count': len(tt_issues),
+        'truth_table_issues':      tt_issues,
+        'signal_in_scope_issue_count': len(sis_issues),
+        'signal_in_scope_issues':      sis_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
     with open(args.output, 'w') as f:
         json.dump(out, f, indent=2)
 
-    print('ECO_SCRIPT_LAUNCHED: eco_mux_polarity_check.py')
+    print('ECO_SCRIPT_LAUNCHED: eco_validate_step1.py')
     print(f'  rtl_diff: {args.rtl_diff}')
-    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}')
+    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}')
     print(f'  overall:  {"PASS" if overall_pass else "FAIL"}')
     for p in phantom:
         print(f'    - {p}')
     for p in decl_issues:
         print(f'    - {p}')
     for p in pc_issues:
+        print(f'    - {p}')
+    for p in tt_issues:
+        print(f'    - {p}')
+    for p in sis_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:

@@ -159,7 +159,7 @@ P&R renames DFF outputs (scan insertion in PP, CTS/optimization in Route). A wir
 4. If upstream also absent → **CTS buffer search**: grep entire module scope for any cell whose output is the only driver of any net that feeds the same downstream consumers as `<net>` in Synthesize. CTS creates buffer chains (any cell type, not just BUF) with tool-generated output net names — accept the first driven net found in the P&R module scope that reaches the same fanout path.
 5. If aliases differ across stages → set `entry["net_per_stage"][pin] = {Syn: ..., PP: ..., Route: ...}`.
 
-**SCAN-RENAMED DFF Q EXCEPTION (MANDATORY):** If the resolved alias in step 2/3/4 matches scan-assignment naming patterns — nets starting with `test_so`, `FxPrePlace_HFSNET_`, `dftopt`, `copt_net_`, `aps_rename_`, `ropt_net_`, `FxOptCts_`, `FxPlace_HFSNET_` — do NOT record it as a per-stage alias. These are DFF Q outputs renamed by scan insertion. Using them exposes the DFF's scan SI input to FM's backward trace, contaminating the cone with unrelated scan chain DFFs. Instead, keep the original wire name from Synthesize scope in all stages. If the original wire is undriven in P&R stages, FM's structural name-matching handles equivalence without backward tracing.
+**P&R PER-STAGE ALIAS RULE (MANDATORY — all ECO input pins):** Per-stage values for every input pin (anything except `{Z, ZN, ZN1, Q, QN, CO}`) MUST be **copied from a pre-existing DFF in the same module scope** for THAT stage. Find a neighbor DFF whose Synthesize value of the same pin matches the ECO entry's logical signal; copy that neighbor's per-stage net name verbatim — including scan/DFT/CTS-renamed names. NEVER force the Synthesize name across all stages; doing so causes cone divergence (FM cannot reconcile the new ECO cell's pin to the rest of the design). For SE/SI on new ECO DFFs: Synth = `1'b0` (RTL-clean), PP/Route = neighbor DFF's per-stage SE/SI (real scan-bridge wire — NOT `1'b0`, which would isolate the new flop from the scan chain).
 
 Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SAME` if identical.
 
@@ -177,7 +177,9 @@ FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → 
 
 eco_perl_spec reads `unconnected_rewires`: declares `wire <named_net>;` once, applies `original_per_stage[stage]` → `named_net` replacement per stage in port bus `{ }` block.
 
-**PARENT SCOPE ONLY (MANDATORY):** Rename UNCONNECTED_* only at the module scope where the ECO gate is inserted — the parent that instantiates the submodule containing the bus. NEVER go inside the child module to rename its internal UNCONNECTEDs. FM traces hierarchically from parent → child → internal DFF automatically. Editing the child module's internal structure breaks FM's clock/cone analysis for that child module.
+**PARENT SCOPE (DEFAULT):** Rename UNCONNECTED_* at the module scope where the ECO gate is inserted. Inventing fresh names inside the child module breaks FM's clock/cone analysis.
+
+**EXCEPTION — child output port internally undriven (Mode I wire-up):** If the renamed bus is `output` of the child AND the matching bit at any child sub-instance is also `UNCONNECTED_*`, the parent rename leaves the port pin undriven → FM `X` → DFF0X. Fix: emit a SECOND `port_connection` entry with `module_name=<child>`, `bus_bit_index=<same bit>`, `net_name=<port_name>[<bit>]` (use the child's own output pin as rename target — Verilog auto-wires the internal slot to the port bit). This is wire-up, not invention — it preserves clock/cone analysis. Detect: parent UNCONNECTED rename whose `bus_port` is `output` in child AND child body has `UNCONNECTED_M` at the same bit index of any sub-instance bus.
 
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
@@ -204,10 +206,11 @@ Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<i
 
 For each gate in `d_input_gate_chain` (d001→d00N), create a skeleton `new_logic_gate` entry:
 1. Find cell type in PreEco Synthesize matching the gate_function
-2. Resolve bit-select names (`A[i]` → check if netlist uses `A_i_` or `A[i]`)
-3. Record basic port_connections from Synthesize only
-4. If input is `n_eco_<jira>_d<prev>` → set `input_from_change: <prev_gate_id>`
-5. If any signal not found → set `d_input_decompose_failed: true`, skip rest of chain
+2. **Cell choice is owned by Step 1 (rtl_diff_analyzer)** — its `preeco_cell_type` field already passed truth-table verification. If you ever PICK or REPLACE a cell here (e.g. when Step 1 left it unset, or when correcting a Step 1 mismatch flagged by Step 3 validate), call `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py` and never accept a `False` return.
+3. Resolve bit-select names (`A[i]` → check if netlist uses `A_i_` or `A[i]`)
+4. Record basic port_connections from Synthesize only
+5. If input is `n_eco_<jira>_d<prev>` → set `input_from_change: <prev_gate_id>`
+6. If any signal not found → set `d_input_decompose_failed: true`, skip rest of chain
 
 **CRITICAL — seq counter is per-JIRA across ALL DFF chains, not per-chain:**
 - Chain 1: eco_<jira>_d001 ... d007
@@ -411,6 +414,21 @@ grep -m1 "^module [a-z0-9_]*<tile>[a-z0-9_]* " /tmp/eco_study_<TAG>_Synthesize.v
 The tile-root module name is also available directly from `TILE_ROOT_MODULE` (provided in agent prompt or from `resolve_module_name()` fallback).
 
 Record skeleton entry with: `change_type`, `instance_scope`, `scope_is_tile_root`, `cell_type`, `instance_name`, `output_net`, `port_connections` (Synthesize only), `confirmed: true/false`.
+
+**MANDATORY context fields for every entry — used by eco_rpt_generator.py to produce a self-explanatory Step 3 RPT:**
+- `reason` — one short line: WHY this change is needed (the role in the ECO). Example formats per change_type:
+  - `new_logic_gate`: `"<role>: <boolean expression or gate-tree position>"` (e.g. `"SELFREF_match: BeqCtrlPeSrc==3'b000 (NOR3 of 3 bits)"`)
+  - `new_logic_dff`: `"<RTL register> with <reset/clock-domain summary>"`
+  - `rewire`: `"<old_net> → <new_net> on <pin>: <upstream-driver context>"`
+  - `port_declaration`: `"<signal> as <direction> of <module> for <ECO purpose>"`
+  - `port_connection`: `"<port>(<net>) wires <upstream> to <downstream> for <ECO purpose>"`
+- `notes` — multi-line free text (2–8 lines). Include:
+  - **Chain trace** (the upstream/downstream cells this entry sits in): `<driver>/<pin> → <wire> → <next_cell>/<pin> → ... → <DFF>.D`
+  - **RULE references** that justified the choice (e.g., `RULE 32: <real RTL net> over <P&R alias>`, `Mode I exception: child output port wire-up`)
+  - **Evidence** observed during the lookup (e.g., `Found in PreEco Synthesize line N`, `cell_function_matches() returned True for AOI21D1 vs gate_function AOI21`)
+- `source` — short stable label of how the entry was determined: `"initial_run_<TAG>"` for first study, `"retry<N>_<TAG>"` for re-studier passes, `"FALLBACK_from_<stage>"` when copying from another stage's resolution.
+
+These fields are NOT cosmetic — they are the audit trail for the engineer reviewing the Step 3 RPT and for the round-N re-studier when a Mode A/H/I/T fix is needed. Every confirmed entry must have all three. Empty `reason`/`notes`/`source` is a Step 3 validate failure.
 
 eco_netlist_verifier will add `port_connections_per_stage`, GAP-15 correction, port boundary entries, and consumer cascade entries.
 

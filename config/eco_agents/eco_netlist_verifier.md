@@ -299,18 +299,16 @@ For every `new_logic_dff` entry, resolve ALL pins per stage. Studier-1 records S
 - Priority 2: P&R alias (only if Priority 1 absent)
 - Priority 3: Structural driver trace
 
-**Step C — SE and SI pins: UNCONDITIONALLY set `1'b0` across ALL stages. No conditions. No exceptions.**
+**Step C — SE/SI pins: Synth = `1'b0`, PP/Route = neighboring DFF's per-stage SE/SI net.**
 
-SE and SI are scan infrastructure pins managed by the scan insertion tool, not by the ECO. Per-stage resolution produces inconsistent values (`FxPrePlace_HFSNET_N` in PP vs `FxOptCts_M` in Route) that FM cannot prove equivalent. `1'b0` is consistent and trivially provable.
+Forcing `1'b0` in P&R isolates the new ECO DFF from the scan chain — FM sees a cone divergence between the new DFF's scan inputs and the rest of the design's scan chain (DFF appears as DFF0X). Use the same per-stage values as a neighboring DFF in the same module scope (real scan-chain bridge wires; per-stage names like `FxPrePlace_HFSNET_*` in PP and `dftopt*` / `ECO_*_SI_in` in Route are EXPECTED — they're the actual scan signals).
 
 ```python
-# SE/SI: UNCONDITIONAL 1'b0 for ALL stages — no if, no conditions, no exceptions
 for scan_pin in ('SE', 'SI'):
-    for stage in ('Synthesize', 'PrePlace', 'Route'):
-        port_connections_per_stage[stage][scan_pin] = "1'b0"
-    log(f"SCAN_PIN_FORCED: {scan_pin} = 1'b0 in ALL stages — unconditional, overrides any studier or P&R value")
-# Do NOT check what studier had. Do NOT search PreEco neighbours. Do NOT pick up HFS/CTS nets.
-# This override runs regardless of what eco_netlist_studier Phase 0b-STAGE-NETS resolved.
+    port_connections_per_stage['Synthesize'][scan_pin] = "1'b0"   # RTL-clean
+    for stage in ('PrePlace', 'Route'):
+        # Find a neighbor DFF in the same module scope; copy its per-stage scan_pin
+        port_connections_per_stage[stage][scan_pin] = neighbor_dff_per_stage(stage, scan_pin)
 ```
 
 **GAP-CTS-1 — Verify CP net exists in Route before recording:**

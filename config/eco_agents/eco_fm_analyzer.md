@@ -141,7 +141,7 @@ If the FE-LINK-7 module path contains `/TECH_LIB_DB/` (or similar) rather than a
 
 Pattern: `Error: The pin '<pin>' of '.../eco_<jira>_<seq>' has no corresponding port on '/TECH_LIB_DB/<WRONG_CELL_TYPE>'. (FE-LINK-7)`
 
-**Fix:** Re-search the PreEco netlist for a cell that (a) implements `gate_function` AND (b) has the port names in `port_connections`. Set `action: fix_cell_type` and `failure_mode: ABORT_CELL_TYPE`:
+**Fix:** Re-search the PreEco netlist for a cell that (a) implements `gate_function` AND (b) has the port names in `port_connections`. **Verify the candidate via `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py` before recording — never write a `False` choice.** Set `action: fix_cell_type` and `failure_mode: ABORT_CELL_TYPE`:
 ```json
 {
   "stage": "ALL",
@@ -344,6 +344,33 @@ For `new_logic_gate` entries in eco_applied where the change is a `wire_swap` ta
 
 ---
 
+### Check T — Compound-cell truth-table mismatch (4-input AOI/OAI/AO/OA family)
+
+For `new_logic_gate` entries whose `cell_type` matches `^(I?AOI|I?OAI|I?AO|I?OA)\d+` (compound 4-input cells: AOI21/22/211, OAI21/22, AO21/22, OA21/22, IAOI21, IOAI21, etc.), and whose output net (Z/ZN/ZN1) appears in `__failing_points.rpt` after Mode A polarity check passes:
+
+**Step T1:** Build expected boolean function `f_expected` from RTL diff `d_input_gate_chain` for this DFF's d-input.
+
+**Step T2:** Look up the library truth table for `wrong_cell_type` (e.g., AOI21 = `~((A1·A2)+B)`, OAI21 = `~((A1+A2)·B)`, AO21 = `(A1·A2)+B`, OA21 = `(A1+A2)·B`, with `I` prefix adding output inversion).
+
+**Step T3:** Enumerate same-family alternatives (AOI21↔OAI21, AO21↔OA21, with/without I prefix, swap A/B groupings). Pick the cell whose truth table equals `f_expected` under any input-permutation of the existing port_connections.
+
+**Step T4:** Set `failure_mode: "T"`, `action: "swap_compound_cell"`:
+```json
+{
+  "action": "swap_compound_cell",
+  "instance_name": "<inst>",
+  "wrong_cell_type": "<cell that was used>",
+  "correct_cell_type": "<cell whose truth table matches RTL>",
+  "port_remap": {"A1": "B", "A2": "A1", "B": "A2"},
+  "rationale": "RTL expects f=<f_expected>; <wrong> computes <f_wrong>; <correct> with port_remap computes <f_expected>",
+  "eco_preeco_study_update": {"action": "swap_compound_cell", "gate_instance": "<eco_jira_seq>", "new_cell_type": "<correct>", "port_remap": {...}}
+}
+```
+
+If no same-family cell + permutation matches → escalate to Mode F with action `try_structural_decomposition` (the studier rebuilds the d_input_gate_chain using simpler 2/3-input primitives whose truth tables compose to the correct boolean). Never emit `manual_only` per the master rule above.
+
+---
+
 ## STEP 3 — Mode Classification
 
 Use Step 2 results to classify:
@@ -356,6 +383,8 @@ Use Step 2 results to classify:
 | Failing DFF = RTL target register (Check C) | A or C | ECO for that register didn't work |
 | Failing DFF ≠ any RTL target (Check C) | B or E | Wrong cell rewired OR pre-existing |
 | Gate polarity wrong (Check D) | A | Replace gate with correct type |
+| Compound 4-input cell (AOI/OAI/AO/OA family) output is failing point AND polarity (Check D) passes (Check T) | T | Swap to truth-table-matching cell in same family (with port_remap if needed) |
+| Failing DFF impl=DFF0X AND analyze_points reports `<port>[<bit>]` undriven on ref AND propagates X on impl, where `<port>` is the parent UNCONNECTED rename target | I | Emit second port_connection inside child module to wire `<port>[<bit>]` to its internal slot |
 | ECO-inserted DFF is DFF0X AND gate input has no direct primitive driver (Check E) | H | Gate input driven only through hierarchical port bus |
 | `d_input_decompose_failed` in RTL diff | F | See Mode F below |
 | `FmEqvEcoRouteVsEcoPrePlace` PASS, `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL ≥ 10, no failing DFF matches target_register | G | Structural HFS mismatch — attempt fix_named_wire using cell_name_per_stage; if P&R cell found → use it; if absent → try move_gate_to_submodule; if still stuck → use conservative_constant (1'b0) as last resort |
@@ -378,6 +407,18 @@ Use Step 2 results to classify:
    - If neither flag → signal is a genuine missing port. Fix: `force_port_decl` + `force_reapply`.
 
 5. **Module output port cascade (GAP-16):** When 3000+ failures cascade from one module scope, check if `<old_token>` is a module output port in `port_promotion` or `and_term` RTL diff changes. If yes, the `and_term` gate must drive the port name directly ("Module Port Direct Gating"). Do NOT propose an internal `<old_token>_orig` intermediate wire — this creates P&R cell type mismatches. Set `and_term_strategy: "module_port_direct_gating"` in revised_changes.
+
+### Mode I — Child output port internally undriven (two-level UNCONNECTED rename)
+
+Parent renamed `UNCONNECTED_N → n_eco_*` at child instance bus bit, but the child's **own** output port bit is also undriven internally — FM `analyze_points` reports `<port>[<bit>]` undriven on ref + propagates X on impl. Recipe: scan the child module body for a sub-instance bus where bit `[bit]` is also `UNCONNECTED_M`; emit a second `port_connection` entry with `module_name=<child>`, `bus_bit_index=<bit>`, `net_name=<port>[<bit>]`. The round-N studier merges this entry; eco_passes_2_4's existing `_apply_bus_rename` applies it. No new applier code needed.
+
+### Mode T — Compound-cell truth-table mismatch
+
+Inserted compound 4-input cell (AOI/OAI/AO/OA family) computes the wrong boolean function — Check D polarity passed but FM still reports the gate output as a failing compare point because the cell-family choice is wrong (e.g., AOI21 instantiated where OAI21 was needed, or A1/A2/B groupings swapped).
+
+**Recipe:** Run Check T to pick the truth-table-matching alternative. Emit `swap_compound_cell` action with `correct_cell_type` and (if input groups need regrouping) `port_remap`. The round-N studier overrides `cell_type` and re-permutes `port_connections` per `port_remap` for all 3 stages. Do NOT change `gate_function` text — only `cell_type` + port mapping.
+
+**When to give up:** If no single-cell same-family alternative matches `f_expected` under any input-permutation, the function needs decomposition into 2+ cells — escalate to Mode F (`d_input_decompose_failed`) so eco_netlist_studier rebuilds the chain with simpler primitives.
 
 ### Mode B — Regression: new failing points not in RTL diff
 
@@ -868,7 +909,7 @@ Confirm: (1) driver cell AND all ancestors of the signal have 0 occurrences in f
   "revised_changes": [
     {
       "stage": "Synthesize|PrePlace|Route|ALL",
-      "action": "rewire|insert_cell|new_logic_dff|new_logic_gate|revert_and_rewire|exclude|force_port_decl|fix_named_wire|structural_trace|manual_only|update_gate_function|rerun_fenets|scan_chain_tune|fix_cell_type",
+      "action": "rewire|insert_cell|new_logic_dff|new_logic_gate|revert_and_rewire|exclude|force_port_decl|fix_named_wire|structural_trace|update_gate_function|rerun_fenets|scan_chain_tune|fix_cell_type|swap_compound_cell|tune_file_update|conservative_constant|try_structural_insertion|try_alternative_pivot|invert_cmux_constants|cascade_verified_skip",
       "cell_name": "<cell>",
       "pin": "<pin>",
       "old_net": "<old>",
