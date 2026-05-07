@@ -101,13 +101,19 @@ def main():
     if not marker.exists():
         issues.append(f"MEDIUM: eco_expand_chains_marker.txt not found — eco_expand_chains.py may not have run")
 
-    # ── 8. Each rewire entry has old_net and new_net ─────────────────────────
+    # ── 8. Each rewire entry has old_net, new_net, AND a resolvable cell_name ─
     for stage in ['Synthesize']:
         for e in study.get(stage, []):
             if e.get('change_type') != 'rewire':
                 continue
             if not e.get('old_net') or not e.get('new_net'):
                 issues.append(f"HIGH: rewire entry {e.get('cell_name','?')} missing old_net or new_net")
+            cell = (e.get('cell_name')
+                    or (e.get('per_stage_cell_name') or {}).get(stage)
+                    or (e.get('cell_name_per_stage') or {}).get(stage)
+                    or (e.get('mux_cell_instance_per_stage') or {}).get(stage))
+            if not cell:
+                issues.append(f"HIGH: rewire entry pin={e.get('pin','?')} {e.get('old_net')}→{e.get('new_net')} has no cell_name in any known field (checked: cell_name, per_stage_cell_name, cell_name_per_stage, mux_cell_instance_per_stage)")
 
     # ── 9. Every n_eco_* input net must have a driver in some entry's output ─
     OUT_PINS = {'Z','ZN','ZN1','Q','QN','CO'}
@@ -123,6 +129,26 @@ def main():
                     continue
                 if net.startswith('n_eco_') and net not in driven:
                     issues.append(f"CRITICAL: {e.get('instance_name','?')}.{pin}={net} in {stage} — undriven ECO net (no entry's Z/ZN/Q drives it)")
+
+    # ── 10. Stale-reference guard: when a port_connection renames net A→B,
+    # no other entry's input pin may still reference A (becomes stale post-Step 4)
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        renames = {}  # old_net → new_net
+        for e in study.get(stage, []):
+            nb = e.get('net_name_before')
+            na = e.get('net_name_after')
+            if isinstance(nb, dict):
+                nb = nb.get(stage)
+            if nb and na:
+                renames[nb] = na
+        for e in study.get(stage, []):
+            if not e.get('confirmed', True):
+                continue
+            for pin, net in (e.get('port_connections') or {}).items():
+                if pin in OUT_PINS or not isinstance(net, str):
+                    continue
+                if net in renames:
+                    issues.append(f"HIGH: {e.get('instance_name','?')}.{pin}={net} in {stage} — net is being renamed to {renames[net]} by another entry; update this reference or skip the rename")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

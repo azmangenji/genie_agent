@@ -143,12 +143,105 @@ def apply_port_declaration(lines, entry):
 
 # ── Pass 3: port_connection ───────────────────────────────────────────────────
 
-def apply_port_connection(lines, entry, gz_path=None):
-    """Add .port(net) to submodule instance block. Returns (lines, status, reason)."""
+def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bus_bit_index=None):
+    """Replace a single net in .port_name({...}) bus concatenation.
+    Two modes:
+      (a) old_net given → scope-search inside .port_name(...) region, replace by name.
+      (b) old_net=None + bus_bit_index given → parse the {...} concat, identify the
+          net at MSB-first position (width - 1 - bus_bit_index), replace it.
+    """
+    # Find instance start
+    inst_start = -1
+    if gz_path:
+        inst_start = grep_lineno(rf'\b{inst_name}\s*\(', gz_path)
+    if inst_start < 0:
+        for i, line in enumerate(lines):
+            if re.search(rf'\b{re.escape(inst_name)}\s*\(', line):
+                inst_start = i; break
+    if inst_start < 0:
+        return lines, 'SKIPPED', f'bus_rename: instance {inst_name} not found'
+    # Find instance close (depth track)
+    depth, inst_close = 0, -1
+    for i in range(inst_start, len(lines)):
+        for ch in lines[i].split('//')[0]:
+            if ch == '(': depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0: inst_close = i; break
+        if inst_close >= 0: break
+    if inst_close < 0:
+        return lines, 'SKIPPED', f'bus_rename: cannot find close of {inst_name}'
+
+    # Mode (a): old_net given → simple scoped replace
+    if old_net:
+        in_port = False
+        for i in range(inst_start, inst_close + 1):
+            if not in_port and re.search(rf'\.\s*{re.escape(port_name)}\s*\(', lines[i]):
+                in_port = True
+            if in_port and re.search(rf'\b{re.escape(old_net)}\b', lines[i]):
+                lines[i] = re.sub(rf'\b{re.escape(old_net)}\b', new_net, lines[i], count=1)
+                return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name} {old_net}→{new_net}'
+        return lines, 'SKIPPED', f'bus_rename: {old_net} not found in {inst_name}.{port_name}'
+
+    # Mode (b): bus_bit_index → parse {...} concat by position
+    if bus_bit_index is None:
+        return lines, 'SKIPPED', f'bus_rename: neither old_net nor bus_bit_index given'
+    # Locate `.port_name(` line
+    port_pat = re.compile(rf'\.\s*{re.escape(port_name)}\s*\(')
+    open_line = -1
+    for i in range(inst_start, inst_close + 1):
+        if port_pat.search(lines[i]):
+            open_line = i; break
+    if open_line < 0:
+        return lines, 'SKIPPED', f'bus_rename: .{port_name}( not found in {inst_name}'
+    # Find matching `}` closing the {...} concat (depth-aware)
+    end_line, br_depth, started = -1, 0, False
+    for i in range(open_line, inst_close + 1):
+        for ch in lines[i]:
+            if ch == '{': started = True; br_depth += 1
+            elif ch == '}' and started:
+                br_depth -= 1
+                if br_depth == 0: end_line = i; break
+        if end_line >= 0: break
+    if end_line < 0:
+        return lines, 'SKIPPED', f'bus_rename: {inst_name}.{port_name} not a {{}} concat'
+    # Extract content between { and matching }
+    full = ''.join(lines[open_line:end_line + 1])
+    m = re.search(r'\{([^{}]*)\}', full, re.DOTALL)
+    if not m:
+        return lines, 'SKIPPED', f'bus_rename: cannot parse {{}} content for {inst_name}.{port_name}'
+    elements = [e.strip() for e in m.group(1).split(',')]
+    width = len(elements)
+    pos = width - 1 - bus_bit_index  # MSB-first
+    if pos < 0 or pos >= width:
+        return lines, 'SKIPPED', f'bus_rename: bit_index {bus_bit_index} out of range (width={width})'
+    old_at_pos = elements[pos]
+    elements[pos] = new_net
+    new_full = full.replace(m.group(0), '{' + ', '.join(elements) + '}', 1)
+    lines[open_line:end_line + 1] = new_full.splitlines(keepends=True)
+    return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name}[{bus_bit_index}] {old_at_pos}→{new_net}'
+
+
+def apply_port_connection(lines, entry, gz_path=None, stage='Synthesize'):
+    """Add .port(net) to submodule instance block, OR perform bus-position rename."""
     parent_mod  = entry.get('module_name', '') or entry.get('parent_module', '')
     inst_name   = entry.get('instance_name', '') or entry.get('submodule_instance', '')
     port_name   = entry.get('port_name', '')     or entry.get('new_token', '')
-    net_name    = entry.get('net_name', '')      or entry.get('flat_net_name', '')
+
+    # Bus-position rename branch — fires when entry has any of:
+    #   (a) net_name_before (per-stage map) + net_name_after  — original schema
+    #   (b) bus_bit_index — newer schema; old net derived by parsing the {} concat
+    nb = entry.get('net_name_before')
+    na = entry.get('net_name_after')
+    bus_bit = entry.get('bus_bit_index')
+    if (nb is not None and na) or bus_bit is not None:
+        new_net = na or entry.get('net_name', '') or entry.get('flat_net_name', '')
+        old_net = (nb.get(stage) if isinstance(nb, dict) else nb) if nb is not None else None
+        if not all([inst_name, port_name, new_net]):
+            return lines, 'SKIPPED', f'bus_rename missing inst/port/new (stage={stage})'
+        return _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bus_bit)
+
+    net_name = entry.get('net_name', '') or entry.get('flat_net_name', '')
 
     if not all([inst_name, port_name, net_name]):
         return lines, 'SKIPPED', 'missing instance_name/port_name/net_name'
@@ -196,14 +289,17 @@ def apply_port_connection(lines, entry, gz_path=None):
     if re.search(rf'\.\s*{re.escape(port_name)}\s*\(', inst_block):
         if re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*{re.escape(net_name)}\s*\)', inst_block):
             return lines, 'ALREADY_APPLIED', f'.{port_name}({net_name}) already in {inst_name}'
-        else:
-            # Port exists but different net — rewire it
-            lines[inst_close] = re.sub(
-                rf'\.\s*{re.escape(port_name)}\s*\([^)]*\)',
-                f'.{port_name}( {net_name} )',
-                lines[inst_close]
-            )
-            return lines, 'APPLIED', f'rewired existing .{port_name} to ({net_name}) in {inst_name}'
+        # Refuse to "rewire" a bus concat — would corrupt {a,b,c} into single net.
+        # Bus-position renames belong on the _apply_bus_rename path (set bus_bit_index in study JSON).
+        if re.search(rf'\.\s*{re.escape(port_name)}\s*\(\s*\{{', inst_block):
+            return lines, 'SKIPPED', f'.{port_name} on {inst_name} is a {{}} bus concat — entry must set bus_bit_index for _apply_bus_rename'
+        # Port exists with a single-net value — safe to rewire it
+        lines[inst_close] = re.sub(
+            rf'\.\s*{re.escape(port_name)}\s*\([^)]*\)',
+            f'.{port_name}( {net_name} )',
+            lines[inst_close]
+        )
+        return lines, 'APPLIED', f'rewired existing .{port_name} to ({net_name}) in {inst_name}'
 
     # Insert new port as a separate line before inst_close.
     # Ensure the previous non-empty port line ends with ',' (add if missing).
@@ -227,8 +323,10 @@ def apply_port_connection(lines, entry, gz_path=None):
 
 def apply_rewire(lines, entry, stage='Synthesize'):
     """Change pin connection in cell instance block. Returns (lines, status, reason)."""
-    # Use per-stage cell name if available (handles P&R renamed cells)
-    per_stage = entry.get('per_stage_cell_name', {}) or entry.get('cell_name_per_stage', {})
+    # Use per-stage cell name if available (handles P&R renamed cells).
+    # Schema-resilient: try canonical → variants → mux-specific naming.
+    per_stage = (entry.get('per_stage_cell_name') or entry.get('cell_name_per_stage')
+                 or entry.get('mux_cell_instance_per_stage') or {})
     cell_name = per_stage.get(stage, '') or entry.get('cell_name', '')
     # Use per-stage pin name if available (e.g., ZN in Synthesize vs ZN1 in PrePlace/Route)
     # Support both field name conventions: per_stage_pin and pin_per_stage
@@ -343,10 +441,10 @@ def main():
     size_mb = file_size // 1024 // 1024
     print(f"Loading {args.stage} netlist ({size_mb}MB compressed)...")
 
-    # Memory guard: skip full load for files > 50MB compressed (P&R stages are typically 60-70MB)
-    # Port_declaration entries are applied by eco_perl_spec.py Perl pass for these stages.
-    # Port_connection and rewire entries are handled by eco_applier agent (Pass 3/4).
-    if size_mb > 50:
+    # Memory guard: defer to agent only for very large files (>200MB compressed).
+    # Below that threshold the script handles all 3 passes directly — important
+    # for bus-position renames (REGCMD-style) which the agent often corrupts.
+    if size_mb > 200:
         print(f"  File too large ({size_mb}MB) for in-memory processing — skipping Passes 3/4.")
         print(f"  Port_declarations were handled by eco_perl_spec.py Perl pass.")
         print(f"  Port_connections and rewires will be handled by eco_applier agent.")
@@ -377,7 +475,7 @@ def main():
         if ct in ('port_declaration', 'port_promotion'):
             lines, st, reason = apply_port_declaration(lines, e)
         elif ct == 'port_connection':
-            lines, st, reason = apply_port_connection(lines, e, gz_path=posteco)
+            lines, st, reason = apply_port_connection(lines, e, gz_path=posteco, stage=args.stage)
         elif ct == 'rewire':
             lines, st, reason = apply_rewire(lines, e, stage=args.stage)
         else:

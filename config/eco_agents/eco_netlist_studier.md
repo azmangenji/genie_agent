@@ -276,7 +276,7 @@ Fall back — bake reset into D-input gate chain. Set `reset_pin_used: false`. L
 **MANDATORY chain creation OR extension when `reset_pin_used: false`:** rtl_diff_analyzer Step E removes the reset term from `d_input_gate_chain` so it can be baked in here. The studier MUST guarantee the DFF .D is driven by reset-gated logic. Two cases:
 
 - **Step 1 chain is non-empty** → append the reset-gating tail (steps below).
-- **Step 1 chain is empty** (`d_input_gate_chain: []` with `d_input_resolved_net` set, e.g. for direct-wire D-inputs like `REG_X[i]`) → CREATE the chain from scratch using `d_input_resolved_net` as the source. Do NOT wire DFF `.D` to a placeholder net like `n_eco_<jira>_<reg>` with no driver — that produces an undriven D pin and FM fails.
+- **Step 1 chain is empty** (`d_input_gate_chain: []` with `d_input_resolved_net` set, e.g. for direct-wire D-inputs like `REG_X[i]`) → CREATE the chain from scratch using `d_input_resolved_net` as the source. Do NOT wire DFF `.D` to a placeholder net like `n_eco_<jira>_<reg>` with no driver — that produces an undriven D pin and FM fails. **Use `d_input_resolved_net` (Synthesize) and the per-stage UNCONNECTED variants directly as the AND2 source input — do NOT invent a fresh `n_eco_*` placeholder for it.**
 
 1. Let `<chain_tail>` = current final gate output (`d_input_net` from Step 1, e.g. `n_eco_<jira>_d<N>`).
 2. Append two new gates with the next available `eco_<jira>_d<seq>` indices:

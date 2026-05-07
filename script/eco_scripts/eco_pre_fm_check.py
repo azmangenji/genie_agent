@@ -225,6 +225,31 @@ def check_cells_in_netlist(applied, ref_dir):
     return failures
 
 
+def check_undriven_eco_nets(ref_dir):
+    """
+    FAIL if any n_eco_* net in PostEco netlist has < 2 occurrences. A driven net
+    has at least one driver reference (cell output / wire decl / port concat slot)
+    AND at least one consumer reference. Fewer than 2 → likely no driver. Catches
+    bus-rename failures (REGCMD-style) where eco_passes_2_4 didn't apply the rename.
+    """
+    failures = []
+    NET_RE = re.compile(r'\b(n_eco_[A-Za-z0-9_]+)\b')
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        from collections import Counter
+        counts = Counter(NET_RE.findall(text))
+        for net, c in sorted(counts.items()):
+            if c < 2:
+                failures.append(f'[UNDRIVEN_NET] {stage}: {net} appears only {c} time(s) — no driver (bus-rename or driver insertion likely failed)')
+    return failures
+
+
 def check_eco_cell_counts(applied):
     """
     WARN (not FAIL) if ECO cell counts differ significantly across stages.
@@ -312,6 +337,13 @@ def main():
     # Catches: eco_perl_spec marks INSERTED but Perl fails to find module (ghost insert)
     fails = check_cells_in_netlist(applied, args.ref_dir)
     results['cells_in_netlist'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 8 — Every n_eco_* net in PostEco netlist must have ≥ 2 references.
+    # Catches bus-rename failures where the rename was specified in study JSON
+    # but eco_passes_2_4.py didn't apply it to the netlist (driver missing).
+    fails = check_undriven_eco_nets(args.ref_dir)
+    results['undriven_eco_nets'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0
