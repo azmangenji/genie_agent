@@ -273,7 +273,10 @@ Then call `find_reset_capable_dff(module_scope_lines, reset_signal)`.
 **If `None` returned (no existing DFF in scope uses reset_signal):**
 Fall back — bake reset into D-input gate chain. Set `reset_pin_used: false`. Log: `"RESET_PIN_FALLBACK: no DFF found in scope <module> using <reset_signal> — baking reset into D-input (GAP-CTS-2 risk in Route)"`.
 
-**MANDATORY chain extension when `reset_pin_used: false`:** rtl_diff_analyzer Step E removes the reset term from `d_input_gate_chain` so it can be baked in here. The studier MUST append the reset-gating tail before the DFF .D pin — never connect `.D` to a chain output that omits the reset:
+**MANDATORY chain creation OR extension when `reset_pin_used: false`:** rtl_diff_analyzer Step E removes the reset term from `d_input_gate_chain` so it can be baked in here. The studier MUST guarantee the DFF .D is driven by reset-gated logic. Two cases:
+
+- **Step 1 chain is non-empty** → append the reset-gating tail (steps below).
+- **Step 1 chain is empty** (`d_input_gate_chain: []` with `d_input_resolved_net` set, e.g. for direct-wire D-inputs like `REG_X[i]`) → CREATE the chain from scratch using `d_input_resolved_net` as the source. Do NOT wire DFF `.D` to a placeholder net like `n_eco_<jira>_<reg>` with no driver — that produces an undriven D pin and FM fails.
 
 1. Let `<chain_tail>` = current final gate output (`d_input_net` from Step 1, e.g. `n_eco_<jira>_d<N>`).
 2. Append two new gates with the next available `eco_<jira>_d<seq>` indices:

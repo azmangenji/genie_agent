@@ -42,7 +42,7 @@ For each diff hunk, classify as ONE of:
 |------|-------------|---------|
 | `wire_swap` | Existing signal replaced by different signal | `old_sig` → `new_sig` in expression |
 | `and_term` | New AND condition added to existing expression | `A & ~B` → `A & ~B & ~C` |
-| `new_port` | New `input`/`output` port declaration added | `input new_port_name` |
+| `new_port` | New `input`/`output` port declaration added — **MUST set `declaration_type` ∈ `{input, output, wire}`**, never null. `wire` is for parent-scope connector signals (no port-list addition). If the same `(module_name, new_token)` already appears as a `wire`-only declaration in the parent tile, do NOT emit a duplicate `new_port` entry. | `input new_port_name` |
 | `port_promotion` | Existing local `reg` promoted to `output reg` | `reg X` → `output reg X` |
 | `new_logic` | New wire/always/assign/instance added | New always block |
 | `port_connection` | Port connection added on module instance | `.new_port(net)` added |
@@ -533,6 +533,8 @@ grep -rn "define.*CONST_NAME" <REF_DIR>/data/SynRtl/*.v <REF_DIR>/data/SynRtl/*.
 Replace each macro with its numeric value before decomposing.
 
 ### E3 — Decompose into gate chain (bottom-up)
+
+**If the D-input expression has no boolean operators after reset removal** (it is a single net or bit-select like `REG_X[i]`) → emit `d_input_gate_chain: []` and record the source net in `d_input_resolved_net`. Do NOT fabricate a `WIRE` / `BUF` pseudo-entry — `gate_function: "WIRE"` is not a real cell and breaks downstream agents.
 
 Parse the expression recursively. For each sub-expression, assign a gate type:
 

@@ -141,6 +141,50 @@ def main():
 
     rtl_diff = json.load(open(args.rtl_diff))
     results, overall_pass = [], True
+
+    # Phantom-cell scan: 'WIRE'/'BUF' as gate_function or cell_type is not a real
+    # library cell — emit empty chain instead. Caught in any chain, any change_type.
+    phantom = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        for fld in ('d_input_gate_chain', 'new_condition_gate_chain'):
+            for g in (c.get(fld) or []):
+                if g.get('gate_function') in ('WIRE',) or g.get('cell_type') in ('WIRE',):
+                    phantom.append(f'changes[{idx}].{fld} seq={g.get("seq")}: phantom WIRE pseudo-cell — emit empty chain')
+    if phantom:
+        overall_pass = False
+
+    # new_port hygiene: declaration_type must be set, and (module, signal) must
+    # not appear as new_port more than once (catches misclassified wire decls).
+    decl_issues, seen = [], {}
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'new_port':
+            continue
+        dt = c.get('declaration_type')
+        if dt not in ('input', 'output', 'wire'):
+            decl_issues.append(f'changes[{idx}] new_port {c.get("new_token")!r} in {c.get("module_name")!r}: declaration_type={dt!r} (must be input/output/wire)')
+        key = (c.get('module_name'), c.get('new_token'))
+        if key in seen:
+            decl_issues.append(f'changes[{idx}] duplicate new_port for module={key[0]!r} signal={key[1]!r} (first at index {seen[key]})')
+        else:
+            seen[key] = idx
+    if decl_issues:
+        overall_pass = False
+
+    # port_connection completeness: every entry must have inst/port/net populated
+    # under SOME field name (canonical or alternative). Catches incomplete entries
+    # that would silently SKIP in eco_passes_2_4.py.
+    pc_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'port_connection':
+            continue
+        inst = c.get('instance_name') or c.get('submodule_instance')
+        port = c.get('port_name')     or c.get('new_token')
+        net  = c.get('net_name')      or c.get('flat_net_name')
+        if not all([inst, port, net]):
+            pc_issues.append(f'changes[{idx}] port_connection in {c.get("module_name")!r}: missing inst={inst!r}/port={port!r}/net={net!r}')
+    if pc_issues:
+        overall_pass = False
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'wire_swap' or c.get('mux_select_polarity_pending'):
             continue
@@ -158,17 +202,29 @@ def main():
 
     out = {
         'rtl_diff': args.rtl_diff,
-        'wire_swap_count': len(results),
-        'overall_pass':    overall_pass,
-        'entries':         results,
+        'wire_swap_count':       len(results),
+        'phantom_wire_count':    len(phantom),
+        'phantom_wire_issues':   phantom,
+        'new_port_issue_count':  len(decl_issues),
+        'new_port_issues':       decl_issues,
+        'port_conn_issue_count': len(pc_issues),
+        'port_conn_issues':      pc_issues,
+        'overall_pass':          overall_pass,
+        'entries':               results,
     }
     with open(args.output, 'w') as f:
         json.dump(out, f, indent=2)
 
     print('ECO_SCRIPT_LAUNCHED: eco_mux_polarity_check.py')
     print(f'  rtl_diff: {args.rtl_diff}')
-    print(f'  entries:  {len(results)}')
+    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}')
     print(f'  overall:  {"PASS" if overall_pass else "FAIL"}')
+    for p in phantom:
+        print(f'    - {p}')
+    for p in decl_issues:
+        print(f'    - {p}')
+    for p in pc_issues:
+        print(f'    - {p}')
     for r in results:
         if r['issues']:
             print(f'  FAIL [{r["target_register"]}] gate={r["gate_function"]} branch={r["branch_true_on"]}')

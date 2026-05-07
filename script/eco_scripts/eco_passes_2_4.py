@@ -146,9 +146,9 @@ def apply_port_declaration(lines, entry):
 def apply_port_connection(lines, entry, gz_path=None):
     """Add .port(net) to submodule instance block. Returns (lines, status, reason)."""
     parent_mod  = entry.get('module_name', '') or entry.get('parent_module', '')
-    inst_name   = entry.get('instance_name', '')
-    port_name   = entry.get('port_name', '')
-    net_name    = entry.get('net_name', '')
+    inst_name   = entry.get('instance_name', '') or entry.get('submodule_instance', '')
+    port_name   = entry.get('port_name', '')     or entry.get('new_token', '')
+    net_name    = entry.get('net_name', '')      or entry.get('flat_net_name', '')
 
     if not all([inst_name, port_name, net_name]):
         return lines, 'SKIPPED', 'missing instance_name/port_name/net_name'

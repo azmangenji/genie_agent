@@ -109,6 +109,21 @@ def main():
             if not e.get('old_net') or not e.get('new_net'):
                 issues.append(f"HIGH: rewire entry {e.get('cell_name','?')} missing old_net or new_net")
 
+    # ── 9. Every n_eco_* input net must have a driver in some entry's output ─
+    OUT_PINS = {'Z','ZN','ZN1','Q','QN','CO'}
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        driven = {n for e in study.get(stage, [])
+                    for p, n in (e.get('port_connections') or {}).items()
+                    if p in OUT_PINS and isinstance(n, str)}
+        for e in study.get(stage, []):
+            if not e.get('confirmed', True):
+                continue
+            for pin, net in (e.get('port_connections') or {}).items():
+                if pin in OUT_PINS or not isinstance(net, str):
+                    continue
+                if net.startswith('n_eco_') and net not in driven:
+                    issues.append(f"CRITICAL: {e.get('instance_name','?')}.{pin}={net} in {stage} — undriven ECO net (no entry's Z/ZN/Q drives it)")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
