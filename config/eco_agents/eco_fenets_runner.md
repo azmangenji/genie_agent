@@ -73,6 +73,22 @@ for n in nets_to_query:
 
 `valid_nets` is the comprehensive query batch sent to FM.
 
+### STEP A1 — Sanitize the query plan before submission (MANDATORY)
+
+Run the duplicate-scope collapser on the derived list — this single rule is the only one delegated to a script. The other quality issues are agent responsibilities (rules below).
+
+```bash
+python3 script/eco_scripts/eco_fenets_sanitize_queries.py \
+    --queries-in   data/<TAG>_eco_fenets_queries_raw.json \
+    --queries-out  data/<TAG>_eco_fenets_queries.json
+```
+
+**Agent quality rules — apply BEFORE writing `_queries_raw.json`:**
+
+1. **Skip `UNCONNECTED_<digits>` placeholders.** They are Verilog markers for undriven nets, never real signals — every query against one returns FM-036. The chain-input or Mode-I source must be traced to the real RTL signal first; if you cannot, drop the query and flag the change for studier-side resolution.
+2. **Validate every leaf signal name against PreEco SynRtl before queueing.** A quick `grep -wRn "<signal>" <REF_DIR>/data/PreEco/SynRtl/` is enough — if the bare name doesn't appear anywhere in the RTL, you hallucinated the port (e.g. invented a `BEQ_ARB_` prefix). Drop it; do not waste FM cycles on retries.
+3. **Expand bus signals into per-bit queries.** When a chain input references `Sig[N]` or the change carries a `bus_bit_index`, queue one query per `<scope>/<sig>_<N>_` instead of the bare bus name. FM resolves bus bits, not the bare base.
+
 ### STEP A2 — Document DFF insertions that bypass FM
 
 For each `new_logic` (DFF insertion) where the target register itself doesn't exist in PreEco, add to the Step 2 RPT:
