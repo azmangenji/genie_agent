@@ -485,7 +485,14 @@ def check_eco_input_drivers(study_path, ref_dir):
         except Exception:
             continue
         text = strip_verilog_comments(text)
-        # All driven nets in the netlist: cell output pins, wire decls, port lists
+        # All driven nets in the netlist. A wire is "driven" if it has any of:
+        #   - cell output pin (.Z/.ZN/.Q/.CO/.Q1..Q8)
+        #   - wire/input declaration in some module body
+        #   - appears as the value of ANY port_connection (`.port(wire)` or
+        #     `.port({...wire...})`) — submodule output ports drive the net
+        #     even though we don't know port direction without full elab.
+        # The last case prevents false-positives for nets driven via submodule
+        # output port concats (the engineer's Mode I pattern, etc.).
         driven = set()
         for m in re.finditer(r'\.\s*(?:Z|ZN|ZN1|Q|QN|CO|Q1|Q2|Q3|Q4|Q5|Q6|Q7|Q8)\s*\(\s*(\w+)', text):
             driven.add(m.group(1))
@@ -493,6 +500,13 @@ def check_eco_input_drivers(study_path, ref_dir):
             driven.add(m.group(1))
         for m in re.finditer(r'^\s*(?:input|inout)\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', text, re.MULTILINE):
             driven.add(m.group(1))
+        # Wires connected to ANY port (could be submodule output) — single net form
+        for m in re.finditer(r'\.\s*\w+\s*\(\s*([A-Za-z_][\w]*)\s*\)', text):
+            driven.add(m.group(1))
+        # Wires inside bus-concat port connections: `.port({a, b, c})`
+        for m in re.finditer(r'\.\s*\w+\s*\(\s*\{([^{}]+)\}\s*\)', text):
+            for w in re.findall(r'[A-Za-z_]\w*', m.group(1)):
+                driven.add(w)
         for entry in study.get(stage, []):
             if entry.get('change_type') not in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
                 continue

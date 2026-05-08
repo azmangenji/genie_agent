@@ -249,21 +249,26 @@ def main():
                     # Both unknown → uncovered cell; warn so the library JSON can be extended
                     issues.append(f"MEDIUM: ECO {inst} cell_type={cell!r} (family={_ett.family_of(cell)!r}) and gate_function={fn!r} not covered — cannot verify functional correctness. Add to script/eco_scripts/cell_libraries/<your_lib>.json.")
 
-    # ── 15. Scan-bridge SE/SI for new ECO DFFs in P&R: in PrePlace/Route, SE/SI
-    # should connect to neighboring DFFs' real scan-chain wires (per-stage names)
-    # NOT '1'b0'. Tying to constants makes the new DFF an isolated island that
-    # FM can't reconcile against the existing scan chain → cone divergence.
-    # Synthesize stage = 1'b0 is correct (RTL-clean view).
+    # ── 15. Scan-bridge SE/SI for new ECO DFFs in P&R: WARN when SE/SI is a
+    # constant in P&R stages. Constants may pass FM if the DFF's clock cone
+    # doesn't cross scan_cntl logic (e.g. CP=wrp_clk_*), but they fail when
+    # CP touches the main clock domain (CP=UCLK*) — the new DFF appears as a
+    # scan-isolated island. MEDIUM (not CRITICAL) because the right answer
+    # depends on the DFF's clock cone depth, which the validator can't fully
+    # determine without simulating FM's cone analysis.
     for stage in ['PrePlace', 'Route']:
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'): continue
             if not e.get('confirmed', True): continue
             inst = e.get('instance_name', '?')
             pcs = (e.get('port_connections_per_stage') or {}).get(stage) or e.get('port_connections') or {}
+            cp  = pcs.get('CP', '')
             for pin in ('SE', 'SI'):
                 v = pcs.get(pin)
                 if isinstance(v, str) and v.strip() in ("1'b0", "1'b1", "0", "1"):
-                    issues.append(f"HIGH: ECO DFF {inst}.{pin} in {stage} = {v!r} (constant) — should hook to a neighboring DFF's per-stage {pin} net for scan-chain consistency. Look up an existing DFF in the same module scope and copy its {pin} value for this stage.")
+                    risk = ("HIGH-RISK" if isinstance(cp, str) and cp.upper().startswith(('UCLK','CLK','MCLK'))
+                            else "low-risk")
+                    issues.append(f"MEDIUM: ECO DFF {inst}.{pin} in {stage} = {v!r} (constant) — {risk} of scan-cone divergence (CP={cp!r}). If FM rejects this DFF, hook to a neighboring DFF's per-stage {pin} net (Mode S scan-stitching).")
 
     # ── 16. Per-stage CP/SE/SI must come from an existing DFF in the same scope
     # for each stage. Catches "force same-as-Synthesize" anti-pattern and
@@ -308,12 +313,17 @@ def main():
                     v = pcs.get(pin)
                     if not isinstance(v, str) or not neigh.get(pin):
                         continue
-                    # Constant on SE/SI in Synthesize is OK; elsewhere should match a neighbor
-                    if v.strip() in ("1'b0", "1'b1") and pin in ('SE', 'SI') and stage == 'Synthesize':
+                    # Constant on SE/SI in Synthesize is always OK; constant in P&R
+                    # is covered by Check 15 (skip duplicate flag here).
+                    if v.strip() in ("1'b0", "1'b1") and pin in ('SE', 'SI'):
                         continue
                     if v.strip() not in neigh[pin]:
                         sample = list(neigh[pin])[:3]
-                        issues.append(f"HIGH: ECO DFF {inst}.{pin} in {stage}={v!r} not used by any existing DFF in module {mod!r}. Existing values include {sample}. Pick one of those for per-stage consistency.")
+                        # CP mismatch: HIGH (real failure mode — clock cone divergence).
+                        # SE/SI mismatch: MEDIUM (engineer may legitimately use parent-scope
+                        # bridge wires not in module-scope neighbor set).
+                        sev = "HIGH" if pin == "CP" else "MEDIUM"
+                        issues.append(f"{sev}: ECO DFF {inst}.{pin} in {stage}={v!r} not used by any existing DFF in module {mod!r}. Existing values include {sample}. {'Pick one of those' if pin == 'CP' else 'Either pick a neighbor value OR add as new bridge port'} for per-stage consistency.")
 
     # ── 17. Every confirmed entry must have non-empty `reason`, `notes`, and
     # `source` — these populate the Step 3 RPT and serve as the audit trail for
