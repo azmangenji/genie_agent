@@ -349,11 +349,11 @@ Steps:
 4. FM sees the target register D-input unchanged — matches RTL expectation for the old expression path; new conditions implemented at gate level below
 
 **`fallback_strategy: null` (Mode F2):**
-Entirely new logic with no old expression preserved. Cannot use intermediate net approach. This is truly MANUAL_ONLY — an engineer must synthesize the gates from scratch.
+Entirely new logic with no old expression preserved. Cannot use intermediate net approach. eco_fm_analyzer prescribes `try_structural_decomposition` — rebuild the chain with simpler 2/3-input primitives whose truth tables compose correctly. Per RULE 35, `manual_only` is abolished: the flow always tries a progressive strategy across all 10 rounds.
 
 **How ROUND_ORCHESTRATOR responds:**
-- If ALL revised_changes are `action: manual_only` (Mode F2 only) → spawn FINAL_ORCHESTRATOR with `status: MANUAL_LIMIT`
 - If Mode F1 entries exist → continue rounds with the intermediate net strategy applied
+- If Mode F2 (fallback_strategy: null) → prescribe `try_structural_decomposition`; ROUND_ORCHESTRATOR continues (no early exit). Only MAX_ROUNDS triggers FINAL_ORCHESTRATOR.
 
 > **Principle:** When new conditions are prepended to an existing priority mux chain, the DFF D-input does not need to be modified. Insert the new condition gates at the intermediate combinational net (pivot net) that drives the existing priority logic. This resolves `d_input_decompose_failed` without requiring synthesis of the full D-input expression from scratch.
 
