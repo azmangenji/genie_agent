@@ -201,58 +201,27 @@ Write `condition_input_resolutions` to the fenets RPT and to the SPEC_SOURCES se
 
 ## STEP D-MAP — Write per-stage rename map JSON (MANDATORY new output)
 
-After all FM queries complete, build a per-stage rename map for every queried net. This is the **single source of truth** that Step 3 (eco_netlist_studier) consults for per-stage net values — eliminating the studier's neighbor-DFF inference for any signal already in the map.
+After all FM queries complete, generate the per-stage rename map by running:
 
-**Output:** `<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`
-
-```json
-{
-  "_metadata": {"tag": "<TAG>", "tile": "<TILE>", "queries_total": <N>},
-  "<scope>/<signal>": {
-    "Synthesize": "<synth_net_name>",
-    "PrePlace":   "<pp_net_name>",
-    "Route":      "<route_net_name>",
-    "source":     "changes[<idx>].<source_field>"
-  },
-  ...
-}
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_fenets_rename_map.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --raw-dir  data/ \
+    --tag      <TAG> \
+    --tile     <TILE> \
+    --output   data/<TAG>_eco_fenets_rename_map.json
 ```
 
-**Per-net rules:**
-- `Synthesize`: if FM-036 (no equiv on SynRtl→Synthesize), set to the original signal name (`UCLK01`, `IReset`, etc.) — gate-level Synth uses RTL names directly.
-- `PrePlace` / `Route`: pick the FIRST `[+]` (positive polarity) qualifying impl net from FM's equivalent_nets list. Skip `[-]` (inverted) entries.
-- If FM returned NO qualifying nets across both stages: set `Synthesize`/`PrePlace`/`Route` to the original signal name (best-effort), and add `"warning": "no equivalent nets found — studier should fall back to neighbor-DFF inference"`.
-- For Mode I candidate queries (Cat 6): if FM returns "no equivalent" or "constant 0", add `"mode_I_signature": true` so Step 3 emits the Mode I paired entry automatically.
+The script parses every `*_find_equivalent_nets_raw*.rpt` in `data/` (initial + retry tags), derives the same 7-category query plan as STEP A from the rtl_diff, and emits a per-stage rename map keyed by `<scope>/<signal>`. Per-stage value priority:
+- `FOUND` → first `[+]` (positive-polarity) qualifying impl net from FM
+- `FM-036` (signal not in SynRtl reference) → original signal name (gate-level Synth uses RTL names directly)
+- `NO_EQUIV` (FM ran but found nothing) → original signal name + `"warning"` flag
+- Mode I candidate query with no driver in any stage → `"mode_I_signature": true` so Step 3 emits the Mode I paired entry automatically
 
-```python
-import json
-rename_map = {"_metadata": {"tag": TAG, "tile": TILE, "queries_total": len(valid_nets)}}
-for n in valid_nets:
-    key = n["net_path"]
-    entry = {"source": n["source"]}
-    for stage in ("Synthesize", "PrePlace", "Route"):
-        result = fm_results[stage].get(key)
-        if result is None:
-            entry[stage] = key.split("/")[-1]  # fallback to original name
-        elif result == "FM-036":
-            entry[stage] = key.split("/")[-1]
-        elif result == "NO_EQUIV":
-            entry[stage] = key.split("/")[-1]
-            entry["warning"] = "no equivalent nets — studier fallback inference"
-        else:
-            # Pick first positive-polarity qualifier
-            entry[stage] = result["positive_qualifiers"][0].split("/")[-1] if result.get("positive_qualifiers") else key.split("/")[-1]
-    # Mode I detection
-    if n["source"].endswith(".mode_I_candidate"):
-        if all(entry.get(s) in (key.split("/")[-1], None) for s in ("Synthesize","PrePlace","Route")):
-            entry["mode_I_signature"] = True
-    rename_map[key] = entry
+This JSON is the **single source of truth** that Step 3 (eco_netlist_studier) consults FIRST for per-stage net resolution — eliminating the studier's neighbor-DFF inference for any signal in the map.
 
-with open(f"{BASE_DIR}/data/{TAG}_eco_fenets_rename_map.json", "w") as f:
-    json.dump(rename_map, f, indent=2)
-```
-
-This file is consumed by `eco_netlist_studier` Phase 0b-STAGE-NETS as the primary source for per-stage net resolution.
+The human-review `<TAG>_eco_step2_fenets.rpt` is unchanged — keep writing it in STEP E for engineer review.
 
 ---
 

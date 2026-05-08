@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""
+eco_fenets_rename_map.py — Build per-stage rename map JSON from FM
+find_equivalent_nets raw rpts + the rtl_diff JSON.
+
+The rename map is the AUTHORITATIVE per-stage net resolution that
+eco_netlist_studier consults FIRST in its 0b-STAGE-NETS phase. Replaces
+the studier's neighbor-DFF inference for any signal in the map.
+
+Usage:
+    python3 eco_fenets_rename_map.py \\
+        --rtl-diff data/<TAG>_eco_rtl_diff.json \\
+        --raw-dir  data/                         (or --raw-files <paths>) \\
+        --tag      <TAG> \\
+        --tile     <TILE> \\
+        --output   data/<TAG>_eco_fenets_rename_map.json
+
+The eco_step2_fenets.rpt human-review file is unchanged — this script
+ONLY produces the structured JSON map.
+
+Output schema:
+    {
+      "_metadata": {"tag": ..., "tile": ..., "queries_total": N, "raw_rpts_parsed": [...]},
+      "<scope>/<signal>": {
+        "Synthesize": "<net_name>",
+        "PrePlace":   "<net_name>",
+        "Route":      "<net_name>",
+        "source":     "changes[<idx>].<source_field>",
+        "warning":    "<optional, set when no equivalents found>",
+        "mode_I_signature": <bool, set when query was Mode I candidate AND no driver found>
+      },
+      ...
+    }
+"""
+import argparse, glob, json, os, re, sys
+from pathlib import Path
+
+# ── Raw FM rpt parser ────────────────────────────────────────────────────────
+
+# Block markers in a raw fenets rpt
+TARGET_RE = re.compile(r'^TARGET:\s*(FmEqv\S+)')
+NET_RE    = re.compile(r'^Net:\s*r:/[^/]+/[^/]+/(\S+)')
+FM036_RE  = re.compile(r'\(FM-036\)')
+NOEQ_RE   = re.compile(r'^---\s*No Equivalent Nets:')
+EQ_RE     = re.compile(r'^---\s*Equivalent Nets:')
+IMPL_NET_RE = re.compile(r'^\s*Impl\s+Net\s+([+\-])\s+i:/[^/]+/[^/]+/(\S+)')
+
+# FmEqv target → stage name map
+TARGET_TO_STAGE = {
+    'FmEqvPreEcoSynthesizeVsPreEcoSynRtl':       'Synthesize',
+    'FmEqvPreEcoPrePlaceVsPreEcoSynthesize':     'PrePlace',
+    'FmEqvPreEcoRouteVsPreEcoPrePlace':          'Route',
+    'FmEqvEcoSynthesizeVsSynRtl':                'Synthesize',
+    'FmEqvEcoPrePlaceVsEcoSynthesize':           'PrePlace',
+    'FmEqvEcoRouteVsEcoPrePlace':                'Route',
+}
+
+def parse_raw_rpt(path):
+    """Parse one raw fenets rpt. Returns dict {(stage, net_signal): result}
+    where result is {'status': 'FOUND'|'FM036'|'NO_EQUIV', 'positive': [<impl_net>], 'inverted': [<impl_net>]}."""
+    out = {}
+    cur_stage = None
+    cur_net = None     # short signal name (last path component)
+    cur_status = None
+    cur_pos = []
+    cur_neg = []
+
+    def flush():
+        if cur_stage and cur_net:
+            out[(cur_stage, cur_net)] = {
+                'status': cur_status,
+                'positive': list(cur_pos),
+                'inverted': list(cur_neg),
+            }
+
+    with open(path, errors='ignore') as f:
+        for line in f:
+            m = TARGET_RE.match(line)
+            if m:
+                flush()
+                cur_stage = TARGET_TO_STAGE.get(m.group(1))
+                cur_net = None
+                cur_status = None
+                cur_pos = []; cur_neg = []
+                continue
+            n = NET_RE.match(line)
+            if n:
+                flush()
+                cur_net = n.group(1).rstrip('_').rstrip('_0_')  # normalize bus suffix
+                if cur_net.endswith('_0_'):
+                    cur_net = cur_net[:-3]
+                cur_status = 'PENDING'
+                cur_pos = []; cur_neg = []
+                continue
+            if cur_net is None:
+                continue
+            if FM036_RE.search(line):
+                cur_status = 'FM036'
+                continue
+            if NOEQ_RE.match(line):
+                cur_status = 'NO_EQUIV'
+                continue
+            if EQ_RE.match(line):
+                cur_status = 'FOUND'
+                continue
+            i = IMPL_NET_RE.match(line)
+            if i and cur_status == 'FOUND':
+                pol, net_full = i.group(1), i.group(2)
+                # net_full may be cell/pin (e.g. "phfnr_buf/I") — keep cell.pin as-is
+                short = net_full
+                if pol == '+': cur_pos.append(short)
+                else:          cur_neg.append(short)
+    flush()
+    return out
+
+
+# ── Build query plan from rtl_diff ───────────────────────────────────────────
+
+def derive_queries(rtl_diff):
+    """Walk changes[] and produce list of {net_path, signal, source} for every
+    net we want a per-stage rename for. See eco_fenets_runner.md STEP A
+    for the 7 categories."""
+    queries = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        ct = c.get('change_type', '')
+        scope = c.get('scope') or c.get('instance_scope') or ''
+
+        # Cat 1: wire_swap / and_term tokens
+        if ct in ('wire_swap', 'and_term'):
+            for fld in ('old_token', 'new_token'):
+                t = c.get(fld)
+                if t:
+                    queries.append({'net_path': f'{scope}/{t}'.strip('/'),
+                                    'signal': t, 'source': f'changes[{idx}].{fld}'})
+        # Cat 2-4: new_logic DFF + chain leaves
+        if ct in ('new_logic', 'new_logic_dff'):
+            for fld in ('dff_clock', 'reset_signal'):
+                v = c.get(fld)
+                if v:
+                    queries.append({'net_path': f'{scope}/{v}'.strip('/'),
+                                    'signal': v, 'source': f'changes[{idx}].{fld}'})
+            for g in (c.get('d_input_gate_chain') or []):
+                for inp in (g.get('inputs') or []):
+                    base = inp.split('[')[0]
+                    if base.startswith(('n_eco_', "1'b", "0'b")):
+                        continue
+                    queries.append({'net_path': f'{scope}/{base}'.strip('/'),
+                                    'signal': base,
+                                    'source': f'changes[{idx}].chain[{g.get("seq","?")}]'})
+        # Cat 5: port_promotion
+        if ct == 'port_promotion':
+            s = c.get('signal_name') or c.get('new_token')
+            if s:
+                queries.append({'net_path': f'{scope}/{s}'.strip('/'),
+                                'signal': s, 'source': f'changes[{idx}].port_promotion'})
+        # Cat 6: Mode I candidates (UNCONNECTED bus rename targets)
+        unc = c.get('original_unconnected_net', '') or ''
+        if unc.startswith(('UNCONNECTED_', 'SYNOPSYS_UNCONNECTED_')):
+            sm = c.get('submodule_instance') or c.get('instance_name', '')
+            port = c.get('port_name', '')
+            bbi = c.get('bus_bit_index')
+            if sm and port and bbi is not None:
+                signal = f'{port}[{bbi}]'
+                queries.append({'net_path': f'{scope}/{sm}/{signal}'.strip('/'),
+                                'signal': signal,
+                                'source': f'changes[{idx}].mode_I_candidate',
+                                'mode_I_candidate': True})
+
+    # Deduplicate by net_path (preserve first source)
+    seen = set(); unique = []
+    for q in queries:
+        if q['net_path'] in seen:
+            continue
+        seen.add(q['net_path'])
+        unique.append(q)
+    return unique
+
+
+# ── Build rename map ─────────────────────────────────────────────────────────
+
+def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts):
+    """fm_results is dict {(stage, signal): {status, positive, inverted}} merged
+    across all parsed raw rpts."""
+    queries = derive_queries(rtl_diff)
+    rmap = {
+        '_metadata': {
+            'tag': tag,
+            'tile': tile,
+            'queries_total': len(queries),
+            'raw_rpts_parsed': [str(p) for p in raw_rpts],
+        }
+    }
+    for q in queries:
+        sig = q['signal']
+        entry = {'source': q['source']}
+        had_warning = False
+        for stage in ('Synthesize', 'PrePlace', 'Route'):
+            r = fm_results.get((stage, sig))
+            if r is None or r['status'] in ('FM036', None):
+                # Fallback to original signal name (gate-level Synth uses RTL names directly)
+                entry[stage] = sig
+            elif r['status'] == 'NO_EQUIV':
+                entry[stage] = sig
+                had_warning = True
+            elif r['status'] == 'FOUND' and r['positive']:
+                # Pick first positive-polarity qualifier; take only the leaf name
+                first = r['positive'][0]
+                entry[stage] = first.split('/')[-1]
+            else:
+                entry[stage] = sig
+                had_warning = True
+        if had_warning:
+            entry['warning'] = 'no equivalent nets found in some stage — studier should fall back to neighbor-DFF inference for those stages'
+        # Mode I signature: candidate query AND all stages fell through to original name
+        if q.get('mode_I_candidate'):
+            if all(entry.get(s) == sig for s in ('Synthesize', 'PrePlace', 'Route')):
+                entry['mode_I_signature'] = True
+        rmap[q['net_path']] = entry
+    return rmap
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    p.add_argument('--rtl-diff', required=True)
+    p.add_argument('--raw-dir',  default=None,
+                   help='Directory holding *_find_equivalent_nets_raw*.rpt files. '
+                        'If provided, all matching files are parsed.')
+    p.add_argument('--raw-files', nargs='*', default=[],
+                   help='Explicit list of raw rpt paths to parse '
+                        '(overrides --raw-dir if both given)')
+    p.add_argument('--tag',  required=True)
+    p.add_argument('--tile', required=True)
+    p.add_argument('--output', required=True)
+    args = p.parse_args()
+
+    # Discover raw rpts
+    raw_paths = list(args.raw_files)
+    if not raw_paths and args.raw_dir:
+        raw_paths = sorted(glob.glob(os.path.join(args.raw_dir,
+                                                  '*find_equivalent_nets_raw*.rpt')))
+    if not raw_paths:
+        print('FAIL: no raw fenets rpts to parse '
+              '(use --raw-dir or --raw-files)', file=sys.stderr)
+        return 1
+
+    # Parse all raw rpts and merge results
+    fm_results = {}
+    for path in raw_paths:
+        if not os.path.exists(path):
+            print(f'WARN: raw rpt not found: {path}', file=sys.stderr)
+            continue
+        partial = parse_raw_rpt(path)
+        # Merge — prefer FOUND over FM036 / NO_EQUIV when same key seen multiple times
+        for k, v in partial.items():
+            cur = fm_results.get(k)
+            if cur is None:
+                fm_results[k] = v
+            elif cur['status'] != 'FOUND' and v['status'] == 'FOUND':
+                fm_results[k] = v
+
+    # Build map
+    try:
+        rtl_diff = json.loads(Path(args.rtl_diff).read_text())
+    except Exception as e:
+        print(f'FAIL: cannot read rtl_diff: {e}', file=sys.stderr)
+        return 1
+
+    rmap = build_rename_map(rtl_diff, fm_results, args.tag, args.tile, raw_paths)
+    Path(args.output).write_text(json.dumps(rmap, indent=2))
+
+    n = len(rmap) - 1  # minus _metadata
+    n_warned = sum(1 for k, v in rmap.items() if k != '_metadata' and v.get('warning'))
+    n_mode_i = sum(1 for k, v in rmap.items() if k != '_metadata' and v.get('mode_I_signature'))
+    print(f'ECO_RPT_GENERATED: rename map → {args.output}')
+    print(f'  queries:        {n}')
+    print(f'  with warning:   {n_warned}')
+    print(f'  Mode I flagged: {n_mode_i}')
+    print(f'  raw rpts:       {len(raw_paths)}')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
