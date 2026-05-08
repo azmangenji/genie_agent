@@ -355,6 +355,30 @@ def main():
             new_logic_field_issues.append(
                 f"changes[{idx}] target={tgt}: `dff_clock` MISSING — "
                 f"required for Step 3 per-stage CP + Mode S clock-domain match")
+        # Mode S decision MUST be explicit on every new_logic_dff. If the agent
+        # opts out (false), require a justification so the skip is auditable.
+        rss = c.get('requires_scan_stitching')
+        if rss is None:
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt}: `requires_scan_stitching` MISSING — "
+                f"explicit true/false required (default true for any non-wrapper-clock DFF)")
+        elif rss is False and not c.get('scan_stitching_skipped_reason'):
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt}: requires_scan_stitching=false but "
+                f"`scan_stitching_skipped_reason` MISSING — opt-out must cite why "
+                f"(e.g. 'wrapper-only clock {c.get('dff_clock')!r} never carries scan_enable')")
+        # Heuristic: clocks that are NOT wrapper-only (wrp_clk_*) propagate scan
+        # enable and so require Mode S. Force the flag to true unless the agent
+        # documented an exception.
+        clk = (c.get('dff_clock') or '')
+        is_wrapper_clk = clk.startswith('wrp_clk_') or '/wrp_clk_' in clk
+        if rss is False and not is_wrapper_clk:
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt}: requires_scan_stitching=false but "
+                f"dff_clock={clk!r} is NOT a wrapper-only clock (wrp_clk_*) — "
+                f"non-wrapper clocks propagate scan_enable; Mode S is required. "
+                f"If this is a documented exception, override the heuristic by "
+                f"naming the clock with the wrp_clk_ prefix or extend this check.")
         needs_chain = c.get('has_sync_reset') or c.get('requires_scan_stitching')
         chain = c.get('d_input_gate_chain') or []
         d_in_net = c.get('d_input_net') or ''

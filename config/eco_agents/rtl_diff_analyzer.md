@@ -650,6 +650,8 @@ Record `cell_type_from_preeco: true` when using a discovered compound type.
 
 Emit `requires_scan_stitching: true` on every new_logic_dff change. This signals Step 3 (eco_netlist_studier) to apply the scan-stitching pattern (3 new ports + assign + per-hierarchy port_connections) in PrePlace and Route stages. Synthesize stage keeps SE/SI=`1'b0` (RTL-clean view). Skip ONLY if you can prove the DFF's clock cone never touches scan_cntl logic (e.g., a wrapper-only clock like `wrp_clk_*` that doesn't propagate scan-enable). When in doubt, emit `true` — the cost of unnecessary scan-stitching is 3 wire decls; the cost of missing it is FM Route failure.
 
+The flag is MANDATORY (Step 1 validator rejects entries that omit it). To opt out (`requires_scan_stitching: false`), you MUST also emit `scan_stitching_skipped_reason: "<auditable justification>"` AND `dff_clock` must be a wrapper clock (`wrp_clk_*`) — the validator enforces both.
+
 ```json
 {
   "change_type": "new_logic",
