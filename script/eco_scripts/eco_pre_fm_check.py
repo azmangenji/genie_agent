@@ -669,6 +669,71 @@ def check_missing_output_port_decls(applied, ref_dir):
     return failures
 
 
+def check_mode_s_stitching(study_path, ref_dir):
+    """Check 14 — for every new_logic_dff with mode_S_applied=true (or
+    requires_scan_stitching=true) in the study JSON, verify the host module
+    has the 3 stitching ports (SI_in, SE_in, Q_out) declared in the netlist
+    AND the assign statement is present AND the DFF's per-stage SE/SI use
+    those ports (NOT 1'b0) in PrePlace and Route stages.
+    """
+    failures = []
+    try:
+        study = json.loads(Path(study_path).read_text())
+    except Exception as e:
+        return [f'[MODE_S_READ_ERR] {e}']
+    for stage in ('PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        text = strip_verilog_comments(text)
+        for entry in study.get(stage, []):
+            if entry.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            if not entry.get('confirmed', True):
+                continue
+            if not (entry.get('mode_S_applied') or entry.get('requires_scan_stitching')):
+                continue
+            inst = entry.get('instance_name', '?')
+            host = entry.get('module_name', '')
+            if not host:
+                continue
+            # Find host module (with possible _0 suffix in Route)
+            mod_m = re.search(rf'^module\s+{re.escape(host)}(?:_0)?\b.*?^endmodule\b',
+                              text, re.MULTILINE | re.DOTALL)
+            if not mod_m:
+                failures.append(f'[MODE_S_MODULE_MISSING] {stage}: host module {host!r} not found for {inst}')
+                continue
+            body = mod_m.group(0)
+            # Look for the 3 stitching port declarations (any ECO_*_SI_in / SE_in / Q_out)
+            si = re.search(r'^\s*input\s+(ECO_\w*_SI_in|eco\w*_si_bridge_in)\s*;', body, re.MULTILINE)
+            se = re.search(r'^\s*input\s+(ECO_\w*_SE_in|eco\w*_se_bridge_in)\s*;', body, re.MULTILINE)
+            qo = re.search(r'^\s*output\s+(ECO_\w*_Q_out|eco\w*_q_bridge_out)\s*;', body, re.MULTILINE)
+            missing_ports = [p for p, m in (('SI_in', si), ('SE_in', se), ('Q_out', qo)) if not m]
+            if missing_ports:
+                failures.append(f'[MODE_S_PORT_MISSING] {stage}: {inst} requires Mode S but host {host!r} missing port(s) {missing_ports}')
+                continue
+            # Verify the assign exists
+            assn = re.search(rf'^\s*assign\s+{re.escape(qo.group(1))}\s*=\s*\w+\s*;', body, re.MULTILINE)
+            if not assn:
+                failures.append(f'[MODE_S_ASSIGN_MISSING] {stage}: {inst} requires Mode S but assign for {qo.group(1)} not found in {host!r}')
+                continue
+            # Verify DFF's SE/SI in netlist actually point at the new ports
+            dff_re = re.search(rf'\b\S+\s+{re.escape(inst)}\s*\(\s*([^;]+?)\)\s*;', body, re.DOTALL)
+            if dff_re:
+                pcs = dff_re.group(1)
+                se_m = re.search(r'\.SE\s*\(\s*([^)]+?)\s*\)', pcs)
+                si_m = re.search(r'\.SI\s*\(\s*([^)]+?)\s*\)', pcs)
+                if se_m and "1'b0" in se_m.group(1):
+                    failures.append(f"[MODE_S_SE_NOT_BRIDGED] {stage}: {inst}.SE still tied to 1'b0 — Mode S stitching not landed")
+                if si_m and "1'b0" in si_m.group(1):
+                    failures.append(f"[MODE_S_SI_NOT_BRIDGED] {stage}: {inst}.SI still tied to 1'b0 — Mode S stitching not landed")
+    return failures
+
+
 def check_eco_cell_counts(applied):
     """
     WARN (not FAIL) if ECO cell counts differ significantly across stages.
@@ -827,6 +892,15 @@ def main():
     # a port_declaration entry applied. Missing causes FE-LINK-7 ABORT_LINK.
     fails = check_missing_output_port_decls(applied, args.ref_dir)
     results['missing_output_port_decls'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 17 — Mode S (scan-stitching) stitching landed correctly in netlist.
+    # For every new_logic_dff entry flagged with mode_S_applied / requires_scan_stitching,
+    # verify the host module declares the 3 stitching ports (SI_in / SE_in / Q_out),
+    # the assign for Q_out is present, and the DFF's per-stage SE/SI are bridged
+    # (NOT tied to 1'b0). Catches missing stitching that breaks Route FM.
+    fails = check_mode_s_stitching(study_path, args.ref_dir)
+    results['mode_s_stitching'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0

@@ -646,6 +646,19 @@ Record `cell_type_from_preeco: true` when using a discovered compound type.
 
 **MANDATORY truth-table verification before recording any compound cell:** call `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py`. `False` means the cell does NOT compute the claimed function (cell name and logic don't always agree across libraries — particularly for inverter-input compound families) — pick a different cell or update `gate_function` to the cell's real logic; never write a `False` choice into the chain. `None` means the cell is not in the loaded library JSON — extend `script/eco_scripts/cell_libraries/<lib>.json` with the verified expression from the cell library, do not guess. This rule is the primary gate for cell choice; Step 3 validate enforces it as a backstop.
 
+**MANDATORY scan-stitching flag (Mode S) — for every `new_logic` change with `dff_instance_name` set:**
+
+Emit `requires_scan_stitching: true` on every new_logic_dff change. This signals Step 3 (eco_netlist_studier) to apply the scan-stitching pattern (3 new ports + assign + per-hierarchy port_connections) in PrePlace and Route stages. Synthesize stage keeps SE/SI=`1'b0` (RTL-clean view). Skip ONLY if you can prove the DFF's clock cone never touches scan_cntl logic (e.g., a wrapper-only clock like `wrp_clk_*` that doesn't propagate scan-enable). When in doubt, emit `true` — the cost of unnecessary scan-stitching is 3 wire decls; the cost of missing it is FM Route failure.
+
+```json
+{
+  "change_type": "new_logic",
+  "dff_instance_name": "<reg>_reg",
+  "requires_scan_stitching": true,
+  ...
+}
+```
+
 **MANDATORY whole-chain equivalence reference field (Gap E) — REQUIRED for every change with a non-empty `d_input_gate_chain`:**
 
 For every `new_logic` change that emits a `d_input_gate_chain`, you MUST also emit a top-level `d_input_expected_function` field. Step 1 validate REJECTS the change if this field is missing (HIGH issue). The field is the boolean function the DFF.D should compute — a Python boolean expression in the chain's primary input variables.

@@ -463,6 +463,47 @@ def apply_rewire(lines, entry, stage='Synthesize'):
     return lines, 'APPLIED', f'{cell_name}.{pin_name}: {old_net} → {new_net}'
 
 
+# ── Pass 5: assign  (Mode S Q_out bridge) ────────────────────────────────────
+
+def apply_assign(lines, entry):
+    """Insert `assign LHS = RHS;` into the named module if not already present.
+    Used by Mode S to bridge a new Q_out output port to the new DFF's Q net.
+    Returns (lines, status, reason)."""
+    mod_name = entry.get('module_name', '')
+    lhs      = entry.get('lhs', '') or entry.get('signal_name', '')
+    rhs      = entry.get('rhs', '')
+    if not (mod_name and lhs and rhs):
+        return lines, 'SKIPPED', f'assign: missing module_name/lhs/rhs ({mod_name},{lhs},{rhs})'
+
+    # Find the module — exact, _0, or tile-prefixed
+    re_bare   = re.compile(rf'^module\s+{re.escape(mod_name)}\b')
+    re_p0     = re.compile(rf'^module\s+{re.escape(mod_name)}_0\b')
+    re_prefix = re.compile(rf'^module\s+(\S+_{re.escape(mod_name)})\b')
+    mod_start = -1
+    for i, line in enumerate(lines):
+        if re_bare.match(line) or re_p0.match(line) or re_prefix.match(line):
+            mod_start = i; break
+    if mod_start < 0:
+        return lines, 'SKIPPED', f'assign: module {mod_name} not found'
+
+    # Find matching endmodule
+    mod_end = -1
+    for i in range(mod_start + 1, len(lines)):
+        if re.match(r'^endmodule\b', lines[i]):
+            mod_end = i; break
+    if mod_end < 0:
+        return lines, 'SKIPPED', f'assign: endmodule for {mod_name} not found'
+
+    # Already applied?
+    body = ''.join(lines[mod_start:mod_end + 1])
+    if re.search(rf'^\s*assign\s+{re.escape(lhs)}\s*=\s*{re.escape(rhs)}\s*;', body, re.MULTILINE):
+        return lines, 'ALREADY_APPLIED', f'assign {lhs} = {rhs} already in {mod_name}'
+
+    # Insert just before endmodule
+    lines.insert(mod_end, f'  assign {lhs} = {rhs} ;\n')
+    return lines, 'APPLIED', f'inserted assign {lhs} = {rhs} in {mod_name}'
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -520,6 +561,8 @@ def main():
             lines, st, reason = apply_port_connection(lines, e, gz_path=posteco, stage=args.stage)
         elif ct == 'rewire':
             lines, st, reason = apply_rewire(lines, e, stage=args.stage)
+        elif ct == 'assign':
+            lines, st, reason = apply_assign(lines, e)
         else:
             continue  # Handled by eco_perl_spec.py (Pass 1) or other pass
 

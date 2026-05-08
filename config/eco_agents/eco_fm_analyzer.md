@@ -420,6 +420,10 @@ Inserted compound 4-input cell (AOI/OAI/AO/OA family) computes the wrong boolean
 
 **When to give up:** If no single-cell same-family alternative matches `f_expected` under any input-permutation, the function needs decomposition into 2+ cells — escalate to Mode F (`d_input_decompose_failed`) so eco_netlist_studier rebuilds the chain with simpler primitives.
 
+### Mode S — Scan-stitching incomplete on new ECO DFF (PrePlace/Route only)
+
+FM fails on a `new_logic_dff` instance in PrePlace/Route (Synthesize passes). The DFF's `.SE`/`.SI` in the failing stage are wires (not `1'b0`) but the wires don't connect back to a real scan-chain network — bridge ports/assigns landed but the per-stage `port_connections` chain through parent scopes is broken. Recipe: emit `failure_mode: "S"`, `action: "fix_scan_stitching"`, `mode_S_hint: "<inst> bridge wire <name> in <stage> not driven by existing scan chain — re-trace parent-scope scan net via ECO_*_SI_in/SE_in ports up to <scope> and patch port_connections_per_stage"`. Round-N studier re-emits the per-stage stitching chain.
+
 ### Mode B — Regression: new failing points not in RTL diff
 
 1. Read the failing DFF from PostEco and find its D-input net.

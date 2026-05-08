@@ -340,6 +340,49 @@ def main():
     if chain_eq_issues:
         overall_pass = False
 
+    # Mandatory-fields check for new_logic / new_logic_dff entries — every such
+    # entry MUST have dff_clock (Step 3 needs it to pick neighbor DFF for per-stage
+    # CP + Mode S clock-domain match), AND must have a non-empty d_input_gate_chain
+    # + d_input_expected_function whenever has_sync_reset is true OR
+    # requires_scan_stitching is true (sync-reset RTL collapses into a combinational
+    # gate at the D-input, and any new ECO DFF we stitch needs a defined D logic).
+    new_logic_field_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        if not c.get('dff_clock'):
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt}: `dff_clock` MISSING — "
+                f"required for Step 3 per-stage CP + Mode S clock-domain match")
+        needs_chain = c.get('has_sync_reset') or c.get('requires_scan_stitching')
+        chain = c.get('d_input_gate_chain') or []
+        d_in_net = c.get('d_input_net') or ''
+        # UNCONNECTED placeholder ⇒ PreEco DFF has no D-driver; chain MUST replace it
+        is_unconnected_d = d_in_net.startswith(('UNCONNECTED_', 'SYNOPSYS_UNCONNECTED_'))
+        if (needs_chain or is_unconnected_d) and not chain:
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt}: `d_input_gate_chain` empty but "
+                f"has_sync_reset={c.get('has_sync_reset')} / "
+                f"requires_scan_stitching={c.get('requires_scan_stitching')} / "
+                f"d_input_net={d_in_net!r} — emit at least the sync-reset "
+                f"combinational gate (D = ~reset & next_value)")
+        if (needs_chain or is_unconnected_d) and not c.get('d_input_expected_function'):
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt}: `d_input_expected_function` MISSING "
+                f"(needed by Gap E equivalence check)")
+        # When has_sync_reset is true, agent MUST decide whether reset is baked
+        # into the D-input combinational gate (DFF cell has no RN pin) or fed
+        # through a separate reset port. Missing field blocks Step 3 from
+        # picking the right DFF stitching pattern.
+        if c.get('has_sync_reset') and c.get('reset_baked_in_d_input') is None:
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt}: `reset_baked_in_d_input` MISSING "
+                f"(has_sync_reset=true requires explicit true/false — true if DFF "
+                f"cell has no RN pin and reset is AND-ed into D, false if DFF has RN)")
+    if new_logic_field_issues:
+        overall_pass = False
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'wire_swap' or c.get('mux_select_polarity_pending'):
             continue
@@ -370,6 +413,8 @@ def main():
         'signal_in_scope_issues':      sis_issues,
         'chain_equivalence_issue_count': len(chain_eq_issues),
         'chain_equivalence_issues':      chain_eq_issues,
+        'new_logic_field_issue_count':   len(new_logic_field_issues),
+        'new_logic_field_issues':        new_logic_field_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -378,7 +423,7 @@ def main():
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step1.py')
     print(f'  rtl_diff: {args.rtl_diff}')
-    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}')
+    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}  new_logic_field_issues: {len(new_logic_field_issues)}')
     print(f'  overall:  {"PASS" if overall_pass else "FAIL"}')
     for p in phantom:
         print(f'    - {p}')
@@ -391,6 +436,8 @@ def main():
     for p in sis_issues:
         print(f'    - {p}')
     for p in chain_eq_issues:
+        print(f'    - {p}')
+    for p in new_logic_field_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:

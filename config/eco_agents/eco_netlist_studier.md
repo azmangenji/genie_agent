@@ -225,6 +225,120 @@ After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>
 
 **GAP-14 — Wire declaration flag:** For each new gate whose output net does not exist in PreEco (`grep -cw "<output_net>" /tmp/eco_study_<TAG>_Synthesize.v` = 0), set `needs_explicit_wire_decl: true`. **Output net ONLY — never set for input nets.**
 
+### 0b-MODE-S — Scan stitching for new ECO DFFs in P&R (MANDATORY)
+
+A new DFF inserted in a clock domain that traverses scan-control logic (the design's main scan chain — typically anything reachable from `tile_dfx/scan_cntl`) must be **stitched into the existing scan chain**. Tying SE/SI to `1'b0` in P&R isolates the new DFF from the scan chain → FM sees "globally unmatched SE pin" + "LatCG cone exists in ref but not impl" → stage fails.
+
+**Engineer's recipe (3-port stitching) for each new DFF requiring scan stitching:**
+
+```verilog
+// In the host module body (e.g., umcarbctrlsw):
+// 3 new ports added to module port list + body decls:
+input  ECO_<jira>_SI_in ;
+output ECO_<jira>_Q_out ;
+input  ECO_<jira>_SE_in ;
+assign ECO_<jira>_Q_out = <DFF_Q_signal> ;
+
+// New DFF instantiation uses the bridge ports:
+SDFQD1... <DFF_reg> ( .D(<chain_output>), .SI(ECO_<jira>_SI_in),
+                      .SE(ECO_<jira>_SE_in), .CP(<clock>),
+                      .Q(<DFF_Q_signal>) ) ;
+
+// At the parent module: wire the 3 ports to per-stage scan-bridge wires
+<host_module>_inst ( ..., .ECO_<jira>_SI_in(eco<jira>_si_bridge),
+                          .ECO_<jira>_Q_out(eco<jira>_q_bridge),
+                          .ECO_<jira>_SE_in(eco<jira>_se_bridge) ) ;
+
+// At the umccmd parent: declare the bridge wires + drive them from
+// per-stage scan signals (lookup via eco_fenets_rename_map.json or
+// neighbor-DFF inference for a tile-level scan_en signal):
+wire eco<jira>_si_bridge ;  // tied 1'b0 (DFF doesn't need shifted data)
+wire eco<jira>_se_bridge ;  // wire to per-stage scan_en (e.g., neighbor's SE)
+wire eco<jira>_q_bridge ;   // dangling output (for chain closure if needed)
+```
+
+**Detection — when to apply Mode S:**
+
+1. Entry `change_type` is `new_logic_dff` or `new_logic` with `dff_instance_name` set
+2. `port_connections.CP` is a "deep" clock (traces to `UCLK01`, `MCLK*`, or any signal whose cone in P&R reaches `tile_dfx/scan_cntl/*`). For our flow's first cut: assume any DFF with `CP=UCLK01` or `CP=<wrapper_clock_used_by_other_scan_DFFs>` requires Mode S.
+3. Apply ONLY in PrePlace and Route per-stage values. Synthesize stage keeps `SE/SI=1'b0` (RTL-clean).
+
+**Action — emit additional study entries:**
+
+For each DFF requiring Mode S, append to `study[stage]`:
+
+```python
+# (a) 3 new port_declaration entries on the host module
+for pname, pdir in [(f"ECO_{jira}_SI_in", "input"),
+                    (f"ECO_{jira}_Q_out", "output"),
+                    (f"ECO_{jira}_SE_in", "input")]:
+    study[stage].append({
+        "change_type": "port_declaration",
+        "module_name": <host_module_per_stage>,
+        "signal_name": pname,
+        "declaration_type": pdir,
+        "instance_scope": <scope>,
+        "reason": f"Mode S scan-stitching port for {dff_inst}",
+        "notes": "Bridge port: SI/SE inputs + Q output for scan-chain integration",
+        "source": f"mode_S_{tag}",
+        "confirmed": True,
+    })
+
+# (b) 1 assign change (NEW change_type — see eco_passes_2_4 update)
+study[stage].append({
+    "change_type": "assign",
+    "module_name": <host_module_per_stage>,
+    "lhs": f"ECO_{jira}_Q_out",
+    "rhs": <DFF_Q_signal>,
+    "reason": f"Mode S Q-output bridge for {dff_inst}",
+    "source": f"mode_S_{tag}",
+    "confirmed": True,
+})
+
+# (c) per-hierarchy port_connection entries (host_inst at parent level)
+for hier_inst in <hierarchy_chain_to_umccmd>:
+    study[stage].append({
+        "change_type": "port_connection",
+        "parent_module": <hier_parent>,
+        "instance_name": hier_inst,
+        "submodule_type": <hier_inst_module_type>,
+        "port_name": f"ECO_{jira}_SI_in",
+        "net_name": f"eco{jira}_si_bridge",
+        ...
+    })
+    # Same for SE_in and Q_out
+
+# (d) 3 wire decls + drive logic at umccmd parent
+study[stage].append({
+    "change_type": "port_declaration",  # at umccmd parent — declare as wire
+    "module_name": <umccmd_module>,
+    "signal_name": f"eco{jira}_si_bridge",
+    "declaration_type": "wire",
+    ...
+})
+# Same for se_bridge, q_bridge
+
+# (e) Update DFF entry's port_connections_per_stage SE/SI to use the new ports
+dff_entry["port_connections_per_stage"]["PrePlace"]["SE"] = f"ECO_{jira}_SE_in"
+dff_entry["port_connections_per_stage"]["PrePlace"]["SI"] = f"ECO_{jira}_SI_in"
+dff_entry["port_connections_per_stage"]["Route"]["SE"] = f"ECO_{jira}_SE_in"
+dff_entry["port_connections_per_stage"]["Route"]["SI"] = f"ECO_{jira}_SI_in"
+# Synthesize stays 1'b0
+dff_entry["mode_S_applied"] = True
+```
+
+**Per-stage source for the bridge wires (umccmd parent):**
+
+| Pin | PrePlace | Route |
+|-----|----------|-------|
+| `eco<jira>_si_bridge` | `1'b0` (DFF doesn't shift in scan data) | `1'b0` |
+| `eco<jira>_se_bridge` | per-stage scan_en signal at umccmd scope (look up via rename map; fallback: neighbor DFF's SE) | per-stage scan_en at umccmd scope |
+| `eco<jira>_q_bridge` | left dangling (output) — adds `// not connected — chain closure handled by tile-level scan` | dangling |
+
+Bridge wires use the SAME logical name in both PP and Route (per-stage VALUES may differ but the wire NAME is stable) so FM cone tracing matches.
+
+**Validator backstop:** Step 5 Check 14 verifies every DFF with `mode_S_applied: true` has the 3 ports declared in the host module + the assign + the per-stage scan signals on SE/SI.
+
 ### 0c — Find suitable cell type from PreEco netlist
 
 **For DFF with `has_sync_reset: true` — try reset-pin cell FIRST (preferred):**
