@@ -525,6 +525,150 @@ def check_eco_input_drivers(study_path, ref_dir):
     return failures
 
 
+def check_duplicate_ports(ref_dir):
+    """Check D — no duplicate port names in any module port list header.
+    Duplicate ports cause Verilog compile errors that block FM elaboration.
+    Returns list of failure strings."""
+    failures = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        text = strip_verilog_comments(text)
+        for mod_m in re.finditer(r'^module\s+(\w+)\s*\(([^)]+)\)', text, re.MULTILINE):
+            mod_name = mod_m.group(1)
+            port_list = mod_m.group(2)
+            ports = re.findall(r'\b([A-Za-z_]\w*)\b', port_list)
+            kw = {'input', 'output', 'inout', 'wire', 'reg', 'logic', 'integer'}
+            seen, dups = {}, []
+            for p in ports:
+                if p in kw:
+                    continue
+                seen[p] = seen.get(p, 0) + 1
+                if seen[p] == 2:
+                    dups.append(p)
+            if dups:
+                failures.append(f'[DUPLICATE_PORT] {stage}: module {mod_name!r} has duplicate port(s): {dups}')
+    return failures
+
+
+def check_eco_output_pin_names(applied, ref_dir):
+    """Check H — ECO cell output pin names must match the cell's actual output pin.
+    Wrong output pin causes FE-LINK-7 ABORT_LINK (FM cannot build verification model).
+    The most common mistake: MUX2 output is Z not ZN; IND2 is ZN not Z.
+    Returns list of failure strings."""
+    GATE_OUTPUT_PIN = {
+        'AND2': 'Z', 'AND3': 'Z', 'AND4': 'Z',
+        'OR2':  'Z', 'OR3':  'Z', 'OR4':  'Z',
+        'XOR2': 'Z', 'XOR3': 'Z',
+        'MUX2': 'Z', 'MUX4': 'Z',
+        'INV':  'ZN',
+        'NAND2': 'ZN', 'NAND3': 'ZN', 'NAND4': 'ZN',
+        'NOR2':  'ZN', 'NOR3':  'ZN', 'NOR4':  'ZN',
+        'XNOR2': 'ZN', 'IND2': 'ZN', 'IND3': 'ZN',
+        'DFF': 'Q', 'SDFF': 'Q', 'SDFQ': 'Q',
+        'AOI21': 'ZN', 'AOI22': 'ZN', 'OAI21': 'ZN', 'OAI22': 'ZN',
+        'AO21': 'Z',  'AO22': 'Z',  'OA21': 'Z',  'OA22': 'Z',
+        'INR3': 'ZN', 'IND3': 'ZN', 'IAOI21': 'ZN',
+    }
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import eco_cell_truth_tables as _ett
+        _have_ett = True
+    except ImportError:
+        _have_ett = False
+
+    failures = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for entry in applied.get(stage, []):
+            if entry.get('change_type') not in ('new_logic_gate', 'new_logic', 'new_logic_dff'):
+                continue
+            if entry.get('status') not in ('INSERTED', 'ALREADY_APPLIED'):
+                continue
+            cell = entry.get('cell_type', '')
+            fn   = entry.get('gate_function', '')
+            inst = entry.get('instance_name', '?')
+            out_net = entry.get('output_net', '')
+            pcs  = entry.get('port_connections', {})
+            if not cell or not pcs:
+                continue
+            # Determine expected output pin: prefer Liberty lookup, then gate_function table, then GATE_OUTPUT_PIN
+            expected_pin = None
+            if _have_ett:
+                tt = _ett.truth_table_of(cell)
+                if tt:
+                    expected_pin = next(iter(tt.keys()))  # first (usually only) output pin
+            if not expected_pin and fn:
+                family = fn.replace('2','').replace('3','').replace('4','').rstrip('0123456789')
+                expected_pin = GATE_OUTPUT_PIN.get(fn) or GATE_OUTPUT_PIN.get(family)
+            if not expected_pin:
+                continue  # cannot determine — skip
+            # Find which pin in port_connections has the output_net
+            actual_out_pins = [p for p, n in pcs.items() if n == out_net]
+            if not actual_out_pins:
+                continue  # output_net not in port_connections — skip
+            for actual in actual_out_pins:
+                if actual != expected_pin:
+                    failures.append(
+                        f'[WRONG_OUTPUT_PIN] {stage}: {inst} output_pin={actual!r} '
+                        f'but cell {cell!r} (fn={fn!r}) expects {expected_pin!r}. '
+                        f'Rename .{actual}({out_net}) → .{expected_pin}({out_net}) in PostEco.')
+    return failures
+
+
+def check_missing_output_port_decls(applied, ref_dir):
+    """Check B2 — if an ECO cell's output net is referenced OUTSIDE its declaring module
+    (i.e., used as an argument to a parent-level port connection), a port_declaration
+    entry must have been applied for that net. Missing causes FE-LINK-7 ABORT_LINK.
+    Returns list of failure strings."""
+    failures = []
+    OUT_TYPES = ('new_logic_gate', 'new_logic_dff', 'new_logic')
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        entries = applied.get(stage, [])
+        if not isinstance(entries, list):
+            continue
+        # Build set of ECO output nets with their declaring module
+        eco_outputs = {}  # output_net → (inst, module_name)
+        for e in entries:
+            if e.get('change_type') not in OUT_TYPES or e.get('status') not in ('INSERTED', 'ALREADY_APPLIED'):
+                continue
+            out_net = e.get('output_net', '')
+            mod     = e.get('module_name', '')
+            inst    = e.get('instance_name', '?')
+            if out_net and mod:
+                eco_outputs[out_net] = (inst, mod)
+        if not eco_outputs:
+            continue
+        # Build set of port_declaration entries that were APPLIED for this stage
+        declared = set()
+        for e in entries:
+            if e.get('change_type') == 'port_declaration' and e.get('status') in ('APPLIED', 'ALREADY_APPLIED'):
+                declared.add(e.get('signal_name', ''))
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        text = strip_verilog_comments(text)
+        for out_net, (inst, mod) in eco_outputs.items():
+            # Count occurrences in full netlist vs inside declaring module
+            total = len(re.findall(rf'\b{re.escape(out_net)}\b', text))
+            mod_m = re.search(rf'^module\s+{re.escape(mod)}(?:_0)?\b.*?^endmodule\b', text, re.DOTALL | re.MULTILINE)
+            local = len(re.findall(rf'\b{re.escape(out_net)}\b', mod_m.group(0))) if mod_m else 0
+            if total > local and out_net not in declared:
+                failures.append(
+                    f'[MISSING_OUTPUT_PORT] {stage}: ECO net {out_net!r} (from {inst} in {mod}) '
+                    f'referenced {total - local} time(s) outside its module but no port_declaration applied.')
+    return failures
+
+
 def check_eco_cell_counts(applied):
     """
     WARN (not FAIL) if ECO cell counts differ significantly across stages.
@@ -597,8 +741,16 @@ def main():
     results['no_unhandled'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend([f'[UNHANDLED] {f}' for f in fails])
 
-    # Check 5 — eco_check8 Verilog validator
+    # Check 5 — eco_check8 Verilog validator (runs eco_check8.sh externally)
     fails = check_check8(check8_path)
+    # Build nested per-stage structure as required by mandatory output contract
+    chk8_json = load_json(check8_path) or {}
+    results['check8_verilog_validator'] = {
+        'Synthesize': chk8_json.get('Synthesize', 'MISSING'),
+        'PrePlace':   chk8_json.get('PrePlace',   'MISSING'),
+        'Route':      chk8_json.get('Route',      'MISSING'),
+        'errors':     fails,
+    }
     results['check8_verilog'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend([f'[SVR4_SVR9] {f}' for f in fails])
 
@@ -656,6 +808,25 @@ def main():
     # "agent recorded a stale or non-existent per-stage net name" class of bug.
     fails = check_eco_input_drivers(study_path, args.ref_dir)
     results['eco_input_drivers'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 14 — Duplicate port names in any module port list header.
+    # Duplicate ports cause Verilog compile errors that block FM elaboration.
+    fails = check_duplicate_ports(args.ref_dir)
+    results['duplicate_ports'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 15 — ECO cell output pin names must match the cell's actual output pin.
+    # Wrong pin causes FE-LINK-7 ABORT_LINK (FM cannot build verification model).
+    # Example: MUX2 output is .Z not .ZN; IND2 is .ZN not .Z.
+    fails = check_eco_output_pin_names(applied, args.ref_dir)
+    results['eco_output_pin_names'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 16 — ECO cell output nets referenced outside declaring module must have
+    # a port_declaration entry applied. Missing causes FE-LINK-7 ABORT_LINK.
+    fails = check_missing_output_port_decls(applied, args.ref_dir)
+    results['missing_output_port_decls'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0
