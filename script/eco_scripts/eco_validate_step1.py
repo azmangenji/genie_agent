@@ -466,6 +466,35 @@ def main():
     if wire_swap_field_issues:
         overall_pass = False
 
+    # UNCONNECTED-as-variable check — chain inputs and d_input_expected_function
+    # must NEVER reference a literal `UNCONNECTED_<N>` placeholder as a signal.
+    # The placeholder marks an undriven net in PreEco; the agent must trace it
+    # to the real RTL source (e.g. REG_UmcCfgEco[1]) and rewrite the chain
+    # against that. Letting UNCONNECTED leak through makes Gap E equivalence
+    # vacuously true while the actual ECO is wired to a phantom signal.
+    unconnected_var_issues = []
+    _UNC_RE = re.compile(r'\bUNCONNECTED_\d+\b')
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        ref = c.get('d_input_expected_function') or ''
+        m = _UNC_RE.findall(ref)
+        if m:
+            unconnected_var_issues.append(
+                f"changes[{idx}] target={tgt}: d_input_expected_function references "
+                f"UNCONNECTED placeholder(s) {sorted(set(m))} — trace to the real "
+                f"RTL source signal and rewrite (UNCONNECTED is not a real signal)")
+        for g in (c.get('d_input_gate_chain') or []):
+            for inp in (g.get('inputs') or []):
+                if _UNC_RE.search(str(inp)):
+                    unconnected_var_issues.append(
+                        f"changes[{idx}] target={tgt}: chain seq={g.get('seq','?')} "
+                        f"input {inp!r} is an UNCONNECTED placeholder — trace it to "
+                        f"the real source signal")
+    if unconnected_var_issues:
+        overall_pass = False
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'wire_swap' or c.get('mux_select_polarity_pending'):
             continue
@@ -504,6 +533,8 @@ def main():
         'scope_field_issues':            scope_field_issues,
         'wire_swap_field_issue_count':   len(wire_swap_field_issues),
         'wire_swap_field_issues':        wire_swap_field_issues,
+        'unconnected_var_issue_count':   len(unconnected_var_issues),
+        'unconnected_var_issues':        unconnected_var_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -512,7 +543,7 @@ def main():
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step1.py')
     print(f'  rtl_diff: {args.rtl_diff}')
-    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}  new_logic_field_issues: {len(new_logic_field_issues)}  mode_i_field_issues: {len(mode_i_field_issues)}  scope_field_issues: {len(scope_field_issues)}  wire_swap_field_issues: {len(wire_swap_field_issues)}')
+    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}  new_logic_field_issues: {len(new_logic_field_issues)}  mode_i_field_issues: {len(mode_i_field_issues)}  scope_field_issues: {len(scope_field_issues)}  wire_swap_field_issues: {len(wire_swap_field_issues)}  unconnected_var_issues: {len(unconnected_var_issues)}')
     print(f'  overall:  {"PASS" if overall_pass else "FAIL"}')
     for p in phantom:
         print(f'    - {p}')
@@ -533,6 +564,8 @@ def main():
     for p in scope_field_issues:
         print(f'    - {p}')
     for p in wire_swap_field_issues:
+        print(f'    - {p}')
+    for p in unconnected_var_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:

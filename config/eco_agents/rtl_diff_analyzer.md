@@ -673,6 +673,10 @@ The DFF has no PreEco D-driver and the new chain replaces it. Step 3 needs to em
 
 Even when polarity is decided, emit `mux_select_gate_function`, `mux_select_branch_true_on`, `mux_select_i0_net`, `mux_select_i1_net`. Step 3 needs the full MUX context to apply the rewire. Step 1 validate REJECTS the entry if any of the four is missing.
 
+**FORBIDDEN: `UNCONNECTED_<N>` placeholders as variables in chain inputs or `d_input_expected_function`.**
+
+`UNCONNECTED_<N>` is a Verilog marker for an undriven net — it is NOT a real signal. If a PreEco DFF's D-input shows `d_input_net: UNCONNECTED_<N>`, you MUST trace the placeholder back to the actual RTL source the chain should consume (e.g. `REG_UmcCfgEco[1]`) and emit the chain + `d_input_expected_function` against THAT signal. Step 1 validate REJECTS the entry if any chain input or expected_function contains `UNCONNECTED_<digits>`.
+
 **MANDATORY whole-chain equivalence reference field (Gap E) — REQUIRED for every change with a non-empty `d_input_gate_chain`:**
 
 For every `new_logic` change that emits a `d_input_gate_chain`, you MUST also emit a top-level `d_input_expected_function` field. Step 1 validate REJECTS the change if this field is missing (HIGH issue). The field is the boolean function the DFF.D should compute — a Python boolean expression in the chain's primary input variables.
