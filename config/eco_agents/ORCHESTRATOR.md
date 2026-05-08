@@ -114,10 +114,21 @@ Wait for the sub-agent to complete and read `data/<TAG>_eco_rtl_diff.json`.
 
 Wait for the sub-agent to complete.
 
+**Generate the per-stage rename map JSON (ORCHESTRATOR responsibility — do NOT delegate to sub-agent):**
+```bash
+cd <BASE_DIR> && python3 script/eco_scripts/eco_fenets_rename_map.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --raw-dir  data/ \
+    --tag      <TAG> --tile <TILE> \
+    --output   data/<TAG>_eco_fenets_rename_map.json
+cp <BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json <AI_ECO_FLOW_DIR>/
+```
+
 **CHECKPOINT — Verify ALL of the following before proceeding to Step 3:**
 ```bash
 ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_fenets_rename_map.json
 ```
 If any file is missing — eco_fenets_runner failed. Do NOT continue.
 
