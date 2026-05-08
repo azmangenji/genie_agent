@@ -407,6 +407,65 @@ def main():
     if new_logic_field_issues:
         overall_pass = False
 
+    # Mode I source-port info — when a new_logic_dff has d_input_net starting
+    # with UNCONNECTED_*, Step 3 needs to know which submodule output port
+    # the UNCONNECTED was originally tied to so it can emit the paired Mode I
+    # port_connection. Require submodule_instance + port_name + bus_bit_index.
+    mode_i_field_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        d_in = c.get('d_input_net') or ''
+        if not d_in.startswith(('UNCONNECTED_', 'SYNOPSYS_UNCONNECTED_')):
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        for f in ('submodule_instance', 'port_name', 'bus_bit_index'):
+            if c.get(f) is None:
+                mode_i_field_issues.append(
+                    f"changes[{idx}] target={tgt}: d_input_net={d_in!r} (UNCONNECTED) but "
+                    f"`{f}` MISSING — Step 3 needs it to emit the Mode I paired "
+                    f"child-scope port_connection")
+    if mode_i_field_issues:
+        overall_pass = False
+
+    # Hierarchy/scope path — every new_logic_dff must specify the full netlist
+    # scope (e.g. 'umccmd/ARB/CTRLSW') in `scope` or `instance_scope` so Step 3
+    # can land the new DFF in the correct instance when the host module has
+    # multiple instantiations.
+    scope_field_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        if not (c.get('scope') or c.get('instance_scope')):
+            tgt = c.get('target_register') or c.get('new_token') or '?'
+            scope_field_issues.append(
+                f"changes[{idx}] target={tgt}: `scope` (or `instance_scope`) MISSING — "
+                f"required by Step 3 to disambiguate when host module {c.get('module_name','?')!r} "
+                f"is instantiated multiple times")
+    if scope_field_issues:
+        overall_pass = False
+
+    # wire_swap MUX context — even when polarity is NOT pending, the agent must
+    # emit mux_select_gate_function + mux_select_branch_true_on +
+    # mux_select_i0_net + mux_select_i1_net so Step 3 can apply the rewire
+    # correctly. Currently only polarity_pending entries get the existing
+    # check_entry pass; non-pending entries can ship without I0/I1 nets.
+    wire_swap_field_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'wire_swap':
+            continue
+        if c.get('mux_select_polarity_pending'):
+            continue  # check_entry handles these
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        for f in ('mux_select_gate_function', 'mux_select_branch_true_on',
+                  'mux_select_i0_net', 'mux_select_i1_net'):
+            if not c.get(f):
+                wire_swap_field_issues.append(
+                    f"changes[{idx}] target={tgt}: wire_swap missing `{f}` — "
+                    f"Step 3 needs full MUX context to apply rewire")
+    if wire_swap_field_issues:
+        overall_pass = False
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'wire_swap' or c.get('mux_select_polarity_pending'):
             continue
@@ -439,6 +498,12 @@ def main():
         'chain_equivalence_issues':      chain_eq_issues,
         'new_logic_field_issue_count':   len(new_logic_field_issues),
         'new_logic_field_issues':        new_logic_field_issues,
+        'mode_i_field_issue_count':      len(mode_i_field_issues),
+        'mode_i_field_issues':           mode_i_field_issues,
+        'scope_field_issue_count':       len(scope_field_issues),
+        'scope_field_issues':            scope_field_issues,
+        'wire_swap_field_issue_count':   len(wire_swap_field_issues),
+        'wire_swap_field_issues':        wire_swap_field_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -447,7 +512,7 @@ def main():
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step1.py')
     print(f'  rtl_diff: {args.rtl_diff}')
-    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}  new_logic_field_issues: {len(new_logic_field_issues)}')
+    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}  new_logic_field_issues: {len(new_logic_field_issues)}  mode_i_field_issues: {len(mode_i_field_issues)}  scope_field_issues: {len(scope_field_issues)}  wire_swap_field_issues: {len(wire_swap_field_issues)}')
     print(f'  overall:  {"PASS" if overall_pass else "FAIL"}')
     for p in phantom:
         print(f'    - {p}')
@@ -462,6 +527,12 @@ def main():
     for p in chain_eq_issues:
         print(f'    - {p}')
     for p in new_logic_field_issues:
+        print(f'    - {p}')
+    for p in mode_i_field_issues:
+        print(f'    - {p}')
+    for p in scope_field_issues:
+        print(f'    - {p}')
+    for p in wire_swap_field_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:

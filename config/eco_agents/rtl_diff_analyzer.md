@@ -661,6 +661,18 @@ The flag is MANDATORY (Step 1 validator rejects entries that omit it). To opt ou
 }
 ```
 
+**MANDATORY scope/hierarchy field — for every `new_logic` / `new_logic_dff`:**
+
+Emit `scope` (or `instance_scope`) as the full netlist hierarchy path (e.g. `umccmd/ARB/CTRLSW`). Step 3 needs this to land the new DFF in the correct instance when `module_name` is instantiated multiple times. Step 1 validate REJECTS the entry if missing.
+
+**MANDATORY Mode I source-port info — when `d_input_net` starts with `UNCONNECTED_*`:**
+
+The DFF has no PreEco D-driver and the new chain replaces it. Step 3 needs to emit a paired child-scope `port_connection` so the chain input source resolves cleanly. Emit `submodule_instance` + `port_name` + `bus_bit_index` identifying the original UNCONNECTED slot. Step 1 validate REJECTS the entry if any of the three is missing.
+
+**MANDATORY MUX context on every `wire_swap` (not only polarity-pending ones):**
+
+Even when polarity is decided, emit `mux_select_gate_function`, `mux_select_branch_true_on`, `mux_select_i0_net`, `mux_select_i1_net`. Step 3 needs the full MUX context to apply the rewire. Step 1 validate REJECTS the entry if any of the four is missing.
+
 **MANDATORY whole-chain equivalence reference field (Gap E) — REQUIRED for every change with a non-empty `d_input_gate_chain`:**
 
 For every `new_logic` change that emits a `d_input_gate_chain`, you MUST also emit a top-level `d_input_expected_function` field. Step 1 validate REJECTS the change if this field is missing (HIGH issue). The field is the boolean function the DFF.D should compute — a Python boolean expression in the chain's primary input variables.
