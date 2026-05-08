@@ -289,9 +289,15 @@ def main():
 
     # Whole-chain equivalence (Gap E): for every d_input_gate_chain, compose
     # the gates' boolean functions and verify the composed expression matches
-    # the RTL spec stored in `d_input_expected_function` (if present). Catches
-    # the "individual cells valid but chain composition wrong for the role"
-    # class of bug — Step 1 truth-table check (cell vs gate_function) cannot.
+    # the RTL spec stored in `d_input_expected_function`. Catches the
+    # "individual cells valid but chain composition wrong for the role" class
+    # of bug — Step 1 truth-table check (cell vs gate_function) cannot.
+    #
+    # The reference field `d_input_expected_function` is MANDATORY for any
+    # change with a non-empty d_input_gate_chain — without it Gap E cannot
+    # verify the chain's boolean intent, leaving a silent gap that allowed
+    # the original 9868 INR3+IAOI21 bug through. If missing → HIGH issue
+    # (forces rtl_diff_analyzer to re-emit the change with the field).
     chain_eq_issues = []
     try:
         import eco_chain_equivalence as _ece
@@ -300,9 +306,18 @@ def main():
     if _ece is not None:
         for idx, c in enumerate(rtl_diff.get('changes', [])):
             chain = c.get('d_input_gate_chain') or []
+            if not chain:
+                continue  # no chain to check
             ref_expr = c.get('d_input_expected_function')
-            if not chain or not ref_expr:
-                continue  # skip if no chain or no reference spec
+            if not ref_expr:
+                # Mandatory reference missing — block flow
+                chain_eq_issues.append(
+                    f"changes[{idx}] target={c.get('target_register','?')}: "
+                    f"d_input_gate_chain present ({len(chain)} gates) but "
+                    f"`d_input_expected_function` field MISSING. "
+                    f"rtl_diff_analyzer must emit this field — see rtl_diff_analyzer.md "
+                    f"'MANDATORY whole-chain equivalence reference field (Gap E)' rule.")
+                continue
             dff_d = chain[-1].get('output_net') if chain else None
             if not dff_d:
                 continue

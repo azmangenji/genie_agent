@@ -644,11 +644,33 @@ Record `cell_type_from_preeco: true` when using a discovered compound type.
 
 **MANDATORY truth-table verification before recording any compound cell:** call `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py`. `False` means the cell does NOT compute the claimed function (cell name and logic don't always agree across libraries — particularly for inverter-input compound families) — pick a different cell or update `gate_function` to the cell's real logic; never write a `False` choice into the chain. `None` means the cell is not in the loaded library JSON — extend `script/eco_scripts/cell_libraries/<lib>.json` with the verified expression from the cell library, do not guess. This rule is the primary gate for cell choice; Step 3 validate enforces it as a backstop.
 
-**MANDATORY whole-chain equivalence reference field (Gap E):** for every `new_logic` change with a `d_input_gate_chain`, also emit a top-level `d_input_expected_function` field on the change. This is the boolean function the DFF.D should compute — a Python boolean expression in the chain's primary input variables (use `&` `|` `^` `~`, sanitize bit-selects like `Sig[2]` → `Sig_2_`, no Verilog macros — resolve them). Example for `if (IReset) X<=0; else X<=A & ~B & ((src==3'b000)|(src==3'b011))`:
+**MANDATORY whole-chain equivalence reference field (Gap E) — REQUIRED for every change with a non-empty `d_input_gate_chain`:**
+
+For every `new_logic` change that emits a `d_input_gate_chain`, you MUST also emit a top-level `d_input_expected_function` field. Step 1 validate REJECTS the change if this field is missing (HIGH issue). The field is the boolean function the DFF.D should compute — a Python boolean expression in the chain's primary input variables.
+
+**Procedure (do this for every chain you emit):**
+
+1. **Read the always block** for the new register from RTL.
+2. **Strip the reset clause** (`if (Reset) X <= 0; else X <= EXPR;`) → keep only `EXPR`. Reset is added back as `& ~Reset`.
+3. **Resolve all Verilog macros** to their bit values. Example: ```define UMC_CTRLSRC_SELFREF 3'b000``` → write the comparison expanded as bit AND/NOT.
+4. **Sanitize bit-selects** — Verilog `Sig[N]` → Python `Sig_N_`. Bus equality `src==3'b011` → `src_0_ & src_1_ & (~src_2_)`.
+5. **Translate operators** — Verilog `&` → Python `&`, `|` → `|`, `^` → `^`, `~` → `~`, `==` → expand to AND/NOT bit equalities.
+6. **Wrap with reset clause** — final form: `(<EXPR>) & (~Reset)` if reset is bake-in, or just `<EXPR>` if reset is via dedicated DFF reset pin.
+7. **Emit as a single string** in the JSON.
+
+**Example** — RTL: `if (IReset) X<=0; else X<=A & ~B & ((src==3'b000) | (src==3'b011))`
+```json
+{
+  "change_type": "new_logic",
+  "dff_instance_name": "X_reg",
+  "d_input_gate_chain": [...],
+  "d_input_expected_function": "A & (~B) & (~IReset) & (((~src_2_) & (~src_1_) & (~src_0_)) | (src_0_ & src_1_ & (~src_2_)))"
+}
 ```
-"d_input_expected_function": "A & (~B) & (~IReset) & (((~src_2_) & (~src_1_) & (~src_0_)) | (src_0_ & src_1_ & (~src_2_)))"
-```
-Step 1 validate composes the chain's actual boolean from cell truth tables and compares to this reference via brute-force truth-table enumeration. If the chain doesn't match the reference (e.g., compound cells like INR3/IAOI21 picked but their composition over-fires or misses codes), the chain is rejected before Step 4 burns wrong gates into the netlist.
+
+**Why this matters:** Per-cell truth-table check (Check 5) verifies each cell does what its `gate_function` name claims. But cells can be individually valid yet COMPOSE to the wrong boolean. The 9868 case: AI used `INR3 + IAOI21 + OR2 + INV + INV + AN4` — every cell self-consistent — but the composed function fired for codes 001/010/100 (false positives) AND missed code 011 (FADJ never detected). FM caught this after 30 min; Step 1 should catch it in 1 second via this check.
+
+**Skip ONLY if:** chain is empty (`d_input_gate_chain: []` because the D-input is a single net, not decomposed) — in that case `d_input_expected_function` is not required.
 
 **MANDATORY signal-in-scope check before recording any chain input:** every input signal MUST exist in the target module's scope — as a port, wire decl, or cell output net. If a referenced signal isn't visible (a frequent case is the registered version of an upstream port), look for an existing local DFF whose Q already produces the same logical signal and use its per-stage Q net name as the chain input. If no local source exists, propose a port promotion (`new_port` change + a `port_connection` from the parent that wires it). Never reference a signal name that won't resolve to an in-scope driver. Step 1 validate enforces this as a backstop.
 
