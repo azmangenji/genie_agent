@@ -985,6 +985,13 @@ All `net_path` values must be verified hierarchy paths using instance names. Do 
 
 ## Self-Validation (MANDATORY before writing the RPT)
 
+**First: ensure tile Liberty cache exists** (one-time per tile, ~8 min; skips automatically if cache already present):
+```bash
+cd <BASE_DIR> && python3 script/eco_scripts/eco_liberty_extractor.py --ref-dir <REF_DIR>
+```
+This writes `<REF_DIR>/data/eco_cell_library.json` — the authoritative cell truth-table source used by the truth-table and chain-equivalence checks. If the cache exists, this command exits instantly.
+
+**Then: run the Step 1 validator:**
 ```bash
 cd <BASE_DIR> && python3 script/eco_scripts/eco_validate_step1.py \
     --rtl-diff data/<TAG>_eco_rtl_diff.json --ref-dir <REF_DIR> --output data/<TAG>_eco_validate_step1.json

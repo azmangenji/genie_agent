@@ -281,7 +281,7 @@ def main():
                     fn   = g.get('gate_function') or ''
                     if not cell or not fn:
                         continue
-                    m, why = _ett.cell_function_matches(cell, fn)
+                    m, why = _ett.cell_function_matches(cell, fn, ref_dir=args.ref_dir)
                     if m is False:
                         tt_issues.append(f'changes[{idx}].{fld} seq={g.get("seq")}: cell={cell!r} does NOT compute claimed {fn!r} — {why}')
     if tt_issues:

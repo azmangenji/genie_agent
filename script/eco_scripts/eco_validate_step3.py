@@ -229,7 +229,7 @@ def main():
                 cell = e.get('cell_type', '')
                 fn = e.get('gate_function', '')
                 if not cell or not fn: continue
-                m, why = _ett.cell_function_matches(cell, fn)
+                m, why = _ett.cell_function_matches(cell, fn, ref_dir=args.ref_dir)
                 inst = e.get('instance_name', '?')
                 if m is False:
                     issues.append(f"CRITICAL: ECO {inst} cell_type={cell!r} does NOT compute claimed gate_function={fn!r} — {why}. Pick a cell whose family matches, or update gate_function to reflect actual cell logic.")
