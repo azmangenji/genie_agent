@@ -318,12 +318,19 @@ study[stage].append({
 })
 # Same for se_bridge, q_bridge
 
-# (e) Update DFF entry's port_connections_per_stage SE/SI to use the new ports
-dff_entry["port_connections_per_stage"]["PrePlace"]["SE"] = f"ECO_{jira}_SE_in"
-dff_entry["port_connections_per_stage"]["PrePlace"]["SI"] = f"ECO_{jira}_SI_in"
-dff_entry["port_connections_per_stage"]["Route"]["SE"] = f"ECO_{jira}_SE_in"
-dff_entry["port_connections_per_stage"]["Route"]["SI"] = f"ECO_{jira}_SI_in"
-# Synthesize stays 1'b0
+# (e) Update DFF entry's port_connections_per_stage SE/SI to use the new ports.
+# CRITICAL: Mode S overrides neighbor-DFF inference for SE/SI. When the DFF
+# entry is duplicated into per-stage entry lists (Synthesize/PrePlace/Route),
+# every copy MUST carry the SAME `port_connections_per_stage` map. NEVER let
+# a stage entry rewrite its own SE/SI to a neighbor-DFF net (e.g. test_so629,
+# FxPrePlace_HFSNET_178) — that's the failure mode that broke 9868 Round 1.
+for stage in ("Synthesize", "PrePlace", "Route"):
+    if stage == "Synthesize":
+        dff_entry["port_connections_per_stage"][stage]["SE"] = "1'b0"
+        dff_entry["port_connections_per_stage"][stage]["SI"] = "1'b0"
+    else:
+        dff_entry["port_connections_per_stage"][stage]["SE"] = f"ECO_{jira}_SE_in"
+        dff_entry["port_connections_per_stage"][stage]["SI"] = f"ECO_{jira}_SI_in"
 dff_entry["mode_S_applied"] = True
 ```
 

@@ -721,16 +721,30 @@ def check_mode_s_stitching(study_path, ref_dir):
             if not assn:
                 failures.append(f'[MODE_S_ASSIGN_MISSING] {stage}: {inst} requires Mode S but assign for {qo.group(1)} not found in {host!r}')
                 continue
-            # Verify DFF's SE/SI in netlist actually point at the new ports
+            # Verify DFF's SE/SI in netlist match the declared Mode S port names
+            # exactly — not merely "≠ 1'b0". A neighbor-DFF net that bypasses
+            # the bridge ports (e.g. test_so629, FxPrePlace_HFSNET_*) would pass
+            # the old non-1'b0 check but break FM because the bridge wires don't
+            # connect to the existing scan chain.
             dff_re = re.search(rf'\b\S+\s+{re.escape(inst)}\s*\(\s*([^;]+?)\)\s*;', body, re.DOTALL)
             if dff_re:
                 pcs = dff_re.group(1)
                 se_m = re.search(r'\.SE\s*\(\s*([^)]+?)\s*\)', pcs)
                 si_m = re.search(r'\.SI\s*\(\s*([^)]+?)\s*\)', pcs)
-                if se_m and "1'b0" in se_m.group(1):
-                    failures.append(f"[MODE_S_SE_NOT_BRIDGED] {stage}: {inst}.SE still tied to 1'b0 — Mode S stitching not landed")
-                if si_m and "1'b0" in si_m.group(1):
-                    failures.append(f"[MODE_S_SI_NOT_BRIDGED] {stage}: {inst}.SI still tied to 1'b0 — Mode S stitching not landed")
+                se_actual = se_m.group(1).strip() if se_m else ''
+                si_actual = si_m.group(1).strip() if si_m else ''
+                se_expected = se.group(1)  # ECO_*_SE_in name from port decl
+                si_expected = si.group(1)
+                if se_actual != se_expected:
+                    failures.append(
+                        f"[MODE_S_SE_MISMATCH] {stage}: {inst}.SE = {se_actual!r} "
+                        f"but Mode S declared {se_expected!r} — DFF SE/SI must use "
+                        f"the bridge ports, not a neighbor-DFF net")
+                if si_actual != si_expected:
+                    failures.append(
+                        f"[MODE_S_SI_MISMATCH] {stage}: {inst}.SI = {si_actual!r} "
+                        f"but Mode S declared {si_expected!r} — DFF SE/SI must use "
+                        f"the bridge ports, not a neighbor-DFF net")
     return failures
 
 

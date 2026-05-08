@@ -86,9 +86,14 @@ def parse_raw_rpt(path):
             n = NET_RE.match(line)
             if n:
                 flush()
-                cur_net = n.group(1).rstrip('_').rstrip('_0_')  # normalize bus suffix
+                full = n.group(1)
+                # Reduce to leaf signal name to match how queries are keyed
+                # (build_rename_map looks up by short signal name, not full path).
+                cur_net = full.rsplit('/', 1)[-1]
+                # Normalize bus suffix: 'BeqCtrlPeSrc_0_' → 'BeqCtrlPeSrc'
                 if cur_net.endswith('_0_'):
                     cur_net = cur_net[:-3]
+                cur_net = cur_net.rstrip('_')
                 cur_status = 'PENDING'
                 cur_pos = []; cur_neg = []
                 continue
@@ -203,9 +208,21 @@ def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts):
                 entry[stage] = sig
                 had_warning = True
             elif r['status'] == 'FOUND' and r['positive']:
-                # Pick first positive-polarity qualifier; take only the leaf name
-                first = r['positive'][0]
-                entry[stage] = first.split('/')[-1]
+                # Prefer a positive net whose path passes through the SAME scope
+                # as the original RTL signal (gives studier a scope-correct alias);
+                # fall back to first positive when no scope match exists. Keep the
+                # last 2 path components so studier sees `<cell>/<pin>` (e.g.
+                # `ArbCtrlPeRdy_reg/Q`) rather than just `Q` — useful for
+                # disambiguating identical pin names across cells.
+                scope_hint = (q.get('net_path') or '').rsplit('/', 1)[0]
+                pick = None
+                for p in r['positive']:
+                    if scope_hint and scope_hint in p:
+                        pick = p; break
+                if pick is None:
+                    pick = r['positive'][0]
+                parts = pick.rsplit('/', 2)
+                entry[stage] = '/'.join(parts[-2:]) if len(parts) >= 2 else pick
             else:
                 entry[stage] = sig
                 had_warning = True
