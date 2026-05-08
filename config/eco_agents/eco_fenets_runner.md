@@ -10,40 +10,78 @@
 
 ---
 
-## STEP A — Validate nets_to_query
+## STEP A — Derive comprehensive nets_to_query from changes[]
 
-Load `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`. Apply the valid_tokens filter:
+Load `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`. **Build `nets_to_query` from scratch** by walking `changes[]`. The goal: query EVERY net whose per-stage rename matters for the studier — clock, reset, chain leaves, port_promotion targets, Mode I candidates. This catches Mode J (per-stage rename divergence) and Mode I (undriven internal port pin) at Step 2 instead of waiting for Step 5/6.
+
+**Per-change derivation (7 categories):**
+
+| # | Trigger | Query | Rationale |
+|---|---------|-------|-----------|
+| 1 | `wire_swap` / `and_term` change | `<scope>/<old_token>` and `<scope>/<new_token>` | Original purpose — find driver + verify new exists |
+| 2 | `new_logic` with `dff_clock` field set | `<scope>/<dff_clock>` (e.g., `<scope>/UCLK01`) | **Mode J prevention**: get per-stage CTS rename map for the new DFF's clock |
+| 3 | `new_logic` with `reset_signal` field set | `<scope>/<reset_signal>` (e.g., `<scope>/IReset`) | **Mode J prevention**: get per-stage scan/DFT rename for the reset signal |
+| 4 | `new_logic` with `d_input_gate_chain` | every leaf input in `chain[].inputs` not produced by another chain gate (`n_eco_*`) | Per-stage rename for every chain input — eliminates studier per-stage guessing |
+| 5 | `port_promotion` change | `<scope>/<promoted_signal>` | Confirms the existing reg's net is accessible at parent scope |
+| 6 | `wire_swap` / `port_connection` referencing `UNCONNECTED_*` | `<submodule_inst>/<port_name>[<bit>]` | **Mode I detection**: if FM returns "no equivalent / undriven" → child internal port not driven (flag for Mode I wire-up at Step 3) |
+| 7 | `new_port` with hierarchical hookup | parent-scope wires the new port connects to | Confirms hookup path |
+
+**Skip rules:**
+- `new_logic` target register itself (its output net doesn't exist in PreEco — query its dependencies instead)
+- Any constant (`1'b0`, `1'b1`)
+- Any `n_eco_*` net (these are produced internally by the chain)
+
+**Build the query list:**
 
 ```python
-no_fm_types = {"port_promotion", "new_port", "port_connection"}
-valid_tokens = set()
-for c in rtl_diff["changes"]:
-    if c.get("change_type") in no_fm_types:
-        continue
-    if c.get("old_token"): valid_tokens.add(c["old_token"])
-    if c.get("new_token"): valid_tokens.add(c["new_token"])
-
-def net_signal(net_path):
-    name = net_path.split("/")[-1]
-    return name[:-3] if name.endswith("_0_") else name
-
-valid_nets = [n for n in rtl_diff["nets_to_query"]
-              if net_signal(n["net_path"]) in valid_tokens]
+no_fm_types_for_token = {"new_port", "port_connection"}  # these have no old/new token to query
+nets_to_query = []
+for idx, c in enumerate(rtl_diff["changes"]):
+    ct = c.get("change_type", "")
+    scope = c.get("scope") or c.get("instance_scope") or ""
+    # Cat 1: existing wire_swap/and_term tokens
+    if ct in ("wire_swap", "and_term"):
+        for tok_field in ("old_token", "new_token"):
+            t = c.get(tok_field)
+            if t: nets_to_query.append({"net_path": f"{scope}/{t}", "source": f"changes[{idx}].{tok_field}"})
+    # Cat 2-4: new_logic DFF and chain
+    if ct in ("new_logic", "new_logic_dff"):
+        if c.get("dff_clock"):     nets_to_query.append({"net_path": f"{scope}/{c['dff_clock']}", "source": f"changes[{idx}].dff_clock"})
+        if c.get("reset_signal"):  nets_to_query.append({"net_path": f"{scope}/{c['reset_signal']}", "source": f"changes[{idx}].reset_signal"})
+        for g in (c.get("d_input_gate_chain") or []):
+            for inp in (g.get("inputs") or []):
+                base = inp.split('[')[0]  # strip bit-select for query
+                if base.startswith(("n_eco_", "1'b", "0'b")): continue
+                nets_to_query.append({"net_path": f"{scope}/{base}", "source": f"changes[{idx}].chain[{g.get('seq')}]"})
+    # Cat 5: port_promotion
+    if ct == "port_promotion":
+        s = c.get("signal_name") or c.get("new_token")
+        if s: nets_to_query.append({"net_path": f"{scope}/{s}", "source": f"changes[{idx}].port_promotion"})
+    # Cat 6: Mode I candidates (UNCONNECTED rename targets)
+    if c.get("original_unconnected_net", "").startswith(("UNCONNECTED_", "SYNOPSYS_UNCONNECTED_")):
+        sm = c.get("submodule_instance") or c.get("instance_name", "")
+        port = c.get("port_name", ""); bbi = c.get("bus_bit_index")
+        if sm and port and bbi is not None:
+            nets_to_query.append({"net_path": f"{scope}/{sm}/{port}[{bbi}]", "source": f"changes[{idx}].mode_I_candidate"})
+    # Cat 7: new_port hierarchical hookup — TODO if rtl_diff_analyzer emits hookup hints
+# Deduplicate
+seen = set(); valid_nets = []
+for n in nets_to_query:
+    if n["net_path"] in seen: continue
+    seen.add(n["net_path"]); valid_nets.append(n)
 ```
 
-Drop any `nets_to_query` entry that does not correspond to `old_token` or `new_token`.
+`valid_nets` is the comprehensive query batch sent to FM.
 
-### STEP A2 — Document new_logic_dff entries that bypass FM
+### STEP A2 — Document DFF insertions that bypass FM
 
-For each change with `change_type: "new_logic"` (DFF insertion) where the target register does not exist in PreEco (not in `nets_to_query` after the valid_tokens filter), add a dedicated section to the Step 2 RPT:
+For each `new_logic` (DFF insertion) where the target register itself doesn't exist in PreEco, add to the Step 2 RPT:
 
 ```
-NEW LOGIC DFF ENTRIES — NO FM QUERY REQUIRED:
-  <target_register>: new signal not present in PreEco reference
-    -> eco_netlist_studier Phase 0 handles insertion directly from RTL diff JSON
+NEW LOGIC DFF ENTRIES — NO FM QUERY ON TARGET (queries on its dependencies only):
+  <target_register>: new signal — eco_netlist_studier Phase 0 handles insertion
+    Dependencies queried: <list of clock/reset/chain leaves from Cat 2/3/4>
 ```
-
-This ensures no DFF insertions are silently skipped or forgotten between Step 2 and Step 3.
 
 ---
 
@@ -158,6 +196,63 @@ for entry in condition_inputs_to_query:
 Write `condition_input_resolutions` to the fenets RPT and to the SPEC_SOURCES section so the studier can access them.
 
 **Why this works:** FM find_equivalent_nets does a full logical equivalence analysis between RTL and gate-level — it finds the impl net logically equivalent to the RTL signal regardless of what synthesis named it. This is the same mechanism that resolves all other wire_swap old_tokens.
+
+---
+
+## STEP D-MAP — Write per-stage rename map JSON (MANDATORY new output)
+
+After all FM queries complete, build a per-stage rename map for every queried net. This is the **single source of truth** that Step 3 (eco_netlist_studier) consults for per-stage net values — eliminating the studier's neighbor-DFF inference for any signal already in the map.
+
+**Output:** `<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`
+
+```json
+{
+  "_metadata": {"tag": "<TAG>", "tile": "<TILE>", "queries_total": <N>},
+  "<scope>/<signal>": {
+    "Synthesize": "<synth_net_name>",
+    "PrePlace":   "<pp_net_name>",
+    "Route":      "<route_net_name>",
+    "source":     "changes[<idx>].<source_field>"
+  },
+  ...
+}
+```
+
+**Per-net rules:**
+- `Synthesize`: if FM-036 (no equiv on SynRtl→Synthesize), set to the original signal name (`UCLK01`, `IReset`, etc.) — gate-level Synth uses RTL names directly.
+- `PrePlace` / `Route`: pick the FIRST `[+]` (positive polarity) qualifying impl net from FM's equivalent_nets list. Skip `[-]` (inverted) entries.
+- If FM returned NO qualifying nets across both stages: set `Synthesize`/`PrePlace`/`Route` to the original signal name (best-effort), and add `"warning": "no equivalent nets found — studier should fall back to neighbor-DFF inference"`.
+- For Mode I candidate queries (Cat 6): if FM returns "no equivalent" or "constant 0", add `"mode_I_signature": true` so Step 3 emits the Mode I paired entry automatically.
+
+```python
+import json
+rename_map = {"_metadata": {"tag": TAG, "tile": TILE, "queries_total": len(valid_nets)}}
+for n in valid_nets:
+    key = n["net_path"]
+    entry = {"source": n["source"]}
+    for stage in ("Synthesize", "PrePlace", "Route"):
+        result = fm_results[stage].get(key)
+        if result is None:
+            entry[stage] = key.split("/")[-1]  # fallback to original name
+        elif result == "FM-036":
+            entry[stage] = key.split("/")[-1]
+        elif result == "NO_EQUIV":
+            entry[stage] = key.split("/")[-1]
+            entry["warning"] = "no equivalent nets — studier fallback inference"
+        else:
+            # Pick first positive-polarity qualifier
+            entry[stage] = result["positive_qualifiers"][0].split("/")[-1] if result.get("positive_qualifiers") else key.split("/")[-1]
+    # Mode I detection
+    if n["source"].endswith(".mode_I_candidate"):
+        if all(entry.get(s) in (key.split("/")[-1], None) for s in ("Synthesize","PrePlace","Route")):
+            entry["mode_I_signature"] = True
+    rename_map[key] = entry
+
+with open(f"{BASE_DIR}/data/{TAG}_eco_fenets_rename_map.json", "w") as f:
+    json.dump(rename_map, f, indent=2)
+```
+
+This file is consumed by `eco_netlist_studier` Phase 0b-STAGE-NETS as the primary source for per-stage net resolution.
 
 ---
 

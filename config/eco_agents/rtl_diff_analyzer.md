@@ -227,6 +227,8 @@ If Step C found that the declaring module is different from the changed file's m
 
 ## Step D — Net Selection
 
+**`nets_to_query` building is owned by Step 2 (`eco_fenets_runner`).** Skip this step. The patterns below stay for Step 2's reference (it reads `changes[]` directly).
+
 For EACH change, determine which gate-level nets will reveal WHERE to make the ECO and HOW to rewire. The goal is to find which gate-level net connects to the target pin.
 
 **General principles:**

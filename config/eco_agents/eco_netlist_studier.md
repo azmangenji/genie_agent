@@ -159,7 +159,12 @@ P&R renames DFF outputs (scan insertion in PP, CTS/optimization in Route). A wir
 4. If upstream also absent → **CTS buffer search**: grep entire module scope for any cell whose output is the only driver of any net that feeds the same downstream consumers as `<net>` in Synthesize. CTS creates buffer chains (any cell type, not just BUF) with tool-generated output net names — accept the first driven net found in the P&R module scope that reaches the same fanout path.
 5. If aliases differ across stages → set `entry["net_per_stage"][pin] = {Syn: ..., PP: ..., Route: ...}`.
 
-**P&R PER-STAGE ALIAS RULE (MANDATORY — all ECO input pins):** Per-stage values for every input pin (anything except `{Z, ZN, ZN1, Q, QN, CO}`) MUST be **copied from a pre-existing DFF in the same module scope** for THAT stage. Find a neighbor DFF whose Synthesize value of the same pin matches the ECO entry's logical signal; copy that neighbor's per-stage net name verbatim — including scan/DFT/CTS-renamed names. NEVER force the Synthesize name across all stages; doing so causes cone divergence (FM cannot reconcile the new ECO cell's pin to the rest of the design). For SE/SI on new ECO DFFs: Synth = `1'b0` (RTL-clean), PP/Route = neighbor DFF's per-stage SE/SI (real scan-bridge wire — NOT `1'b0`, which would isolate the new flop from the scan chain).
+**P&R PER-STAGE ALIAS RULE (MANDATORY — all ECO input pins):** Per-stage values for every input pin (anything except `{Z, ZN, ZN1, Q, QN, CO}`) are resolved in this priority order:
+
+1. **Read `<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json` first** — Step 2 (eco_fenets_runner) builds an authoritative per-stage rename map for every queried signal (clocks, resets, chain leaves, port_promotion targets, Mode I candidates). If the map has the pin's logical signal, USE THE MAP'S PER-STAGE VALUES VERBATIM. This is the single source of truth.
+2. **Fallback — neighbor-DFF inference** (only when signal is not in the rename map): find a pre-existing DFF in the same module scope whose Synthesize value of the same pin matches the ECO entry's logical signal; copy that neighbor's per-stage net name verbatim, including scan/DFT/CTS-renamed names.
+
+NEVER force the Synthesize name across all stages — both options above produce per-stage values that match what FM expects. For SE/SI on new ECO DFFs: Synth = `1'b0` (RTL-clean), PP/Route = neighbor DFF's per-stage SE/SI (real scan-bridge wire — NOT `1'b0`).
 
 Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SAME` if identical.
 
