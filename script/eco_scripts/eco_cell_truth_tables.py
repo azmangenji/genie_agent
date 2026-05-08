@@ -58,7 +58,9 @@ ABSTRACT_GATE_FUNCTIONS = {
 # ── Engine: regex to extract cell family from a full cell-type string ────────
 # Family = cell-name prefix before drive strength suffix.
 # Example: AN2D1BWP136P5M156H3P48CPDLVT → AN2
-_FAMILY_RE = re.compile(r"^([A-Z]+\d*)(?:D\d+)?[A-Z0-9]*$")
+# The drive-strength `D\d+` is REQUIRED in the pattern to stop greedy [A-Z]+ from
+# consuming letters AFTER the family (e.g. `INV` in INVD1BWP, not `INVD`).
+_FAMILY_RE = re.compile(r"^([A-Z]+\d*)D\d+[A-Z0-9]*$")
 
 def family_of(cell_type):
     """Extract the cell family prefix from a full cell_type string. Returns

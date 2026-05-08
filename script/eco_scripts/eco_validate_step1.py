@@ -287,6 +287,44 @@ def main():
     if tt_issues:
         overall_pass = False
 
+    # Whole-chain equivalence (Gap E): for every d_input_gate_chain, compose
+    # the gates' boolean functions and verify the composed expression matches
+    # the RTL spec stored in `d_input_expected_function` (if present). Catches
+    # the "individual cells valid but chain composition wrong for the role"
+    # class of bug — Step 1 truth-table check (cell vs gate_function) cannot.
+    chain_eq_issues = []
+    try:
+        import eco_chain_equivalence as _ece
+    except ImportError:
+        _ece = None
+    if _ece is not None:
+        for idx, c in enumerate(rtl_diff.get('changes', [])):
+            chain = c.get('d_input_gate_chain') or []
+            ref_expr = c.get('d_input_expected_function')
+            if not chain or not ref_expr:
+                continue  # skip if no chain or no reference spec
+            dff_d = chain[-1].get('output_net') if chain else None
+            if not dff_d:
+                continue
+            impl_expr, inputs, comp_issues = _ece.compose_chain(chain, dff_d)
+            if impl_expr is None:
+                chain_eq_issues.append(f"changes[{idx}] target={c.get('target_register','?')}: cannot compose chain — {'; '.join(comp_issues)}")
+                continue
+            ref_vars = sorted(set(re.findall(r'\b[A-Za-z_]\w*\b', ref_expr)) - {'and','or','not'})
+            all_vars = sorted(set(inputs) | set(ref_vars))
+            eq, details = _ece.equivalent(impl_expr, ref_expr, all_vars)
+            if eq is False:
+                preview = '; '.join(f"{combo}→impl={iv},ref={rv}" for combo, iv, rv in details[:3])
+                chain_eq_issues.append(
+                    f"changes[{idx}] target={c.get('target_register','?')}: chain NOT EQUIVALENT to RTL spec — "
+                    f"{len(details)} mismatching combo(s). First: {preview}")
+            elif eq is None:
+                # Inconclusive (e.g., > 12 inputs); record as warning
+                chain_eq_issues.append(
+                    f"changes[{idx}] target={c.get('target_register','?')}: chain equivalence INCONCLUSIVE — {details}")
+    if chain_eq_issues:
+        overall_pass = False
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'wire_swap' or c.get('mux_select_polarity_pending'):
             continue
@@ -315,6 +353,8 @@ def main():
         'truth_table_issues':      tt_issues,
         'signal_in_scope_issue_count': len(sis_issues),
         'signal_in_scope_issues':      sis_issues,
+        'chain_equivalence_issue_count': len(chain_eq_issues),
+        'chain_equivalence_issues':      chain_eq_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -323,7 +363,7 @@ def main():
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step1.py')
     print(f'  rtl_diff: {args.rtl_diff}')
-    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}')
+    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}')
     print(f'  overall:  {"PASS" if overall_pass else "FAIL"}')
     for p in phantom:
         print(f'    - {p}')
@@ -334,6 +374,8 @@ def main():
     for p in tt_issues:
         print(f'    - {p}')
     for p in sis_issues:
+        print(f'    - {p}')
+    for p in chain_eq_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:

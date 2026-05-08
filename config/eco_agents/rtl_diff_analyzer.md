@@ -644,6 +644,12 @@ Record `cell_type_from_preeco: true` when using a discovered compound type.
 
 **MANDATORY truth-table verification before recording any compound cell:** call `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py`. `False` means the cell does NOT compute the claimed function (cell name and logic don't always agree across libraries — particularly for inverter-input compound families) — pick a different cell or update `gate_function` to the cell's real logic; never write a `False` choice into the chain. `None` means the cell is not in the loaded library JSON — extend `script/eco_scripts/cell_libraries/<lib>.json` with the verified expression from the cell library, do not guess. This rule is the primary gate for cell choice; Step 3 validate enforces it as a backstop.
 
+**MANDATORY whole-chain equivalence reference field (Gap E):** for every `new_logic` change with a `d_input_gate_chain`, also emit a top-level `d_input_expected_function` field on the change. This is the boolean function the DFF.D should compute — a Python boolean expression in the chain's primary input variables (use `&` `|` `^` `~`, sanitize bit-selects like `Sig[2]` → `Sig_2_`, no Verilog macros — resolve them). Example for `if (IReset) X<=0; else X<=A & ~B & ((src==3'b000)|(src==3'b011))`:
+```
+"d_input_expected_function": "A & (~B) & (~IReset) & (((~src_2_) & (~src_1_) & (~src_0_)) | (src_0_ & src_1_ & (~src_2_)))"
+```
+Step 1 validate composes the chain's actual boolean from cell truth tables and compares to this reference via brute-force truth-table enumeration. If the chain doesn't match the reference (e.g., compound cells like INR3/IAOI21 picked but their composition over-fires or misses codes), the chain is rejected before Step 4 burns wrong gates into the netlist.
+
 **MANDATORY signal-in-scope check before recording any chain input:** every input signal MUST exist in the target module's scope — as a port, wire decl, or cell output net. If a referenced signal isn't visible (a frequent case is the registered version of an upstream port), look for an existing local DFF whose Q already produces the same logical signal and use its per-stage Q net name as the chain input. If no local source exists, propose a port promotion (`new_port` change + a `port_connection` from the parent that wires it). Never reference a signal name that won't resolve to an in-scope driver. Step 1 validate enforces this as a backstop.
 
 **For each new condition `<cond_expr> ? <val> : <next_condition>`:**
