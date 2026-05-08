@@ -32,6 +32,22 @@ Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 
 ---
 
+## STEP 0 — Sync all per-tag artifacts to AI_ECO_FLOW_DIR (MANDATORY FIRST ACTION)
+
+Before generating any summary RPT, HTML, or email, copy every JSON / RPT / TXT artifact for this run from `<BASE_DIR>/data/` to `<AI_ECO_FLOW_DIR>/`. The flow dir is the engineer-facing handoff — anything left only in `data/` is invisible to whoever inherits the run.
+
+```bash
+mkdir -p <AI_ECO_FLOW_DIR>
+for f in <BASE_DIR>/data/<TAG>_*.json <BASE_DIR>/data/<TAG>_*.rpt <BASE_DIR>/data/<TAG>_*.txt ; do
+    [ -f "$f" ] && cp -n "$f" <AI_ECO_FLOW_DIR>/
+done
+ls <AI_ECO_FLOW_DIR>/<TAG>_*.json <AI_ECO_FLOW_DIR>/<TAG>_*.rpt | wc -l
+```
+
+The `cp -n` flag preserves anything earlier orchestrators already copied (don't overwrite). Verify the count is non-zero before proceeding.
+
+---
+
 ## STEP 7a — Write Summary RPT
 
 Read all `data/<TAG>_eco_applied_round<ROUND>.json` files (ROUND = 1 to TOTAL_ROUNDS) and combine statistics.
