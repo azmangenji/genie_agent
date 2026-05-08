@@ -212,19 +212,7 @@ def main():
                 if hit:
                     issues.append(f"CRITICAL: Mode I gap — parent rename of {orig} at {child_mod}.{port}[{bbi}] but no paired child-scope port_connection wires {port}[{bbi}] internally. Add entry: module_name={child_mod}, bus_bit_index={bbi}, net_name={port}[{bbi}]")
 
-    # ── 12. (REMOVED) — earlier rule "force same CP across stages" was wrong.
-    # Engineer's pattern: CP per stage matches whatever the closest existing DFF
-    # in the same module scope uses for THAT stage (may differ across stages).
-    # New ECO DFFs should follow the same per-stage value as neighboring DFFs.
-
-    # ── 13. (REMOVED) — earlier rule "P&R-rename alias prohibition for input
-    # pins" was wrong. New ECO cell inputs that connect to existing signals
-    # SHOULD use the per-stage actual driver net name — including scan/DFT/CTS
-    # renames like test_so*, dftopt*. These are real signal names, not bugs.
-    # The per-stage name just reflects how the upstream driver got renamed by
-    # P&R/scan tools; FM's cell-matching reconciles them via the parent DFF.
-
-    # ── 14. Cell truth-table check: every new_logic_gate's cell_type must
+    # ── 12. Cell truth-table check: every new_logic_gate's cell_type must
     # actually compute the claimed gate_function. Catches the case where a
     # cell name suggests one boolean function but the library cell computes
     # a different one (common for inverter-input compound cells).
@@ -249,7 +237,7 @@ def main():
                     # Both unknown → uncovered cell; warn so the library JSON can be extended
                     issues.append(f"MEDIUM: ECO {inst} cell_type={cell!r} (family={_ett.family_of(cell)!r}) and gate_function={fn!r} not covered — cannot verify functional correctness. Add to script/eco_scripts/cell_libraries/<your_lib>.json.")
 
-    # ── 15. Scan-bridge SE/SI for new ECO DFFs in P&R: WARN when SE/SI is a
+    # ── 13. Scan-bridge SE/SI for new ECO DFFs in P&R: WARN when SE/SI is a
     # constant in P&R stages. Constants may pass FM if the DFF's clock cone
     # doesn't cross scan_cntl logic (e.g. CP=wrp_clk_*), but they fail when
     # CP touches the main clock domain (CP=UCLK*) — the new DFF appears as a
@@ -270,7 +258,7 @@ def main():
                             else "low-risk")
                     issues.append(f"MEDIUM: ECO DFF {inst}.{pin} in {stage} = {v!r} (constant) — {risk} of scan-cone divergence (CP={cp!r}). If FM rejects this DFF, hook to a neighboring DFF's per-stage {pin} net (Mode S scan-stitching).")
 
-    # ── 16. Per-stage CP/SE/SI must come from an existing DFF in the same scope
+    # ── 14. Per-stage CP/SE/SI must come from an existing DFF in the same scope
     # for each stage. Catches "force same-as-Synthesize" anti-pattern and
     # ensures per-stage net names actually exist.
     if _os2.path.isdir(_os2.path.join(args.ref_dir, 'data', 'PostEco')):
@@ -325,7 +313,7 @@ def main():
                         sev = "HIGH" if pin == "CP" else "MEDIUM"
                         issues.append(f"{sev}: ECO DFF {inst}.{pin} in {stage}={v!r} not used by any existing DFF in module {mod!r}. Existing values include {sample}. {'Pick one of those' if pin == 'CP' else 'Either pick a neighbor value OR add as new bridge port'} for per-stage consistency.")
 
-    # ── 17. Every confirmed entry must have non-empty `reason`, `notes`, and
+    # ── 15. Every confirmed entry must have non-empty `reason`, `notes`, and
     # `source` — these populate the Step 3 RPT and serve as the audit trail for
     # round-N re-studier. Empty fields = un-traceable change.
     REQUIRED_CTX = ('reason', 'notes', 'source')
