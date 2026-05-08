@@ -199,7 +199,9 @@ Write `condition_input_resolutions` to the fenets RPT and to the SPEC_SOURCES se
 
 ---
 
-## STEP D-MAP — Write per-stage rename map JSON (MANDATORY new output)
+## STEP D-MAP — Write per-stage rename map JSON (MANDATORY — DO NOT SKIP)
+
+You MUST invoke this script before returning to the orchestrator. Writing only the human-review `_eco_step2_fenets.rpt` is INSUFFICIENT — Step 3 (eco_netlist_studier) reads the JSON map FIRST and falls back to slower neighbor-DFF inference if it is missing. The orchestrator's Step 2 checkpoint will fail and refuse to spawn Step 3 if `<TAG>_eco_fenets_rename_map.json` is absent. Do not return without it.
 
 After all FM queries complete, generate the per-stage rename map by running:
 
