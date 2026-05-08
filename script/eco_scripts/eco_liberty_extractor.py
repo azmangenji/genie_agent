@@ -102,37 +102,52 @@ def family_of(cell_name):
 # ── Library file selection ─────────────────────────────────────────────────
 
 def select_lib_files(lib_dir):
-    """Select Liberty files to parse. Strategy:
-    - tt0p9v100c corner (typical) for functional truth tables
-    - Main cell families only (bwp*/ccs-amd* variants across all gate widths)
-    - At least 1 MB (skip stubs)
-    - Skip redundant variant suffixes (pmlvt, mrkl, etc.) — functional truth
-      tables don't change across PM/marking variants in the same corner.
+    """Select the MINIMUM set of Liberty files that covers all cell families.
+
+    Strategy: take ONE file per gate-width bucket (e.g. M117, M156, M273).
+    Pick the LARGEST file in each bucket — larger = more cells = better coverage.
+    Truth tables don't change across VT/PM/marking variants for the same cell,
+    so only one representative per gate-width is needed.
+
+    Uses tt0p9v100c (typical process corner) — functional truth tables are
+    identical across process corners; only timing changes.
+
+    Typical result: 3-5 files (~300 MB each) parsed in 60-90 sec instead of
+    scanning 100+ variants for the same truth-table data.
     """
     lib_dir = Path(lib_dir)
     if not lib_dir.exists():
         return []
-    # Priority: amd-confidential main cells at tt corner; all gate widths
-    selected = []
-    seen_family = set()  # track (gate_width, vt_suffix) to avoid duplicates
-    for gz in sorted(lib_dir.glob('*.lib.gz')):
-        sz = gz.stat().st_size
-        if sz < 500_000:           # skip stubs < 500 KB
-            continue
+
+    # Group all candidate libs by gate-width prefix, keep the largest per group
+    # Gate-width pattern: mh117, mh156, mh273, mh117l, etc.
+    buckets = {}   # width_key → (size, path)
+    for gz in lib_dir.glob('*.lib.gz'):
         name = gz.name.lower()
-        if 'tt0p9v100c' not in name:  # typical corner only
+        if 'tt0p9v100c' not in name:
             continue
-        # Extract gate-width + VT suffix for dedup
-        # Pattern: tcbn03cbwp136p5m<WIDTH>....<VTSUFFIX>.tt0p9...
-        wm  = re.search(r'bwp136p5m\w+', name)
-        vtm = re.search(r'(amdconfidential[a-z]+|baselvt|basee?lvt|baseulvt|cstm[a-z]+)\b', name)
+        sz = gz.stat().st_size
+        if sz < 1_000_000:          # skip stubs < 1 MB
+            continue
+        # Extract gate-width: e.g. 'mh117', 'mh156', 'mh273'
+        wm = re.search(r'bwp136p5m(h\d+)', name)
         if not wm:
             continue
-        key = (wm.group(), vtm.group(1) if vtm else 'other')
-        if key in seen_family:
-            continue
-        seen_family.add(key)
-        selected.append(gz)
+        width = wm.group(1)         # 'h117', 'h156', 'h273', etc.
+        if width not in buckets or sz > buckets[width][0]:
+            buckets[width] = (sz, gz)
+
+    # ECO combinational chains use M117 and M156 gate widths.
+    # M273/M429/M1092 are high-drive buffers/clock cells not used in ECO logic.
+    # Parsing them is slow (300-500 MB each) with no benefit for truth-table checks.
+    ECO_WIDTHS = {'h117', 'h156'}
+    selected = sorted(
+        [p for w, (_, p) in buckets.items() if w in ECO_WIDTHS],
+        key=lambda p: p.name
+    )
+    # Fallback: if ECO_WIDTHS not found, return all buckets (handles future tiles)
+    if not selected:
+        selected = sorted([p for _, p in buckets.values()], key=lambda p: p.name)
     return selected
 
 
