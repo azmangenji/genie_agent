@@ -669,6 +669,83 @@ def check_missing_output_port_decls(applied, ref_dir):
     return failures
 
 
+def check_port_conn_target_exists(study_path, ref_dir):
+    """Check B3 — for every `port_connection` entry in the study, verify that
+    the target port_name actually appears in the target module's port list in
+    the PostEco netlist. Catches the FE-LINK-7 ABORT class (observed on 9868
+    fresh run R1: port_connection .NeedFreqAdj on CTRLSW had no matching port
+    on umcarbctrlsw → FM aborted before any verify).
+
+    Mirrors Step 3 Check 3e but checks the LIVE netlist instead of the study,
+    giving defense-in-depth: even if the studier emits the right port_decl
+    entry, a Pass 2 failure would still be caught here before FM runs.
+    """
+    failures = []
+    try:
+        study = json.loads(Path(study_path).read_text())
+    except Exception as e:
+        return [f'[PORT_CONN_TARGET_READ_ERR] {e}']
+    pc_entries = []
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') == 'port_connection':
+            pc_entries.append(e)
+    if not pc_entries:
+        return failures
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True,
+                                  text=True, timeout=240).stdout
+        except Exception:
+            continue
+        text = strip_verilog_comments(text)
+        # Cache: child_module → set of declared port names
+        port_cache = {}
+        def _ports_of(mod):
+            if mod in port_cache:
+                return port_cache[mod]
+            ports = set()
+            for cand in (mod, mod + '_0'):
+                m = re.search(
+                    rf'^module\s+{re.escape(cand)}\b.*?^endmodule\b',
+                    text, re.MULTILINE | re.DOTALL)
+                if not m:
+                    continue
+                body = m.group(0)
+                for pm in re.finditer(
+                        r'^\s*(?:input|output|inout)\s+(?:\[[^\]]+\]\s*)?'
+                        r'([A-Za-z_]\w*)\s*[;,]', body, re.MULTILINE):
+                    ports.add(pm.group(1))
+                # Also pick up ports from the header port list (some files only
+                # name them in the header and declare direction inline)
+                hdr = re.search(rf'^module\s+{re.escape(cand)}\s*\(([^)]*)\)',
+                                body, re.MULTILINE | re.DOTALL)
+                if hdr:
+                    for tok in re.findall(r'[A-Za-z_]\w*', hdr.group(1)):
+                        ports.add(tok)
+                break
+            port_cache[mod] = ports
+            return ports
+        for e in pc_entries:
+            child_mod = e.get('child_module_name') or ''
+            if not child_mod:
+                continue  # Step 3 Check 3e already flags this
+            port = e.get('port_name', '')
+            if not port:
+                continue
+            ports = _ports_of(child_mod)
+            if not ports:
+                continue  # module not found in netlist — separate concern
+            if port not in ports:
+                failures.append(
+                    f'[PORT_CONN_TARGET_MISSING] {stage}: port_connection '
+                    f'{e.get("instance_name","?")}.{port} → {child_mod}: '
+                    f'port {port!r} NOT in module port list. FE-LINK-7 ABORT risk.')
+    return failures
+
+
 def check_mode_s_stitching(study_path, ref_dir):
     """Check 14 — for every new_logic_dff with mode_S_applied=true (or
     requires_scan_stitching=true) in the study JSON, verify the host module
@@ -906,6 +983,13 @@ def main():
     # a port_declaration entry applied. Missing causes FE-LINK-7 ABORT_LINK.
     fails = check_missing_output_port_decls(applied, args.ref_dir)
     results['missing_output_port_decls'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 18 — defense-in-depth: every port_connection in study must reference
+    # a port that exists in the target child module's PostEco port list. Mirrors
+    # Step 3 Check 3e but on the live netlist — catches Pass 2 silent skips.
+    fails = check_port_conn_target_exists(study_path, args.ref_dir)
+    results['port_conn_target_exists'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     # Check 17 — Mode S (scan-stitching) stitching landed correctly in netlist.
