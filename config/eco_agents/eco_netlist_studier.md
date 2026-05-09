@@ -194,6 +194,7 @@ Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<i
 {
   "change_type": "port_connection",
   "instance_name": "<submodule_instance>",
+  "child_module_name": "<full module name of the submodule (e.g. ddrss_umccmd_t_umcarbctrlsw)>",
   "port_name": "<bus_port_name>",
   "bus_bit_index": <int — MSB-first bit index of slot to rename>,
   "net_name": "<n_eco_jira_named>",
@@ -202,6 +203,8 @@ Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<i
   "force_reapply": true
 }
 ```
+
+**MANDATORY `child_module_name` on EVERY `port_connection` entry** (not only bus renames). Step 3 Check 3e cross-checks `port_name` against the child module's port list (PreEco SynRtl + this study's port_declaration entries). Without `child_module_name` the check cannot run, and a missing port slips through to FM as FE-LINK-7 ABORT (observed on 9868 fresh run R1: `port_connection .NeedFreqAdj(...)` on `umcarbctrlsw` had no matching port_decl). Whenever you emit a `port_connection`, you MUST also emit a `port_declaration` for any new port you introduced on the child module.
 
 `net_name_before` (per-stage map) is REQUIRED — eco_passes_2_4 prefers mode (a) scope-search by exact old name (more reliable than position parsing). Mode (b) bit-index parsing is a fallback when `net_name_before` is absent. Do NOT omit `net_name_before` — it disambiguates which instance to edit when multiple share the same port name.
 

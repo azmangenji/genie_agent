@@ -17,7 +17,7 @@ Usage:
 Exit: 0 = PASS (all complete), 1 = FAIL (issues found)
 """
 
-import argparse, json, re, subprocess, sys
+import argparse, json, os, re, subprocess, sys
 from pathlib import Path
 
 def main():
@@ -188,6 +188,84 @@ def main():
                     f"port_decls + assign + bridged SE/SI) or supply an "
                     f"auditable justification field.")
 
+    # ── 3e. Cross-check port_connection ↔ port_declaration. Every port_connection
+    #        targeting a child instance MUST reference a port name that either
+    #        (a) is already declared in the child module's PreEco SynRtl source,
+    #        OR (b) appears as a port_declaration entry in the study for that
+    #        child module. Missing → FE-LINK-7 ABORT during FM elaboration
+    #        (observed on 9868 fresh run R1: NeedFreqAdj port_connection with
+    #        no matching port on umcarbctrlsw).
+    rtl_dir = os.path.join(args.ref_dir, 'data', 'PreEco', 'SynRtl')
+    pre_existing_ports = {}  # module_name → set(port_name)
+    if os.path.isdir(rtl_dir):
+        port_decl_re = re.compile(
+            r'\b(?:input|output|inout)\b[^;]*?\b([A-Za-z_]\w*)\s*[;,)]',
+            re.MULTILINE)
+        mod_re = re.compile(r'\bmodule\s+(\w+)\b([^;]*\([^)]*\))?', re.MULTILINE)
+        for root, _, files in os.walk(rtl_dir):
+            for f in files:
+                if not f.endswith(('.v','.sv')):
+                    continue
+                try:
+                    txt = Path(os.path.join(root, f)).read_text(errors='ignore')
+                except Exception:
+                    continue
+                # Cheap pass: any module-port direction-keyword in this file
+                # contributes to that file's signal pool. Bucket by the first
+                # `module <name>` we see (most ECO targets are 1-module-per-file).
+                m = mod_re.search(txt)
+                if not m:
+                    continue
+                mod_name = m.group(1)
+                # Also try the tile-prefixed form 'ddrss_umccmd_t_<base>'
+                ports = set()
+                for pm in port_decl_re.finditer(txt):
+                    ports.add(pm.group(1))
+                pre_existing_ports.setdefault(mod_name, set()).update(ports)
+                # Mirror under the prefixed name(s) so lookups work either way
+                for prefix in ('ddrss_umccmd_t_', 'ddrss_'):
+                    pre_existing_ports.setdefault(prefix + mod_name, set()).update(ports)
+    # Add port_decls from study (mirror under prefixed + bare module names so
+    # lookups work whether child_module_name uses tile prefix or not)
+    study_ports_per_mod = {}  # module_name → set(port_name)
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') == 'port_declaration':
+            mod = e.get('module_name','')
+            sig = e.get('signal_name','')
+            if not (mod and sig):
+                continue
+            study_ports_per_mod.setdefault(mod, set()).add(sig)
+            for prefix in ('ddrss_umccmd_t_', 'ddrss_'):
+                if mod.startswith(prefix):
+                    study_ports_per_mod.setdefault(mod[len(prefix):], set()).add(sig)
+                else:
+                    study_ports_per_mod.setdefault(prefix + mod, set()).add(sig)
+    # Walk every port_connection and verify the target port exists
+    for stage in ['Synthesize']:
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'port_connection':
+                continue
+            child_mod = e.get('child_module_name') or ''
+            inst = e.get('instance_name','?')
+            port = e.get('port_name','?')
+            if not child_mod:
+                issues.append(
+                    f"HIGH: port_connection {inst!r} (port {port!r}) is missing "
+                    f"the mandatory `child_module_name` field — Step 3 cannot "
+                    f"verify the port exists. Without this field a missing "
+                    f"port_decl slips to FM and triggers FE-LINK-7 ABORT. "
+                    f"Studier must emit child_module_name on every port_connection.")
+                continue
+            in_pre = port in pre_existing_ports.get(child_mod, set())
+            in_study = port in study_ports_per_mod.get(child_mod, set())
+            if not (in_pre or in_study):
+                issues.append(
+                    f"HIGH: port_connection {inst}.{port} → child_module={child_mod!r} "
+                    f"references a port that is NEITHER pre-existing in PreEco SynRtl "
+                    f"NOR added by a `port_declaration` entry in this study. "
+                    f"FM elaboration will FE-LINK-7 ABORT. Add a port_declaration "
+                    f"entry for {child_mod}.{port} or reference an existing port name.")
+
     # ── 4. No empty module_name AND empty instance_scope for new_logic entries
     for stage in ['Synthesize']:
         for e in study.get(stage, []):
@@ -277,7 +355,7 @@ def main():
     # Without the pair, parent renames a dangling pin → FM sees X → DFF0X.
     # Detect by netlist scan: open child module body and check whether the
     # matching bit slot at any sub-instance bus is also UNCONNECTED_*.
-    import gzip, re as _re, os as _os2
+    import gzip, re as _re
     _child_bodies = {}  # module_name → comment-stripped body text
     def _load_child_body(mod):
         if mod in _child_bodies:
@@ -285,10 +363,10 @@ def main():
         body = ''
         for stage in ('Synthesize',):
             # Prefer round-1 backup (pristine pre-Step4); fall back to current PostEco
-            base = _os2.path.join(args.ref_dir, 'data', 'PostEco')
-            cands = sorted(_os2.path.join(base, n) for n in (_os2.listdir(base) if _os2.path.isdir(base) else []) if n.startswith(f'{stage}.v.gz.bak_'))
-            gz = cands[0] if cands else _os2.path.join(base, f'{stage}.v.gz')
-            if not _os2.path.exists(gz):
+            base = os.path.join(args.ref_dir, 'data', 'PostEco')
+            cands = sorted(os.path.join(base, n) for n in (os.listdir(base) if os.path.isdir(base) else []) if n.startswith(f'{stage}.v.gz.bak_'))
+            gz = cands[0] if cands else os.path.join(base, f'{stage}.v.gz')
+            if not os.path.exists(gz):
                 continue
             try:
                 with gzip.open(gz, 'rt') as fh: text = fh.read()
@@ -301,7 +379,7 @@ def main():
                 body = m.group(0); break
         _child_bodies[mod] = body
         return body
-    if _os2.path.isdir(_os2.path.join(args.ref_dir, 'data', 'PostEco')):
+    if os.path.isdir(os.path.join(args.ref_dir, 'data', 'PostEco')):
         for stage in ['Synthesize']:
             for e in study.get(stage, []):
                 if e.get('change_type') != 'port_connection': continue
@@ -338,7 +416,7 @@ def main():
     # actually compute the claimed gate_function. Catches the case where a
     # cell name suggests one boolean function but the library cell computes
     # a different one (common for inverter-input compound cells).
-    sys.path.insert(0, _os2.path.dirname(_os2.path.abspath(__file__)))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
         import eco_cell_truth_tables as _ett
     except ImportError:
@@ -383,7 +461,7 @@ def main():
     # ── 14. Per-stage CP/SE/SI must come from an existing DFF in the same scope
     # for each stage. Catches "force same-as-Synthesize" anti-pattern and
     # ensures per-stage net names actually exist.
-    if _os2.path.isdir(_os2.path.join(args.ref_dir, 'data', 'PostEco')):
+    if os.path.isdir(os.path.join(args.ref_dir, 'data', 'PostEco')):
         import gzip as _gz
         # Cache: (stage, module_name) → set of CP/SE/SI per pin used by existing DFFs
         neighbor_cache = {}
@@ -391,11 +469,11 @@ def main():
             key = (stage, mod)
             if key in neighbor_cache:
                 return neighbor_cache[key]
-            base = _os2.path.join(args.ref_dir, 'data', 'PostEco')
-            cands = sorted(_os2.path.join(base, n) for n in (_os2.listdir(base) if _os2.path.isdir(base) else []) if n.startswith(f'{stage}.v.gz.bak_'))
-            gz = cands[0] if cands else _os2.path.join(base, f'{stage}.v.gz')
+            base = os.path.join(args.ref_dir, 'data', 'PostEco')
+            cands = sorted(os.path.join(base, n) for n in (os.listdir(base) if os.path.isdir(base) else []) if n.startswith(f'{stage}.v.gz.bak_'))
+            gz = cands[0] if cands else os.path.join(base, f'{stage}.v.gz')
             sets = {'CP': set(), 'SE': set(), 'SI': set()}
-            if _os2.path.exists(gz):
+            if os.path.exists(gz):
                 try:
                     with _gz.open(gz, 'rt') as f: text = f.read()
                     text = _re.sub(r'/\*.*?\*/', '', text, flags=_re.DOTALL)
