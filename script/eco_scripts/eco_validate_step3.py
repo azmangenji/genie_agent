@@ -100,6 +100,55 @@ def main():
                             f"{a!r} vs {b!r} — every Mode S DFF entry MUST carry an identical "
                             f"per-stage map (eco_netlist_studier 0b-MODE-S rule)")
 
+    # ── 3c. Mode S completeness: when a DFF is marked mode_S_applied=true the
+    #        study MUST contain matching port_declaration entries for the SI_in,
+    #        SE_in and Q_out bridge ports referenced by the DFF's
+    #        port_connections_per_stage, AND an `assign` change wiring Q_out to
+    #        the DFF's Q net. Without these, eco_passes_2_4 will leave the
+    #        bridge ports undeclared and Step 5 Check 17 catches it later — but
+    #        we want to fail fast at Step 3.
+    decl_set = set()       # (module_name, signal_name)
+    assign_set = set()     # (module_name, lhs)
+    for stage in ['Synthesize']:
+        for e in study.get(stage, []):
+            ct = e.get('change_type', '')
+            if ct == 'port_declaration':
+                decl_set.add((e.get('module_name', ''), e.get('signal_name', '')))
+            elif ct == 'assign':
+                decl_set  # no-op
+                assign_set.add((e.get('module_name', ''),
+                                e.get('lhs') or e.get('signal_name', '')))
+    for stage in ['Synthesize']:
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            if not (e.get('mode_S_applied') or e.get('requires_scan_stitching')):
+                continue
+            inst = e.get('instance_name', '?')
+            mod = e.get('module_name', '')
+            pp_pcs = (e.get('port_connections_per_stage') or {}).get('PrePlace', {}) or {}
+            si_name = pp_pcs.get('SI', '')
+            se_name = pp_pcs.get('SE', '')
+            # Derive expected Q_out name from the bridge naming convention
+            # (studier emits ECO_<jira>[_<scope>]_SI_in / _SE_in / _Q_out — same prefix)
+            base_match = re.match(r'(ECO_\w+?)_SI_in$', si_name) if si_name else None
+            qo_name = f'{base_match.group(1)}_Q_out' if base_match else None
+            for port_name in (si_name, se_name, qo_name):
+                if not port_name or port_name in ("1'b0", "1'b1"):
+                    continue
+                if (mod, port_name) not in decl_set:
+                    issues.append(
+                        f"HIGH: Mode S {inst} (mode_S_applied=true) references bridge "
+                        f"port {port_name!r} on module {mod!r} but no matching "
+                        f"`port_declaration` entry exists in the study — eco_passes_2_4 "
+                        f"will leave this port undeclared. Add the port_declaration "
+                        f"or set mode_S_applied=false with a justification.")
+            if qo_name and (mod, qo_name) not in assign_set:
+                issues.append(
+                    f"HIGH: Mode S {inst} (mode_S_applied=true) needs an `assign "
+                    f"{qo_name} = <Q net>;` change in module {mod!r} but no matching "
+                    f"`assign` entry exists in the study — Q_out will be left undriven.")
+
     # ── 4. No empty module_name AND empty instance_scope for new_logic entries
     for stage in ['Synthesize']:
         for e in study.get(stage, []):
