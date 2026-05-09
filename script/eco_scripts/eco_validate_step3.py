@@ -149,6 +149,45 @@ def main():
                     f"{qo_name} = <Q net>;` change in module {mod!r} but no matching "
                     f"`assign` entry exists in the study — Q_out will be left undriven.")
 
+    # ── 3d. Mode S decision must match Step 1 (rtl_diff). When Step 1 emits
+    #        requires_scan_stitching=true on a new_logic_dff, the studier MUST
+    #        carry that decision through (mode_S_applied=true OR an explicit
+    #        scan_stitching_skipped_reason justification). Silent downgrade
+    #        bypasses the entire Mode S pipeline and was the actual cause of
+    #        9868 R1 fresh-run Round 2 going wrong on EcoUseSdpOutstRdCnt.
+    diff_decisions = {}  # instance_name → (requires_scan_stitching, skipped_reason)
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        dff_inst = c.get('dff_instance_name') or (
+            (c.get('target_register') or '') + '_reg' if c.get('target_register') else '')
+        if dff_inst:
+            diff_decisions[dff_inst] = (
+                bool(c.get('requires_scan_stitching')),
+                c.get('scan_stitching_skipped_reason') or '')
+    seen_in_study = set()
+    for stage in ['Synthesize']:
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            inst = e.get('instance_name', '?')
+            if inst not in diff_decisions:
+                continue
+            seen_in_study.add(inst)
+            diff_required, _ = diff_decisions[inst]
+            study_applied = bool(
+                e.get('mode_S_applied') or e.get('requires_scan_stitching'))
+            study_skip_reason = e.get('scan_stitching_skipped_reason') or ''
+            if diff_required and not study_applied and not study_skip_reason:
+                issues.append(
+                    f"HIGH: Mode S decision downgrade — rtl_diff set "
+                    f"requires_scan_stitching=true for {inst} but study has "
+                    f"mode_S_applied/requires_scan_stitching=false WITHOUT a "
+                    f"`scan_stitching_skipped_reason`. Studier cannot silently "
+                    f"opt out — either honor Step 1's decision (emit Mode S "
+                    f"port_decls + assign + bridged SE/SI) or supply an "
+                    f"auditable justification field.")
+
     # ── 4. No empty module_name AND empty instance_scope for new_logic entries
     for stage in ['Synthesize']:
         for e in study.get(stage, []):
@@ -380,9 +419,16 @@ def main():
                 if not mod: continue
                 pcs = (e.get('port_connections_per_stage') or {}).get(stage) or e.get('port_connections') or {}
                 neigh = _neighbors(stage, mod)
+                # Mode S exemption: when the DFF is bridged via Mode S ports, the
+                # SE/SI nets are by design new bridge ports that no existing DFF
+                # uses. Skip the SE/SI mismatch check for these — Check 3c already
+                # verifies the bridge ports are declared.
+                mode_s_active = bool(e.get('mode_S_applied') or e.get('requires_scan_stitching'))
                 for pin in ('CP', 'SE', 'SI'):
                     v = pcs.get(pin)
                     if not isinstance(v, str) or not neigh.get(pin):
+                        continue
+                    if mode_s_active and pin in ('SE', 'SI'):
                         continue
                     # Constant on SE/SI in Synthesize is always OK; constant in P&R
                     # is covered by Check 15 (skip duplicate flag here).
