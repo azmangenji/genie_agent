@@ -10,6 +10,21 @@
 
 ---
 
+## MANDATORY script execution order (top-of-MD checklist)
+
+Step 2 has 3 scripts that MUST run in this order. Skipping any one means downstream steps work on incomplete data.
+
+| Order | Script | Purpose | Output |
+|---|---|---|---|
+| 1 | `eco_fenets_derive_queries.py` | Walk rtl_diff and emit complete 7-category query list (deterministic — replaces hand-picked agent reasoning) | `data/<TAG>_eco_fenets_queries_raw.json` |
+| 2 | `eco_fenets_sanitize_queries.py` | Collapse duplicate `<scope>/<scope>/` segments (rule-based clean-up) | `data/<TAG>_eco_fenets_queries.json` |
+| 3 | *(agent submits FM via TileBuilder)* | Run find_equivalent_nets per target, handle FM-036 retries, copy raw rpts | `data/<TAG>_find_equivalent_nets_raw*.rpt` |
+| 4 | `eco_fenets_rename_map.py` | Parse all raw rpts → emit per-stage rename map JSON (Step 3 reads this FIRST) | `data/<TAG>_eco_fenets_rename_map.json` |
+
+**Do not start Step 2 work until you have read and acknowledged this script chain.** Each script is the authoritative implementation for its phase — do NOT replace any with manual reasoning.
+
+---
+
 ## STEP A — Derive comprehensive nets_to_query from changes[]
 
 Load `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`. **Build `nets_to_query` from scratch** by walking `changes[]`. The goal: query EVERY net whose per-stage rename matters for the studier — clock, reset, chain leaves, port_promotion targets, Mode I candidates. This catches Mode J (per-stage rename divergence) and Mode I (undriven internal port pin) at Step 2 instead of waiting for Step 5/6.
@@ -72,6 +87,18 @@ for n in nets_to_query:
 ```
 
 `valid_nets` is the comprehensive query batch sent to FM.
+
+**MANDATORY: derive the query list deterministically via script — do NOT hand-pick.**
+
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_fenets_derive_queries.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --tile     <TILE> \
+    --output   data/<TAG>_eco_fenets_queries_raw.json
+```
+
+You may ADD queries to `_queries_raw.json` (with explicit `category: 99` and `source: "agent_added: <reason>"`), but NEVER remove a script-derived entry. The orchestrator's Step 2 checkpoint compares the derived count against the rendered query list — silent drops fail the checkpoint.
 
 ### STEP A1 — Sanitize the query plan before submission (MANDATORY)
 

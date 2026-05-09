@@ -163,8 +163,16 @@ P&R renames DFF outputs (scan insertion in PP, CTS/optimization in Route). A wir
 
 1. **Read `<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json` first** — Step 2 (eco_fenets_runner) builds an authoritative per-stage rename map for every queried signal (clocks, resets, chain leaves, port_promotion targets, Mode I candidates). If the map has the pin's logical signal, USE THE MAP'S PER-STAGE VALUES VERBATIM. This is the single source of truth.
 2. **Fallback — neighbor-DFF inference** (only when signal is not in the rename map): find a pre-existing DFF in the same module scope whose Synthesize value of the same pin matches the ECO entry's logical signal; copy that neighbor's per-stage net name verbatim, including scan/DFT/CTS-renamed names.
+3. **Internal-wire fallback (when both above fail) — grep the host module body for the driver:** when a chain leaf references a signal that's a local internal wire (driven by a sync-flop INSIDE the host module, e.g. `IReset` driven by `IReset_reg.Q`), P&R may rename the driver's `.Q` net per stage (`IReset` → `test_so4927` in PP, `dftopt3065` in Route — observed on 9868). When the rename map missed it, you MUST grep the host module body in EACH stage's PostEco netlist for the original sync-flop's `.Q(<net>)` and use that per-stage value. Studier code:
 
-NEVER force the Synthesize name across all stages — both options above produce per-stage values that match what FM expects. For SE/SI on new ECO DFFs: Synth = `1'b0` (RTL-clean), PP/Route = neighbor DFF's per-stage SE/SI (real scan-bridge wire — NOT `1'b0`).
+```python
+def find_driver_in_module(host_mod_text, original_signal, source_dff_inst):
+    # Look for `.Q(<wire>)` on the source DFF instance — that's the per-stage net
+    m = re.search(rf'\b{re.escape(source_dff_inst)}\b\s*\([^)]*?\.Q\s*\(\s*(\w+)\s*\)', host_mod_text, re.DOTALL)
+    return m.group(1) if m else original_signal
+```
+
+NEVER force the Synthesize name across all stages — all three resolution paths produce per-stage values that match what FM expects. For SE/SI on new ECO DFFs: Synth = `1'b0` (RTL-clean), PP/Route = neighbor DFF's per-stage SE/SI (real scan-bridge wire — NOT `1'b0`).
 
 Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SAME` if identical.
 
@@ -184,7 +192,37 @@ eco_perl_spec reads `unconnected_rewires`: declares `wire <named_net>;` once, ap
 
 **PARENT SCOPE (DEFAULT):** Rename UNCONNECTED_* at the module scope where the ECO gate is inserted. Inventing fresh names inside the child module breaks FM's clock/cone analysis.
 
-**EXCEPTION — child output port internally undriven (Mode I wire-up):** If the renamed bus is `output` of the child AND the matching bit at any child sub-instance is also `UNCONNECTED_*`, the parent rename leaves the port pin undriven → FM `X` → DFF0X. Fix: emit a SECOND `port_connection` entry with `module_name=<child>`, `bus_bit_index=<same bit>`, `net_name=<port_name>[<bit>]` (use the child's own output pin as rename target — Verilog auto-wires the internal slot to the port bit). This is wire-up, not invention — it preserves clock/cone analysis. Detect: parent UNCONNECTED rename whose `bus_port` is `output` in child AND child body has `UNCONNECTED_M` at the same bit index of any sub-instance bus.
+**EXCEPTION — child output port internally undriven (Mode I wire-up — MANDATORY auto-detect):** If the renamed bus is `output` of the child AND the matching bit at any child sub-instance is also `UNCONNECTED_*`, the parent rename leaves the port pin undriven → FM `X` → DFF0X. **You MUST detect this in the studier — DO NOT defer to FM analyzer.** Algorithm:
+
+```python
+# After emitting a parent-side bus_rename port_connection (UNCONNECTED → n_eco_*):
+def detect_mode_i_internal_gap(stage_text, child_module, port_name, bus_bit):
+    # Find the child module body
+    m = re.search(rf'^module\s+{re.escape(child_module)}\b.*?^endmodule', stage_text, re.MULTILINE | re.DOTALL)
+    if not m: return None
+    body = m.group(0)
+    # Find any submodule instance whose output bus has UNCONNECTED_<N> at bus_bit index
+    # (this is the internal driver of port_name[bus_bit]).
+    for inst_m in re.finditer(rf'\.\s*\w*UmcCfgEco\w*\s*\(\s*\{{([^{{}}]+)\}}\s*\)', body):
+        elems = [e.strip() for e in inst_m.group(1).split(',')]
+        width = len(elems)
+        pos = width - 1 - bus_bit  # MSB-first
+        if 0 <= pos < width and re.match(r'(SYNOPSYS_)?UNCONNECTED_\d+$', elems[pos]):
+            return elems[pos]  # this is the per-stage UNCONNECTED to rename
+    return None
+```
+
+When detected → emit a SECOND `port_connection` entry inside the child module, with:
+- `module_name`: child module (e.g. `ddrss_umccmd_t_umcregcmd`)
+- `instance_name`: the sub-instance whose bus output is undriven (e.g. the REGCMD internal block instance)
+- `port_name`: the bus port name on the sub-instance
+- `bus_bit_index`: same bit position
+- `net_name`: `<port_name>[<bit>]` (self-loop to the OWN output port — Verilog auto-wires)
+- `net_name_before`: per-stage map of the internal UNCONNECTED placeholders found per stage
+
+This is wire-up, not invention — it preserves clock/cone analysis. The new ECO is on a real driver, not an X. Engineers do this manually when bit[N] of a register output is "spare" (placeholder).
+
+**This was the 9868 R1+R2 EcoUseSdpOutstRdCnt bug:** REGCMD's REG_UmcCfgEco[1] output port had no internal driver (just `UNCONNECTED_19090`/`_76856`/`_962` per stage). The flow only renamed at the parent level; the child internal driver stayed undriven → FM saw "Undriven in reference cones" → DFF0X.
 
 Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<inst>.<port>[<bit>]`
 
@@ -228,126 +266,104 @@ After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>
 
 **GAP-14 — Wire declaration flag:** For each new gate whose output net does not exist in PreEco (`grep -cw "<output_net>" /tmp/eco_study_<TAG>_Synthesize.v` = 0), set `needs_explicit_wire_decl: true`. **Output net ONLY — never set for input nets.**
 
-### 0b-MODE-S — Scan stitching for new ECO DFFs in P&R (MANDATORY)
+### 0b-MODE-S — Scan stitching for new ECO DFFs in P&R (ASYMMETRIC, per-stage)
 
-A new DFF inserted in a clock domain that traverses scan-control logic (the design's main scan chain — typically anything reachable from `tile_dfx/scan_cntl`) must be **stitched into the existing scan chain**. Tying SE/SI to `1'b0` in P&R isolates the new DFF from the scan chain → FM sees "globally unmatched SE pin" + "LatCG cone exists in ref but not impl" → stage fails.
+A new DFF inserted in a clock domain that reaches the scan chain (anything reachable from `tile_dfx/scan_cntl`) must be **integrated with the existing scan signal network**. Tying SE/SI to `1'b0` in P&R isolates the new DFF from scan → FM sees "globally unmatched SE pin" → stage fails.
 
-**Engineer's recipe (3-port stitching) for each new DFF requiring scan stitching:**
+**Engineer's actual pattern is ASYMMETRIC per stage** — not uniform Mode S in PP+Route. Pick the SIMPLEST strategy that works per stage:
 
-```verilog
-// In the host module body (e.g., umcarbctrlsw):
-// 3 new ports added to module port list + body decls:
-input  ECO_<jira>_SI_in ;
-output ECO_<jira>_Q_out ;
-input  ECO_<jira>_SE_in ;
-assign ECO_<jira>_Q_out = <DFF_Q_signal> ;
+| Stage | Strategy default | When | Action |
+|---|---|---|---|
+| Synthesize | `constant_zero` | Always | `SE=1'b0`, `SI=1'b0` (RTL has no scan pins) |
+| PrePlace | `neighbor_dff` | Host module already has DFFs whose SE/SI net we can borrow | Pick a nearby DFF's `.SI(<X>)` and `.SE(<Y>)`, copy those nets verbatim |
+| PrePlace | `bridge_port` | Top-level module with no good neighbor (e.g. umccmd directly contains submodule instantiations, few flat DFFs) | Add Mode S bridge port + drive at parent (see below) |
+| Route | `neighbor_dff` | Same — host module has DFFs with valid Route-stage SE/SI we can copy | Pick a nearby DFF's nets per Route stage |
+| Route | `bridge_port` | Same fallback | Mode S bridge with parent-side driver |
 
-// New DFF instantiation uses the bridge ports:
-SDFQD1... <DFF_reg> ( .D(<chain_output>), .SI(ECO_<jira>_SI_in),
-                      .SE(ECO_<jira>_SE_in), .CP(<clock>),
-                      .Q(<DFF_Q_signal>) ) ;
+**`neighbor_dff` is the default. `bridge_port` is the fallback when no neighbor exists.** Engineer's NeedFreqAdj uses `neighbor_dff` in PP and `bridge_port` in Route; EcoUseSdpOutstRdCnt uses `bridge_port` in both because there's no neighbor at top scope.
 
-// At the parent module: wire the 3 ports to per-stage scan-bridge wires
-<host_module>_inst ( ..., .ECO_<jira>_SI_in(eco<jira>_si_bridge),
-                          .ECO_<jira>_Q_out(eco<jira>_q_bridge),
-                          .ECO_<jira>_SE_in(eco<jira>_se_bridge) ) ;
+**Required field on every new_logic_dff entry:**
 
-// At the umccmd parent: declare the bridge wires + drive them from
-// per-stage scan signals (lookup via eco_fenets_rename_map.json or
-// neighbor-DFF inference for a tile-level scan_en signal):
-wire eco<jira>_si_bridge ;  // tied 1'b0 (DFF doesn't need shifted data)
-wire eco<jira>_se_bridge ;  // wire to per-stage scan_en (e.g., neighbor's SE)
-wire eco<jira>_q_bridge ;   // dangling output (for chain closure if needed)
+```json
+{
+  "instance_name": "<DFF_reg>",
+  "mode_S_strategy_per_stage": {
+    "Synthesize": "constant_zero",
+    "PrePlace":   "neighbor_dff",   // or "bridge_port"
+    "Route":      "neighbor_dff"    // or "bridge_port"
+  }
+}
 ```
 
-**Detection — when to apply Mode S:**
+This makes per-stage decisions explicit and traceable.
 
-1. Entry `change_type` is `new_logic_dff` or `new_logic` with `dff_instance_name` set
-2. `port_connections.CP` is a "deep" clock (traces to `UCLK01`, `MCLK*`, or any signal whose cone in P&R reaches `tile_dfx/scan_cntl/*`). For our flow's first cut: assume any DFF with `CP=UCLK01` or `CP=<wrapper_clock_used_by_other_scan_DFFs>` requires Mode S.
-3. Apply ONLY in PrePlace and Route per-stage values. Synthesize stage keeps `SE/SI=1'b0` (RTL-clean).
+#### When `mode_S_strategy_per_stage[<stage>]: "neighbor_dff"` (default)
 
-**Action — emit additional study entries:**
-
-For each DFF requiring Mode S, append to `study[stage]`:
+In `port_connections_per_stage[<stage>]`, set SE/SI to the chosen neighbor DFF's exact SE/SI nets (per stage — may differ between PP and Route because of CTS rename). NO bridge port_decls or assigns needed for that stage.
 
 ```python
-# (a) 3 new port_declaration entries on the host module
-for pname, pdir in [(f"ECO_{jira}_SI_in", "input"),
-                    (f"ECO_{jira}_Q_out", "output"),
-                    (f"ECO_{jira}_SE_in", "input")]:
-    study[stage].append({
-        "change_type": "port_declaration",
-        "module_name": <host_module_per_stage>,
-        "signal_name": pname,
-        "declaration_type": pdir,
-        "instance_scope": <scope>,
-        "reason": f"Mode S scan-stitching port for {dff_inst}",
-        "notes": "Bridge port: SI/SE inputs + Q output for scan-chain integration",
-        "source": f"mode_S_{tag}",
-        "confirmed": True,
-    })
-
-# (b) 1 assign change (NEW change_type — see eco_passes_2_4 update)
-study[stage].append({
-    "change_type": "assign",
-    "module_name": <host_module_per_stage>,
-    "lhs": f"ECO_{jira}_Q_out",
-    "rhs": <DFF_Q_signal>,
-    "reason": f"Mode S Q-output bridge for {dff_inst}",
-    "source": f"mode_S_{tag}",
-    "confirmed": True,
-})
-
-# (c) per-hierarchy port_connection entries (host_inst at parent level)
-for hier_inst in <hierarchy_chain_to_umccmd>:
-    study[stage].append({
-        "change_type": "port_connection",
-        "parent_module": <hier_parent>,
-        "instance_name": hier_inst,
-        "submodule_type": <hier_inst_module_type>,
-        "port_name": f"ECO_{jira}_SI_in",
-        "net_name": f"eco{jira}_si_bridge",
-        ...
-    })
-    # Same for SE_in and Q_out
-
-# (d) 3 wire decls + drive logic at umccmd parent
-study[stage].append({
-    "change_type": "port_declaration",  # at umccmd parent — declare as wire
-    "module_name": <umccmd_module>,
-    "signal_name": f"eco{jira}_si_bridge",
-    "declaration_type": "wire",
-    ...
-})
-# Same for se_bridge, q_bridge
-
-# (e) Update DFF entry's port_connections_per_stage SE/SI to use the new ports.
-# CRITICAL: Mode S overrides neighbor-DFF inference for SE/SI. When the DFF
-# entry is duplicated into per-stage entry lists (Synthesize/PrePlace/Route),
-# every copy MUST carry the SAME `port_connections_per_stage` map. NEVER let
-# a stage entry rewrite its own SE/SI to a neighbor-DFF net (e.g. test_so629,
-# FxPrePlace_HFSNET_178) — that's the failure mode that broke 9868 Round 1.
-for stage in ("Synthesize", "PrePlace", "Route"):
-    if stage == "Synthesize":
-        dff_entry["port_connections_per_stage"][stage]["SE"] = "1'b0"
-        dff_entry["port_connections_per_stage"][stage]["SI"] = "1'b0"
-    else:
-        dff_entry["port_connections_per_stage"][stage]["SE"] = f"ECO_{jira}_SE_in"
-        dff_entry["port_connections_per_stage"][stage]["SI"] = f"ECO_{jira}_SI_in"
-dff_entry["mode_S_applied"] = True
+neighbor = pick_neighbor_dff(host_module, stage)  # any DFF in same module with valid scan
+dff_entry["port_connections_per_stage"][stage]["SE"] = neighbor.SE
+dff_entry["port_connections_per_stage"][stage]["SI"] = neighbor.SI
 ```
 
-**Per-stage source for the bridge wires (umccmd parent):**
+#### When `mode_S_strategy_per_stage[<stage>]: "bridge_port"` (fallback)
 
-| Pin | PrePlace | Route |
-|-----|----------|-------|
-| `eco<jira>_si_bridge` | `1'b0` (DFF doesn't shift in scan data) | `1'b0` |
-| `eco<jira>_se_bridge` | per-stage scan_en signal at umccmd scope (look up via rename map; fallback: neighbor DFF's SE) | per-stage scan_en at umccmd scope |
-| `eco<jira>_q_bridge` | left dangling (output) — adds `// not connected — chain closure handled by tile-level scan` | dangling |
+Emit bridge port_decls + assign + parent-side wire decls + **driving assign on the bridge wire** (the producer side — without this the bridge wire dangles undriven, which is the bug class observed in 9868 R1). The driving assign taps a neighbor DFF's SE/SI at the PARENT scope.
 
-Bridge wires use the SAME logical name in both PP and Route (per-stage VALUES may differ but the wire NAME is stable) so FM cone tracing matches.
+```python
+# (a) 3 port_decls on host module
+for pname, pdir in [(f"ECO_{jira}_SI_in","input"),
+                    (f"ECO_{jira}_Q_out","output"),
+                    (f"ECO_{jira}_SE_in","input")]:
+    study[stage].append({"change_type":"port_declaration",
+        "module_name": host_module_per_stage[stage], "signal_name": pname,
+        "declaration_type": pdir, ...})
 
-**Validator backstop:** Step 5 Check 14 verifies every DFF with `mode_S_applied: true` has the 3 ports declared in the host module + the assign + the per-stage scan signals on SE/SI.
+# (b) Q_out assign
+study[stage].append({"change_type":"assign",
+    "module_name": host_module_per_stage[stage],
+    "lhs": f"ECO_{jira}_Q_out", "rhs": dff_q_signal, ...})
+
+# (c) Parent-scope port_connection per hierarchy level up to umccmd
+for hier_inst, hier_parent in walk_up_to(host, "umccmd"):
+    for pname in [f"ECO_{jira}_SI_in", f"ECO_{jira}_Q_out", f"ECO_{jira}_SE_in"]:
+        study[stage].append({"change_type":"port_connection",
+            "module_name": hier_parent, "instance_name": hier_inst,
+            "child_module_name": <child_mod_full_name>,
+            "port_name": pname, "net_name": f"eco{jira}_<si|q|se>_bridge", ...})
+
+# (d) MANDATORY: bridge wire driver assigns at parent scope (closes the dangling
+#     bridge bug). Each bridge wire MUST be driven from a neighbor DFF's SE/SI
+#     in the parent module — picking a parent-scope neighbor that has working
+#     scan nets in this stage.
+parent_neighbor = pick_neighbor_dff(parent_module, stage)
+study[stage].append({"change_type":"assign",
+    "module_name": parent_module_per_stage[stage],
+    "lhs": f"eco{jira}_si_bridge", "rhs": parent_neighbor.SI,
+    "reason": "Mode S bridge driver — taps parent-scope neighbor scan_in"})
+study[stage].append({"change_type":"assign",
+    "module_name": parent_module_per_stage[stage],
+    "lhs": f"eco{jira}_se_bridge", "rhs": parent_neighbor.SE,
+    "reason": "Mode S bridge driver — taps parent-scope neighbor scan_en"})
+
+# (e) DFF entry references the bridge ports
+dff_entry["port_connections_per_stage"][stage]["SE"] = f"ECO_{jira}_SE_in"
+dff_entry["port_connections_per_stage"][stage]["SI"] = f"ECO_{jira}_SI_in"
+dff_entry["mode_S_applied"] = True  # for THIS stage
+```
+
+#### Per-stage strategy is INDEPENDENT — no consistency requirement
+
+Each stage's `port_connections_per_stage[<stage>]` is decided per `mode_S_strategy_per_stage[<stage>]`. PP using `neighbor_dff` and Route using `bridge_port` (or vice-versa) is correct and matches engineer's pattern. The Step 3 validator allows asymmetry — no longer enforces "all 3 stages identical".
+
+#### Bridge wire MUST be driven (when bridge_port strategy is chosen)
+
+A declared `eco<jira>_si_bridge` / `se_bridge` wire that no `assign` / `_SI_out` / `_SE_out` source drives is a **flow bug** that produces undriven SE/SI at the new DFF → FM globally unmatched. Step 3 Check 3c verifies the driver assign exists; Step 5 Check 17 verifies the bridge wire is reachable from a real neighbor scan net at parent scope.
+
+#### Opt-out (no scan stitching needed at all)
+
+Set `requires_scan_stitching: false` + `scan_stitching_skipped_reason: "<auditable reason>"` on the entry. Valid only when `dff_clock` is a `wrp_clk_*` wrapper clock that doesn't propagate scan_enable.
 
 ### 0c — Find suitable cell type from PreEco netlist
 

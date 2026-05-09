@@ -79,16 +79,26 @@ def main():
             if not (e.get('mode_S_applied') or e.get('requires_scan_stitching')):
                 continue
             by_inst.setdefault(e.get('instance_name','?'), {})[stage] = \
-                e.get('port_connections_per_stage', {})
+                (e.get('port_connections_per_stage', {}),
+                 e.get('mode_S_strategy_per_stage', {}))
     for inst, per_entry in by_inst.items():
         if len(per_entry) < 2:
             continue
         ref_stage = sorted(per_entry.keys())[0]
-        ref_pcs = per_entry[ref_stage]
-        for stage_entry, pcs in per_entry.items():
+        ref_pcs, ref_strat = per_entry[ref_stage]
+        for stage_entry, (pcs, strat) in per_entry.items():
             if stage_entry == ref_stage:
                 continue
             for chk_stage in ('Synthesize', 'PrePlace', 'Route'):
+                # Asymmetric Mode S: a stage entry can legitimately use a
+                # different strategy (neighbor_dff vs bridge_port) per stage
+                # — engineer's own pattern. Only flag mismatch when BOTH
+                # entries declared the SAME strategy for chk_stage AND yet
+                # disagreed on the actual SE/SI/CP nets — that's a real bug.
+                ref_chk_strat = (ref_strat or {}).get(chk_stage)
+                cmp_chk_strat = (strat or {}).get(chk_stage)
+                if ref_chk_strat and cmp_chk_strat and ref_chk_strat != cmp_chk_strat:
+                    continue  # asymmetric strategy — comparison meaningless
                 ref_pin = ref_pcs.get(chk_stage, {}) or {}
                 cmp_pin = pcs.get(chk_stage, {}) or {}
                 for pin in ('SE', 'SI', 'CP'):
@@ -97,8 +107,8 @@ def main():
                         issues.append(
                             f"HIGH: Mode S {inst} stage_entry[{stage_entry}] differs from "
                             f"stage_entry[{ref_stage}] for port_connections_per_stage[{chk_stage}].{pin}: "
-                            f"{a!r} vs {b!r} — every Mode S DFF entry MUST carry an identical "
-                            f"per-stage map (eco_netlist_studier 0b-MODE-S rule)")
+                            f"{a!r} vs {b!r} — when both entries use the same Mode S strategy "
+                            f"for this stage, the per-stage map MUST agree.")
 
     # ── 3c. Mode S completeness: when a DFF is marked mode_S_applied=true the
     #        study MUST contain matching port_declaration entries for the SI_in,
@@ -126,15 +136,25 @@ def main():
                 continue
             inst = e.get('instance_name', '?')
             mod = e.get('module_name', '')
+            strat_per_stage = e.get('mode_S_strategy_per_stage') or {}
+            # Only require bridge port_decls + assign when at least one stage
+            # uses bridge_port strategy. neighbor_dff strategy needs no bridge.
+            uses_bridge = any(strat_per_stage.get(s) == 'bridge_port'
+                              for s in ('PrePlace', 'Route'))
+            if not uses_bridge and strat_per_stage:
+                continue  # explicit neighbor_dff strategy → no bridge needed
             pp_pcs = (e.get('port_connections_per_stage') or {}).get('PrePlace', {}) or {}
             si_name = pp_pcs.get('SI', '')
             se_name = pp_pcs.get('SE', '')
-            # Derive expected Q_out name from the bridge naming convention
-            # (studier emits ECO_<jira>[_<scope>]_SI_in / _SE_in / _Q_out — same prefix)
             base_match = re.match(r'(ECO_\w+?)_SI_in$', si_name) if si_name else None
             qo_name = f'{base_match.group(1)}_Q_out' if base_match else None
             for port_name in (si_name, se_name, qo_name):
                 if not port_name or port_name in ("1'b0", "1'b1"):
+                    continue
+                # Skip if this name is a real netlist signal (neighbor_dff
+                # strategy in PP keeps SI/SE pointing at neighbor nets — not
+                # bridge ports — so port_decl shouldn't exist for it)
+                if not port_name.startswith('ECO_'):
                     continue
                 if (mod, port_name) not in decl_set:
                     issues.append(
@@ -142,12 +162,32 @@ def main():
                         f"port {port_name!r} on module {mod!r} but no matching "
                         f"`port_declaration` entry exists in the study — eco_passes_2_4 "
                         f"will leave this port undeclared. Add the port_declaration "
-                        f"or set mode_S_applied=false with a justification.")
+                        f"or switch mode_S_strategy_per_stage to neighbor_dff for "
+                        f"the affected stage with a justification.")
             if qo_name and (mod, qo_name) not in assign_set:
                 issues.append(
                     f"HIGH: Mode S {inst} (mode_S_applied=true) needs an `assign "
                     f"{qo_name} = <Q net>;` change in module {mod!r} but no matching "
                     f"`assign` entry exists in the study — Q_out will be left undriven.")
+
+            # Bridge wire driver requirement (closes 9868 R1 dangling-bridge bug):
+            # for each bridge_port stage, the parent module MUST contain an
+            # `assign eco<jira>_si_bridge = <real net>` and same for se_bridge.
+            for chk_stage in ('PrePlace', 'Route'):
+                if strat_per_stage.get(chk_stage) != 'bridge_port':
+                    continue
+                m = re.match(r'ECO_(\w+?)_SI_in$', si_name) if si_name else None
+                if not m:
+                    continue
+                jira_part = m.group(1)
+                for bridge in (f'eco{jira_part}_si_bridge', f'eco{jira_part}_se_bridge'):
+                    found = any(lhs == bridge for (_, lhs) in assign_set)
+                    if not found:
+                        issues.append(
+                            f"HIGH: Mode S {inst} stage={chk_stage} bridge_port strategy "
+                            f"requires an `assign {bridge} = <parent_neighbor_net>` at the "
+                            f"parent scope — without it the bridge wire dangles undriven "
+                            f"and FM sees globally unmatched SE/SI on the new DFF.")
 
     # ── 3d. Mode S decision must match Step 1 (rtl_diff). When Step 1 emits
     #        requires_scan_stitching=true on a new_logic_dff, the studier MUST
@@ -201,7 +241,10 @@ def main():
         port_decl_re = re.compile(
             r'\b(?:input|output|inout)\b[^;]*?\b([A-Za-z_]\w*)\s*[;,)]',
             re.MULTILINE)
-        mod_re = re.compile(r'\bmodule\s+(\w+)\b([^;]*\([^)]*\))?', re.MULTILINE)
+        # Anchor `module` to start-of-line (with optional leading whitespace).
+        # The `\bmodule\b` form matched the keyword `for` from a procedural
+        # `for(...)` block in some files because `\b` allows match anywhere.
+        mod_re = re.compile(r'^\s*module\s+(\w+)\b', re.MULTILINE)
         for root, _, files in os.walk(rtl_dir):
             for f in files:
                 if not f.endswith(('.v','.sv')):

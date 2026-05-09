@@ -466,9 +466,15 @@ def check_undriven_eco_nets(ref_dir):
 
 def check_eco_input_drivers(study_path, ref_dir):
     """Check 13 — for every confirmed new_logic_gate / new_logic_dff entry in the
-    study JSON, verify each input pin's per-stage net actually has a driver in
-    the corresponding PostEco netlist (cell output, port, or wire decl).
-    Catches the "agent put test_so4927 but it doesn't exist after edits" class.
+    study JSON, verify each input pin's per-stage net actually has a driver
+    IN THE SAME HOST MODULE in the PostEco netlist.
+
+    SCOPE-AWARE: previous version used a global driven set, which let
+    `IReset` pass even when umcarbctrlsw's local wire was renamed by P&R
+    to `test_so4927` and the chain still referenced bare `IReset` (just
+    because some OTHER module wired up `.<port>(IReset)`). Now we build
+    the driven set per host module so this class of bug fails fast.
+
     Constants like 1'b0/1'b1 are skipped."""
     failures = []
     OUT_PINS = {'Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO'}
@@ -476,6 +482,27 @@ def check_eco_input_drivers(study_path, ref_dir):
         study = json.loads(Path(study_path).read_text())
     except Exception as e:
         return [f'[INPUT_DRIVER_READ_ERR] {e}']
+
+    def _drivers_in_module(mod_text):
+        """Build the set of nets that have a driver inside mod_text."""
+        driven = set()
+        # Strip comments first so a commented-out previous-ECO `.Q(net)`
+        # doesn't fake-drive the net.
+        body = strip_verilog_comments(mod_text)
+        for m in re.finditer(r'\.\s*(?:Z|ZN|ZN1|Q|QN|CO|Q1|Q2|Q3|Q4|Q5|Q6|Q7|Q8)\s*\(\s*(\w+)', body):
+            driven.add(m.group(1))
+        for m in re.finditer(r'^\s*wire\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', body, re.MULTILINE):
+            driven.add(m.group(1))
+        for m in re.finditer(r'^\s*(?:input|inout)\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', body, re.MULTILINE):
+            driven.add(m.group(1))
+        # Submodule INSTANCE output ports — bare net or bus concat
+        for m in re.finditer(r'\.\s*\w+\s*\(\s*([A-Za-z_][\w]*)\s*\)', body):
+            driven.add(m.group(1))
+        for m in re.finditer(r'\.\s*\w+\s*\(\s*\{([^{}]+)\}\s*\)', body):
+            for w in re.findall(r'[A-Za-z_]\w*', m.group(1)):
+                driven.add(w)
+        return driven
+
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
         if not os.path.exists(gz):
@@ -484,35 +511,31 @@ def check_eco_input_drivers(study_path, ref_dir):
             text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
         except Exception:
             continue
-        text = strip_verilog_comments(text)
-        # All driven nets in the netlist. A wire is "driven" if it has any of:
-        #   - cell output pin (.Z/.ZN/.Q/.CO/.Q1..Q8)
-        #   - wire/input declaration in some module body
-        #   - appears as the value of ANY port_connection (`.port(wire)` or
-        #     `.port({...wire...})`) — submodule output ports drive the net
-        #     even though we don't know port direction without full elab.
-        # The last case prevents false-positives for nets driven via submodule
-        # output port concats (the engineer's Mode I pattern, etc.).
-        driven = set()
-        for m in re.finditer(r'\.\s*(?:Z|ZN|ZN1|Q|QN|CO|Q1|Q2|Q3|Q4|Q5|Q6|Q7|Q8)\s*\(\s*(\w+)', text):
-            driven.add(m.group(1))
-        for m in re.finditer(r'^\s*wire\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', text, re.MULTILINE):
-            driven.add(m.group(1))
-        for m in re.finditer(r'^\s*(?:input|inout)\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', text, re.MULTILINE):
-            driven.add(m.group(1))
-        # Wires connected to ANY port (could be submodule output) — single net form
-        for m in re.finditer(r'\.\s*\w+\s*\(\s*([A-Za-z_][\w]*)\s*\)', text):
-            driven.add(m.group(1))
-        # Wires inside bus-concat port connections: `.port({a, b, c})`
-        for m in re.finditer(r'\.\s*\w+\s*\(\s*\{([^{}]+)\}\s*\)', text):
-            for w in re.findall(r'[A-Za-z_]\w*', m.group(1)):
-                driven.add(w)
+        # Cache per-module driven sets — built lazily on first lookup.
+        per_mod_cache = {}
+        def _drivers_for(mod):
+            if mod in per_mod_cache:
+                return per_mod_cache[mod]
+            for cand in (mod, mod + '_0'):
+                m = re.search(rf'^module\s+{re.escape(cand)}\b.*?^endmodule\b',
+                              text, re.MULTILINE | re.DOTALL)
+                if m:
+                    per_mod_cache[mod] = _drivers_in_module(m.group(0))
+                    return per_mod_cache[mod]
+            per_mod_cache[mod] = set()
+            return per_mod_cache[mod]
+
         for entry in study.get(stage, []):
             if entry.get('change_type') not in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
                 continue
             if not entry.get('confirmed', True):
                 continue
             inst = entry.get('instance_name', '?')
+            host = entry.get('module_name', '')
+            if not host:
+                # Fall back to global scan if host module unknown — old behavior
+                continue
+            local_driven = _drivers_for(host)
             pcs = (entry.get('port_connections_per_stage') or {}).get(stage) or entry.get('port_connections') or {}
             for pin, val in pcs.items():
                 if pin in OUT_PINS or not isinstance(val, str):
@@ -520,8 +543,12 @@ def check_eco_input_drivers(study_path, ref_dir):
                 base = re.sub(r'\[[^\]]*\]', '', val).strip()
                 if not base or base.startswith(("1'b", "0'b", "1'h", "0'h")):
                     continue
-                if base not in driven:
-                    failures.append(f'[INPUT_UNDRIVEN] {stage}: {inst}.{pin}={val!r} — net has no driver in netlist (cell output/port/wire)')
+                if base not in local_driven:
+                    failures.append(
+                        f'[INPUT_UNDRIVEN] {stage}: {inst}.{pin}={val!r} in host '
+                        f'module {host!r} — net has no driver in this module body. '
+                        f'Likely per-stage rename was missed (e.g. P&R renamed the '
+                        f'driver from {val} to a stage-specific name).')
     return failures
 
 
@@ -774,6 +801,13 @@ def check_mode_s_stitching(study_path, ref_dir):
                 continue
             if not (entry.get('mode_S_applied') or entry.get('requires_scan_stitching')):
                 continue
+            # Per-stage strategy: only check bridge wiring when this stage uses
+            # `bridge_port`. `neighbor_dff` strategy in this stage means the DFF's
+            # SE/SI point at a neighbor-DFF net (no bridge needed in this stage).
+            strat_per_stage = entry.get('mode_S_strategy_per_stage') or {}
+            this_stage_strat = strat_per_stage.get(stage)
+            if this_stage_strat == 'neighbor_dff':
+                continue
             inst = entry.get('instance_name', '?')
             host = entry.get('module_name', '')
             if not host:
@@ -793,6 +827,38 @@ def check_mode_s_stitching(study_path, ref_dir):
             if missing_ports:
                 failures.append(f'[MODE_S_PORT_MISSING] {stage}: {inst} requires Mode S but host {host!r} missing port(s) {missing_ports}')
                 continue
+            # NEW: bridge wire driver check at parent scope. The bridge port is
+            # an input to the host module — at the parent module, the wire that
+            # feeds the bridge (e.g. eco<jira>_si_bridge) MUST be driven by an
+            # `assign` or by another module's output port_connection. A dangling
+            # bridge wire produces undriven SE/SI at the new DFF → FM globally
+            # unmatched (the failure mode that broke 9868 R1).
+            #
+            # Find the parent of host: look for `<host_mod>(_0)? <inst_name> (` in netlist
+            # and check that inst_name's port_connections for ECO_*_SI_in / SE_in
+            # reference wires that are driven somewhere in the parent module.
+            si_port = si.group(1)
+            se_port = se.group(1)
+            for bridge_port in (si_port, se_port):
+                # Find any instance that wires up this port — look for ".<bridge_port>(<wire>)"
+                pc = re.search(rf'\.\s*{re.escape(bridge_port)}\s*\(\s*([A-Za-z_]\w*)\s*\)', text)
+                if not pc:
+                    failures.append(
+                        f'[MODE_S_BRIDGE_NOT_WIRED] {stage}: host {host!r} declares port '
+                        f'{bridge_port!r} but no parent instance wires it up — port is '
+                        f'unused → DFF {inst} SE/SI undriven at upper scope.')
+                    continue
+                wire = pc.group(1)
+                # Verify the wire has a driver: scan for `assign <wire> = ...` or
+                # `.<some_out_port>(<wire>)` (output port_connection).
+                drv_assign = re.search(rf'^\s*assign\s+{re.escape(wire)}\s*=\s*\S+', text, re.MULTILINE)
+                drv_out_conn = re.search(rf'\.\s*\w*(?:_out|_OUT)\s*\(\s*{re.escape(wire)}\s*\)', text)
+                if not (drv_assign or drv_out_conn):
+                    failures.append(
+                        f'[MODE_S_BRIDGE_DANGLING] {stage}: bridge wire {wire!r} feeding '
+                        f'{host}.{bridge_port} for {inst} has NO driver in the netlist '
+                        f'(no `assign {wire} = ...` and no `_out` port connection). FM '
+                        f'will see DFF.SE/SI undriven → globally unmatched compare points.')
             # Verify the assign exists
             assn = re.search(rf'^\s*assign\s+{re.escape(qo.group(1))}\s*=\s*\w+\s*;', body, re.MULTILINE)
             if not assn:

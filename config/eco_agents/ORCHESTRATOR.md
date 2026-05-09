@@ -107,9 +107,19 @@ Wait for the sub-agent to complete and read `data/<TAG>_eco_rtl_diff.json`.
 
 ## STEP 2 — Run find_equivalent_nets
 
+**ORCHESTRATOR FIRST — derive the canonical query list (deterministic, do NOT delegate):**
+```bash
+cd <BASE_DIR> && python3 script/eco_scripts/eco_fenets_derive_queries.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --tile     <TILE> \
+    --output   data/<TAG>_eco_fenets_queries_raw.json
+```
+The agent receives this pre-computed list and may only ADD entries — never silently drop.
+
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fenets_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`
 - Path to RTL diff JSON: `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json`
+- **Pre-derived query list: `<BASE_DIR>/data/<TAG>_eco_fenets_queries_raw.json` — agent MUST use this as the input set, may only ADD with explicit `agent_added: <reason>` source field, never silently DROP.**
 - Task: validate nets, submit fenets, block until complete, handle all retries, write all raw rpts + step2 fenets RPT
 
 Wait for the sub-agent to complete.
