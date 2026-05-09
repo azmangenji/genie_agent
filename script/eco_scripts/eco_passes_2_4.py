@@ -205,25 +205,45 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
         s = re.sub(r'//[^\n]*', '', s)
         return s
 
-    # Locate `.port_name(` line
+    # Locate `.port_name(` line — MUST search the comment-stripped line so we
+    # land on the ACTIVE port_connection, NOT a previous-ECO commented-out
+    # line (which is a real failure mode: prior comments leaving `.port(` and
+    # `{...}` artifacts that look real after _strip_v_comments).
     port_pat = re.compile(rf'\.\s*{re.escape(port_name)}\s*\(')
     open_line = -1
     for i in range(inst_start, inst_close + 1):
-        if port_pat.search(_strip_v_comments(lines[i])):
+        clean = _strip_v_comments(lines[i])
+        if port_pat.search(clean):
             open_line = i; break
     if open_line < 0:
         return lines, 'SKIPPED', f'bus_rename: .{port_name}( not found in {inst_name}'
-    # Find matching `}` closing the {...} concat — depth-track on comment-stripped text
-    end_line, br_depth, started = -1, 0, False
-    for i in range(open_line, inst_close + 1):
-        for ch in _strip_v_comments(lines[i]):
-            if ch == '{': started = True; br_depth += 1
-            elif ch == '}' and started:
-                br_depth -= 1
-                if br_depth == 0: end_line = i; break
-        if end_line >= 0: break
-    if end_line < 0:
+    # Find matching `}` closing the {...} concat — depth-track on the FULL
+    # joined comment-stripped text, not line-by-line. Per-line stripping +
+    # per-line brace tracking falsely counted `}` characters from inside
+    # commented-out previous-ECO lines (the `}` was inside a `//...` comment
+    # so the line-strip removed it, but only AFTER the brace counter had
+    # already incremented — wrong execution order). The result was that
+    # `end_line` landed on a commented-out prior-ECO line rather than the
+    # active one, and the rename modified the wrong line.
+    joined_clean = _strip_v_comments(''.join(lines[open_line:inst_close + 1]))
+    end_offset_in_clean = -1
+    br_depth, started = 0, False
+    for off, ch in enumerate(joined_clean):
+        if ch == '{':
+            started = True; br_depth += 1
+        elif ch == '}' and started:
+            br_depth -= 1
+            if br_depth == 0:
+                end_offset_in_clean = off
+                break
+    if end_offset_in_clean < 0:
         return lines, 'SKIPPED', f'bus_rename: {inst_name}.{port_name} not a {{}} concat'
+    # Map clean-text offset back to a raw line index by counting newlines
+    # in the comment-stripped text up to end_offset
+    nl_count = joined_clean.count('\n', 0, end_offset_in_clean + 1)
+    end_line = open_line + nl_count
+    if end_line > inst_close:
+        end_line = inst_close
     # Extract content from comment-stripped joined text. Output overwrites the
     # multi-line region with a single clean line — comments inside the bus
     # range are discarded (they're typically corruption artifacts anyway).

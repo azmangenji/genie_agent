@@ -24,6 +24,26 @@ TAG=$3
 ROUND=$4
 APPLIED_JSON=$5
 
+# Validate positional args before resolving paths — without these checks an
+# accidental flag like "--ref-dir /path" parses as $1=BASE_DIR and the
+# resulting OUT_JSON path becomes garbage with embedded literal "--ref-dir/".
+for arg_name in BASE_DIR REF_DIR TAG ROUND APPLIED_JSON; do
+    val=$(eval echo \$$arg_name)
+    if [ -z "$val" ] || [[ "$val" == --* ]]; then
+        echo "ERROR: positional arg $arg_name is empty or looks like a flag ('$val'). Usage:" >&2
+        echo "  bash eco_check8.sh <BASE_DIR> <REF_DIR> <TAG> <ROUND> <eco_applied_json>" >&2
+        exit 2
+    fi
+done
+if [ ! -d "$BASE_DIR" ]; then
+    echo "ERROR: BASE_DIR '$BASE_DIR' is not a directory" >&2
+    exit 2
+fi
+if [ ! -d "$REF_DIR/data/PostEco" ]; then
+    echo "ERROR: REF_DIR '$REF_DIR' missing data/PostEco subdir" >&2
+    exit 2
+fi
+
 SCRIPT="${BASE_DIR}/script/eco_scripts/validate_verilog_netlist.py"
 OUT_JSON="${BASE_DIR}/data/${TAG}_eco_check8_round${ROUND}.json"
 TMP_LOG="/tmp/eco_check8_${TAG}_${ROUND}.txt"

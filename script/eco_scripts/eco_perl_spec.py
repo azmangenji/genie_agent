@@ -24,6 +24,7 @@ Exit code: 0 = OK, 1 = error
 import argparse
 import gzip
 import json
+import os
 import re
 import subprocess
 import sys
@@ -166,6 +167,12 @@ def main():
     p.add_argument('--output',       required=True)
     p.add_argument('--status',       required=True)
     p.add_argument('--tile',         default='', help='Tile name for tile-root module resolution')
+    p.add_argument('--apply', action='store_true',
+                   help='After generating the Perl script, EXECUTE it against the PostEco netlist '
+                        '(zcat <stage>.v.gz | perl <script> | gzip > <stage>.v.gz). Without this '
+                        'flag the script only generates the .pl file — cells will NOT be inserted '
+                        'into the netlist, and Step 5 will catch the gap. Recommended: always pass '
+                        '--apply unless you intentionally want to inspect the .pl before running.')
     args = p.parse_args()
 
     study    = json.loads(Path(args.study).read_text())
@@ -475,6 +482,17 @@ def main():
                 statuses.append({'name': cell_n, 'status':'QUEUED',
                                  'reason': f'.{pin_n}({old_n}→{new_n}) queued for Perl Pass 4 on {cell_n}'})
 
+        # Types that another script handles intentionally — silently skip
+        # the catch-all UNHANDLED entry. new_logic_gate / new_logic_dff are
+        # already INSERTED/SKIPPED above; assign is handled by eco_passes_2_4
+        # Pass 5; rewire alone (without per_stage_cell_name) is handled by
+        # eco_passes_2_4 Pass 4. Without this filter, every cell appears in
+        # status as both INSERTED and UNHANDLED — pollutes the merged
+        # applied JSON and trips Step 5 `no_unhandled` check.
+        elif ct in ('new_logic_gate', 'new_logic_dff', 'new_logic',
+                    'assign', 'rewire', 'remove_wire_decl',
+                    'port_declaration', 'port_promotion'):
+            pass
         else:
             statuses.append({'name': inst, 'status':'UNHANDLED',
                              'reason': f'{ct} — not handled by eco_perl_spec'})
@@ -563,6 +581,28 @@ def main():
 
     Path(args.output).write_text('\n'.join(perl_lines) + '\n')
     Path(args.output).chmod(0o755)
+
+    # ── Execute the Perl pipe against PostEco when --apply is set ──────────
+    # Closes the historical execution gap: without this, generating the .pl
+    # script and reporting INSERTED was insufficient — cells were never
+    # actually written to the netlist. Step 5 caught it via cells_in_netlist
+    # / semantic_verify, but only after wasting the rest of Step 4.
+    if args.apply and changes:
+        try:
+            tmp_out = posteco + '.new'
+            cmd = f"zcat {posteco} | perl {args.output} 2>/tmp/eco_perl_apply_{args.tag}_{args.stage}.err | gzip > {tmp_out}"
+            r = subprocess.run(cmd, shell=True, timeout=600)
+            if r.returncode == 0 and os.path.getsize(tmp_out) > 0:
+                os.replace(tmp_out, posteco)
+                applied_note = 'PERL_APPLIED'
+            else:
+                applied_note = f'PERL_APPLY_FAILED rc={r.returncode}'
+                if os.path.exists(tmp_out):
+                    os.remove(tmp_out)
+        except Exception as e:
+            applied_note = f'PERL_APPLY_EXC {e}'
+        statuses.append({'name': '__perl_apply', 'status': applied_note,
+                         'reason': f'Perl pipe execution against {posteco}'})
 
     # Write status JSON
     Path(args.status).write_text(json.dumps({
