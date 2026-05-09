@@ -769,6 +769,13 @@ Wait for sub-agent to complete.
 
 **Read result — gate FM submission:**
 
+**MANDATORY JSON INTEGRITY GATE** — run BEFORE schema validation. Catches `PASS_OVERRIDE` tampering by the agent (a real failure mode observed in 9868 R2):
+```bash
+python3 script/eco_scripts/eco_validate_pre_fm_integrity.py \
+    --check-json data/<TAG>_eco_pre_fm_check_round1.json
+# exit 1 → tampered or contradictory; abort and re-spawn eco_pre_fm_checker on a fresh file
+```
+
 **MANDATORY JSON SCHEMA VALIDATION** — verify the eco_pre_fm_checker followed the output contract:
 ```python
 check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")

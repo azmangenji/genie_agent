@@ -424,6 +424,13 @@ Inserted compound 4-input cell (AOI/OAI/AO/OA family) computes the wrong boolean
 
 FM fails on a `new_logic_dff` instance in PrePlace/Route (Synthesize passes). The DFF's `.SE`/`.SI` in the failing stage are wires (not `1'b0`) but the wires don't connect back to a real scan-chain network — bridge ports/assigns landed but the per-stage `port_connections` chain through parent scopes is broken. Recipe: emit `failure_mode: "S"`, `action: "fix_scan_stitching"`, `mode_S_hint: "<inst> bridge wire <name> in <stage> not driven by existing scan chain — re-trace parent-scope scan net via ECO_*_SI_in/SE_in ports up to <scope> and patch port_connections_per_stage"`. Round-N studier re-emits the per-stage stitching chain.
 
+**Mode S decision tree (BEFORE classifying as Mode I or anything else):** For every failing `new_logic_dff` compare point in PrePlace/Route, `zcat` the failing-stage netlist and grep the DFF instantiation. Inspect the literal `.SE(...)` / `.SI(...)` net names:
+1. Both `1'b0` → Mode S NOT applied at all → `failure_mode: "S"`.
+2. Either pin shows an auto-generated P&R net (typical prefixes: `FxPrePlace_`, `FxPlace_`, `FxCts_`, `dftopt`, `test_so`, `HFSNET_`, plus any tile-specific equivalents) **that is not** the declared bridge port (`ECO_<jira>_SE_in` / `ECO_<jira>_SI_in`, or the `<inst>_SE_in` / `<inst>_SI_in` variant the studier emitted) → Mode S applied but the DFF was rewired to a neighbor-DFF net instead of the bridge port → `failure_mode: "S"`. **Do NOT classify as Mode I / UNDRIVEN here** — the SE/SI fanin will look "globally unmatched" because the bridge wire is the wrong endpoint.
+3. Both pins are exactly the declared bridge ports AND the host module declares those ports AND the parent module port_connection wires them up to a real scan chain → only THEN consider Mode I / D-input X / other classifications.
+
+**Why this ordering matters:** SE/SI driven by *any* wire (not `1'b0`) tends to read as "fanin present" when only the cone status is examined, which can lead to a Mode I or UNDRIVEN misclassification. Always inspect the literal `.SE/.SI` net string against the studier-declared bridge port name before reasoning about the cone.
+
 ### Mode B — Regression: new failing points not in RTL diff
 
 1. Read the failing DFF from PostEco and find its D-input net.

@@ -66,6 +66,40 @@ def main():
                 if not pcs.get(chk_stage):
                     issues.append(f"HIGH: DFF {inst} in {stage} missing port_connections_per_stage[{chk_stage}] — eco_netlist_studier Phase 0b-STAGE-NETS incomplete")
 
+    # ── 3b. Mode S consistency: when requires_scan_stitching/mode_S_applied is
+    #        true on a DFF, every per-stage entry list (Synthesize/PrePlace/Route)
+    #        must carry the SAME port_connections_per_stage map. The 9868 R1 bug
+    #        was the Route-stage entry overriding its own SE/SI to neighbor-DFF
+    #        nets while Synthesize/PrePlace entries used the bridge port names.
+    by_inst = {}
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            if not (e.get('mode_S_applied') or e.get('requires_scan_stitching')):
+                continue
+            by_inst.setdefault(e.get('instance_name','?'), {})[stage] = \
+                e.get('port_connections_per_stage', {})
+    for inst, per_entry in by_inst.items():
+        if len(per_entry) < 2:
+            continue
+        ref_stage = sorted(per_entry.keys())[0]
+        ref_pcs = per_entry[ref_stage]
+        for stage_entry, pcs in per_entry.items():
+            if stage_entry == ref_stage:
+                continue
+            for chk_stage in ('Synthesize', 'PrePlace', 'Route'):
+                ref_pin = ref_pcs.get(chk_stage, {}) or {}
+                cmp_pin = pcs.get(chk_stage, {}) or {}
+                for pin in ('SE', 'SI', 'CP'):
+                    a, b = ref_pin.get(pin), cmp_pin.get(pin)
+                    if a != b:
+                        issues.append(
+                            f"HIGH: Mode S {inst} stage_entry[{stage_entry}] differs from "
+                            f"stage_entry[{ref_stage}] for port_connections_per_stage[{chk_stage}].{pin}: "
+                            f"{a!r} vs {b!r} — every Mode S DFF entry MUST carry an identical "
+                            f"per-stage map (eco_netlist_studier 0b-MODE-S rule)")
+
     # ── 4. No empty module_name AND empty instance_scope for new_logic entries
     for stage in ['Synthesize']:
         for e in study.get(stage, []):

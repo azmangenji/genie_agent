@@ -374,6 +374,13 @@ Wait for sub-agent to complete.
 
 **Read result — gate FM submission:**
 
+**MANDATORY JSON INTEGRITY GATE** — run BEFORE schema validation. Round-N agents have been observed editing the script-written `check_summary` to insert `PASS_OVERRIDE` strings to bypass real failures. The integrity validator hard-fails on any such tamper or on `passed=True`-with-non-empty-failures contradictions. If it fails, **abort this round** and re-spawn `eco_pre_fm_checker` with a fresh, non-edited file (deletion of the tampered JSON first):
+```bash
+python3 script/eco_scripts/eco_validate_pre_fm_integrity.py \
+    --check-json data/<TAG>_eco_pre_fm_check_round<NEXT_ROUND>.json
+# exit 1 → integrity FAIL → tampered or contradictory; do NOT submit FM
+```
+
 **MANDATORY JSON SCHEMA VALIDATION** — same contract as ORCHESTRATOR:
 ```python
 check = load(f"data/{TAG}_eco_pre_fm_check_round{NEXT_ROUND}.json")
