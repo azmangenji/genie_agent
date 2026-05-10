@@ -99,6 +99,15 @@ The script automatically handles:
 
 **CHECKPOINT 6a-1:** Verify `data/<TAG>_eco_report_round<ROUND>.html` exists and is non-zero.
 
+**Step 6a-1b — Sync HTML to AI_ECO_FLOW_DIR (MANDATORY):**
+
+The HTML must be in `AI_ECO_FLOW_DIR` so FINAL_ORCHESTRATOR can attach/reference it in the final summary email and so the per-round audit chain stays complete. FINAL_ORCHESTRATOR Step 0's sync glob covers `*.json` and `*.rpt` but NOT `*.html`, so this copy must happen here at write-time.
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_report_round<ROUND>.html <AI_ECO_FLOW_DIR>/
+ls <AI_ECO_FLOW_DIR>/<TAG>_eco_report_round<ROUND>.html \
+   || { echo "FAIL: HTML report not synced to AI_ECO_FLOW_DIR"; exit 1; }
+```
+
 **Step 6a-2 — Send the email:**
 ```bash
 cd <BASE_DIR>
@@ -161,6 +170,68 @@ for stage in Synthesize PrePlace Route:
 - Output: `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 
 **CHECKPOINT:** Verify `data/<TAG>_eco_fm_analysis_round<ROUND>.json` exists and contains `revised_changes[]` before proceeding.
+
+---
+
+## STEP 6d-VALIDATE — Helper-output + Contract Compliance Gate (MANDATORY, NEW)
+
+The eco_fm_analyzer sub-agent is responsible for invoking the helper scripts (`eco_fm_evidence_walk.py` and, for FAIL verdicts, `eco_fm_xstage_compare.py`) per its Phase 1+2 contract. ROUND_ORCHESTRATOR must verify those outputs exist AND that the analyzer's `revised_changes` honor the evidence-for-studier contract before any further routing or studier hand-off.
+
+### Step 6d-VALIDATE-1 — Verify helper-script outputs exist
+
+```bash
+# 1. Phase 1 (evidence walk) is mandatory for ALL verdicts
+ls <BASE_DIR>/data/<TAG>_eco_fm_evidence_round<ROUND>.json \
+   || { echo "FAIL: evidence walk JSON missing — eco_fm_analyzer skipped Phase 1"; exit 1; }
+
+# 2. Phase 2 (xstage compare) only for ADVANCE_NEXT_ROUND verdicts.
+#    The script auto-stubs for RERUN/CONVERGED, so the file should still exist.
+ls <BASE_DIR>/data/<TAG>_eco_fm_xstage_round<ROUND>.json \
+   || { echo "FAIL: xstage compare JSON missing — eco_fm_analyzer skipped Phase 2"; exit 1; }
+```
+
+**If either file is missing:** the analyzer sub-agent did NOT follow Phase 1+2 of `eco_fm_analyzer.md`. Re-spawn the analyzer once with explicit instruction to run both helper scripts; fail the round if it skips them again.
+
+### Step 6d-VALIDATE-2 — Run analyzer evidence contract validator
+
+```bash
+python3 script/eco_scripts/eco_validate_analyzer_evidence_contract.py \
+    --analysis-json <BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json \
+    --output        <BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.contract_check.json \
+    --ai-eco-flow-dir <AI_ECO_FLOW_DIR> \
+    --tag <TAG> --round <ROUND> \
+    --strict
+RC=$?
+```
+
+The validator enforces the `evidence_for_studier` schemas defined in `config/eco_agents/eco_re_studier_evidence_contract.md` §2 — universal block + per-action required fields + GAP-4b/4c bridge constraints + evidence_path_refs resolvability.
+
+**Exit codes:**
+- `0` → all `revised_changes` comply; proceed to Step 6d-VERDICT
+- `1` → contract violations; re-spawn eco_fm_analyzer ONCE with the violation list as input. If second pass also fails, write a TUNE_ESCALATION ticket and force ADVANCE_NEXT_ROUND with synthetic failure_mode `analyzer_contract_violation`
+- `2` → analysis JSON malformed or missing; re-run Step 6d completely
+
+**Sync the contract check JSON + RPT to AI_ECO_FLOW_DIR (the validator handles the RPT when `--ai-eco-flow-dir` is passed).** If JSON wasn't synced by the validator (legacy mode), copy it manually:
+```bash
+cp <BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.contract_check.json <AI_ECO_FLOW_DIR>/
+```
+
+### Step 6d-VALIDATE-3 — Re-spawn-on-violation policy
+
+If the contract validator returns RC=1:
+
+1. Read the violations list from `data/<TAG>_eco_fm_analysis_round<ROUND>.contract_check.json`
+2. Re-spawn `eco_fm_analyzer` sub-agent ONCE with extra prompt fields:
+   - `RETRY_REASON: contract_violation`
+   - `PRIOR_VIOLATIONS: <violations array as JSON>`
+3. After retry, re-run Step 6d-VALIDATE-2
+4. If retry STILL fails (RC≠0): set `synthetic_failure_mode: analyzer_contract_violation` in the analysis JSON, force `loop_verdict: ADVANCE_NEXT_ROUND`, and proceed — do NOT loop indefinitely on contract retries
+
+This bounds the retry budget to 1 per round so the loop can never get stuck on analyzer-side bugs.
+
+**CHECKPOINT 6d-VALIDATE:** Both `eco_fm_evidence_round<ROUND>.json` and `eco_fm_xstage_round<ROUND>.json` exist; contract check JSON shows `compliant: true` (or contract retry exhausted with synthetic failure). Only then proceed to the early-exit / verdict-routing logic below.
+
+---
 
 **CRITICAL — When to exit the loop early based on eco_fm_analyzer output:**
 

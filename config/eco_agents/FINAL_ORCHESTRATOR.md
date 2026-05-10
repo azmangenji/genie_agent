@@ -37,13 +37,17 @@ Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 Before generating any summary RPT, HTML, or email, copy every JSON / RPT / TXT artifact for this run from `<BASE_DIR>/data/` to `<AI_ECO_FLOW_DIR>/`. The flow dir is the engineer-facing handoff — anything left only in `data/` is invisible to whoever inherits the run.
 
 ```bash
-for f in <BASE_DIR>/data/<TAG>_*.json <BASE_DIR>/data/<TAG>_*.rpt <BASE_DIR>/data/<TAG>_*.txt ; do
+# Sync all artifacts: JSON (machine), RPT (human), TXT (logs), HTML (per-round reports)
+for f in <BASE_DIR>/data/<TAG>_*.json \
+         <BASE_DIR>/data/<TAG>_*.rpt \
+         <BASE_DIR>/data/<TAG>_*.txt \
+         <BASE_DIR>/data/<TAG>_*.html ; do
     [ -f "$f" ] && cp -n "$f" <AI_ECO_FLOW_DIR>/
 done
 ls <AI_ECO_FLOW_DIR>/<TAG>_*.json <AI_ECO_FLOW_DIR>/<TAG>_*.rpt | wc -l
 ```
 
-The `cp -n` flag preserves anything earlier orchestrators already copied (don't overwrite). Verify the count is non-zero before proceeding.
+The `cp -n` flag preserves anything earlier orchestrators already copied (don't overwrite). The `*.html` glob catches per-round `eco_report_round<N>.html` files written by `eco_build_round_html.py` — even if ROUND_ORCHESTRATOR Step 6a-1b sync was skipped for any reason, this is the safety net. Verify the count is non-zero before proceeding.
 
 ---
 
