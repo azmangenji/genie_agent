@@ -4,6 +4,8 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
+**MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/ORCHESTRATOR.md` **§STEP 2 — Run find_equivalent_nets**. You handle exactly what is documented there — no more, no less. Do NOT read other STEP sections; they belong to other agents.
+
 **Inputs:** TAG, REF_DIR, TILE, BASE_DIR, AI_ECO_FLOW_DIR, path to `<TAG>_eco_rtl_diff.json`
 
 **Working directory:** Always `cd <BASE_DIR>` before any operations.

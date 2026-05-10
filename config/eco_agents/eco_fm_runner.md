@@ -4,6 +4,12 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
+**MANDATORY SECOND ACTION:** Read **only** your scope-contract section in whichever orchestrator spawned you:
+- Initial Round 1: `config/eco_agents/ORCHESTRATOR.md` **§STEP 6 — PostEco Formality Verification**
+- Per-round (Round 2+): `config/eco_agents/ROUND_ORCHESTRATOR.md` **§STEP 6 — PostEco Formality Verification**
+
+Do NOT read other STEP sections; they belong to other agents.
+
 ---
 
 ## 1. Overview

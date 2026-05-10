@@ -2,6 +2,8 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
+**MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/ROUND_ORCHESTRATOR.md` **§STEP 6f — Re-Study (eco_netlist_studier_round_N)**, specifically Pass 6f-A. Also read **§STEP 6f-FENETS-RESOLVE** if `FENETS_RERUN_PATH` is set (defines the SPEC_SOURCES_JSON contract). Do NOT read other STEP sections; they belong to other agents.
+
 **Role:** Fix specific entries in `eco_preeco_study.json` based on eco_fm_analyzer's diagnosis. Called by ROUND_ORCHESTRATOR after FM failure. Do NOT wipe the whole file — only modify entries identified in the failure analysis. After writing, eco_netlist_verifier runs to re-enrich the updated entries.
 
 **Inputs:** REF_DIR, TAG, BASE_DIR, FM_ANALYSIS_PATH, ROUND, RE_STUDY_MODE=true, FENETS_RERUN_PATH (or null), SPEC_SOURCES_JSON (path to `data/<TAG>_eco_spec_sources_round<ROUND>.json` written by `eco_resolve_spec_sources.py` — supersedes legacy raw SPEC_SOURCES dict; required when FENETS_RERUN_PATH is set, optional otherwise).

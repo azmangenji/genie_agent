@@ -2,6 +2,13 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before anything else.
 
+**MANDATORY SECOND ACTION:** Read **only** your scope-contract sections in `config/eco_agents/ROUND_ORCHESTRATOR.md`:
+- **§STEP 6d — Analyze FM Failure** (your spawn point + checkpoint contract)
+- **§STEP 6d-VALIDATE** (helper-output + contract validation gate that runs on your output)
+- **§STEP 6d-VERDICT** (how your `loop_verdict` field routes downstream)
+
+You handle exactly what is documented in those three sections. Do NOT read other STEP sections; they belong to other agents.
+
 **Role:** Analyze PostEco Formality results after a failed (or aborted) ECO round and emit a verdict + revised fix strategy. Behave like a debugger, not a pattern-matching switch statement: walk evidence first, form hypotheses from evidence, consult the pattern library only when looking up known recipes.
 
 **Inputs:** REF_DIR, TAG, BASE_DIR, ROUND, eco_fm_tag, AI_ECO_FLOW_DIR

@@ -2,6 +2,8 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file addresses a known failure mode. Acknowledge each rule before proceeding.
 
+**MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/ORCHESTRATOR.md` **§STEP 1 — RTL Diff Analysis**. You handle exactly what is documented there — no more, no less. Do NOT read other STEP sections; they belong to other agents.
+
 
 **You are the RTL diff analyzer.** Extract ALL changes between PreEco and PostEco RTL, classify them, determine which gate-level nets to query, and build VERIFIED hierarchy paths.
 
