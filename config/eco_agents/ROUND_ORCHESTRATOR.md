@@ -391,6 +391,14 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets_rerun_round<ROUND>.rpt
 ```
 Verify JSON contains `condition_input_resolutions` array. Do NOT proceed to Step 6f without this.
 
+**Step 6f-FENETS-RESOLVE — Refresh SPEC_SOURCES (MANDATORY after re-run):**
+```bash
+python3 script/eco_scripts/eco_resolve_spec_sources.py \
+    --tag <TAG> --round <ROUND> --base-dir <BASE_DIR>
+# → writes data/<TAG>_eco_spec_sources_round<ROUND>.json
+```
+Pass that JSON path (not the original SPEC_SOURCES dict) to eco_netlist_re_studier in Step 6f. Without this, the re-studier may resolve gate-level nets from stale specs and produce wrong port_connections.
+
 ---
 
 ## STEP 6e-TUNE — Apply Tune File Update (conditional)
@@ -473,6 +481,16 @@ python3 script/eco_scripts/eco_expand_chains.py \
 ```
 eco_expand_chains runs AFTER verifier (not just after re_studier) because verifier may have added new entries that reference d_input chains not yet injected.
 
+**MANDATORY: Re-validate study JSON post-expand_chains** — same contract enforcement as ORCHESTRATOR Step 3. Catches malformed chain output (Check 16 `[CHAIN_INJECTION_SCHEMA]`) before Step 4 of the next round:
+```bash
+python3 script/eco_scripts/eco_validate_step3.py \
+    --study data/<TAG>_eco_preeco_study.json \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --ref-dir <REF_DIR> --tag <TAG> \
+    --output data/<TAG>_eco_validate_step3_round<NEXT_ROUND>.json
+```
+Exit 1 → re-spawn re_studier or eco_expand_chains until passing.
+
 **MANDATORY: Re-load study JSON before exit check** — the file was just updated by verifier + eco_expand_chains. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
 
 **EXIT RULE — MAX_ROUNDS ONLY (no MANUAL_LIMIT early exit):**
@@ -498,6 +516,8 @@ if NEXT_ROUND > max_rounds:
 ---
 
 ## STEP 4 — Apply ECO Fix (eco_apply_fix_round_N)
+
+> **ROLLBACK INVARIANT** — eco_applier writes directly to `<REF_DIR>/data/PostEco/<Stage>.v.gz` BEFORE Step 5 runs. If Step 5 self-healing fails or eco_applier introduces syntax errors, PostEco is left mid-applied. **Step 6b backup of THIS round** (taken at line 134-146 of THIS instance) IS the rollback point — the next ROUND_ORCHESTRATOR's Step 6b will overwrite this round's backup with the now-broken state, and the FIRST-round backup (`bak_<TAG>_round1`) remains the deepest restore point. Surgical mode in eco_passes_2_4 handles partial-applied state correctly when re-applying with `force_reapply: true`.
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_applier.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `JIRA`, `ROUND=<NEXT_ROUND>`, `AI_ECO_FLOW_DIR`

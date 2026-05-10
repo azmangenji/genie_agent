@@ -95,7 +95,26 @@ def read_json(path: Path) -> Any:
 # ---------------------------------------------------------------------------
 
 def initial_verdict(fm_verify: dict | None) -> tuple[str, str, dict]:
-    """Triage from eco_fm_verify.json. Returns (verdict, reason, per_target_status)."""
+    """Triage from eco_fm_verify.json. Returns (verdict, reason, per_target_status).
+
+    SOURCE OF TRUTH for loop_verdict semantics. The downstream chain (analyzer
+    Phase 1, ROUND_ORCHESTRATOR Step 6d-VERDICT, re-studier Step 1) keys off
+    this verdict — keep the rules in lock-step with eco_fm_pattern_library.md
+    §A "Verdict Derivation Rules".
+
+    Truth table (per-target status combinations → verdict):
+      • fm_verify is None / empty                         → RERUN_SAME_ROUND  (FM artifact missing)
+      • ANY target = ABORT                                → RERUN_SAME_ROUND  (abort dominates)
+      • ANY target = MISSING or NOT_RUN                   → RERUN_SAME_ROUND  (treat as abort-equivalent)
+      • ALL three targets = PASS                          → CONVERGED
+      • Otherwise (mix of PASS/FAIL with no abort)        → ADVANCE_NEXT_ROUND
+
+    Rationale:
+      ABORT means FM never built the comparison — fix structural issue + retry
+      same round (≤3 retries, then forced advance per ROUND_ORCH hard rule).
+      FAIL means FM compared and found non-equivalent points — study + advance.
+      PASS-only means done.
+    """
     per_target: dict[str, str] = {}
     if not fm_verify:
         return ("RERUN_SAME_ROUND", "eco_fm_verify.json missing or empty", per_target)

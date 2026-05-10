@@ -65,22 +65,19 @@ Every artifact you need for the round, pre-walked:
 
 If verdict is `CONVERGED`, write a converged JSON and exit Phase 1 — no further phases needed.
 
-### Evidence walk completeness check
+### Evidence walk completeness check + verdict cross-verify
 
-Before proceeding, sanity-check that the walker produced what you expect:
+Before proceeding, sanity-check that the walker produced what you expect AND that its verdict matches the canonical truth-table in `eco_fm_pattern_library.md` §A0:
 
 ```python
 assert evidence.get("loop_verdict") in ("RERUN_SAME_ROUND", "ADVANCE_NEXT_ROUND", "CONVERGED")
-assert "per_target" in evidence
-for tgt, det in evidence["per_target"].items():
-    assert det["status"] in ("PASS", "FAIL", "ABORT", "NOT_RUN", "MISSING")
-    if det["status"] == "ABORT":
-        assert "abort_diagnostics" in det
-    if det["status"] == "FAIL":
-        assert "failing_diagnostics" in det
+fm_verify = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_fm_verify.json"))
+expected_verdict = derive_verdict_from(fm_verify)   # mirror §A0 rules
+assert evidence["loop_verdict"] == expected_verdict, \
+    f"verdict drift: walker says {evidence['loop_verdict']!r} but §A0 says {expected_verdict!r}"
 ```
 
-If the walker output is incomplete, fix the input artifact OR re-run the walker — do NOT improvise around it.
+Drift indicates either a stale walker, a broken `eco_fm_verify.json`, or a §A0 rule change not reflected in the walker. Fix the upstream cause — do NOT improvise around it.
 
 ---
 

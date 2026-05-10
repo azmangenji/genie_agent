@@ -10,6 +10,22 @@ This file is **reference material** consulted by `eco_fm_analyzer.md`. It is NOT
 
 ---
 
+## §A0 — Verdict Derivation Rules (canonical)
+
+`loop_verdict` is set by `eco_fm_evidence_walk.py::initial_verdict()` from `eco_fm_verify.json`. Single source of truth for the whole chain (analyzer, ROUND_ORCHESTRATOR Step 6d-VERDICT, re-studier).
+
+| `eco_fm_verify` per-target status | `loop_verdict` |
+|---|---|
+| File missing / empty | `RERUN_SAME_ROUND` |
+| ANY target = `ABORT` | `RERUN_SAME_ROUND` |
+| ANY target = `MISSING` or `NOT_RUN` | `RERUN_SAME_ROUND` |
+| ALL three targets = `PASS` | `CONVERGED` |
+| Mix of `PASS`/`FAIL` (no ABORT) | `ADVANCE_NEXT_ROUND` |
+
+Any consumer that reads `loop_verdict` MUST cross-check it against `eco_fm_verify.json` to detect drift if these rules ever change.
+
+---
+
 ## §A — FM Report Reference Table
 
 Every FM-generated artifact, what it tells you, and when to consult it.

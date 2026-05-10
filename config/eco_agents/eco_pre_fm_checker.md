@@ -34,6 +34,8 @@ python3 script/eco_scripts/eco_pre_fm_check.py \
 
 **Max inline fix retries: 3.** If script still exits 1 after 3 attempts → write JSON with `passed: false`, copy RPT to AI_ECO_FLOW_DIR, exit. ROUND_ORCHESTRATOR handles it.
 
+> **ROLLBACK INVARIANT** — when self-healing fails and `passed: false` is emitted, PostEco netlists are left in mid-applied state from Step 4. Log this fact in the RPT (`WARN: PostEco mid-applied; ROUND_ORCH Step 6b backup of THIS round preserves this state for surgical re-apply next round`). Do NOT attempt netlist revert here — that's ROUND_ORCHESTRATOR's responsibility via Step 6b.
+
 **DO NOT** add agent judgment on top of script results. **DO NOT** reclassify FAIL as WARNING. **DO NOT** let FM proceed if exit code = 1.
 
 **MANDATORY COPY — always copy BOTH files to AI_ECO_FLOW_DIR regardless of PASS/FAIL:**

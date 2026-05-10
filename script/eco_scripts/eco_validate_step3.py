@@ -576,6 +576,28 @@ def main():
             if missing:
                 issues.append(f"MEDIUM: {ct} {inst} missing context field(s) {missing} — studier must populate `reason`/`notes`/`source` per eco_netlist_studier.md 0e.")
 
+    # ── 16. Chain-injection schema: every gate entry produced by
+    #         eco_expand_chains.py must carry the structural fields the applier
+    #         depends on. Catches silently malformed chain output before it
+    #         poisons Step 4.
+    REQUIRED_GATE_FIELDS = ('instance_name', 'cell_type', 'gate_function', 'port_connections')
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'new_logic_gate':
+                continue
+            inst = e.get('instance_name', '?')
+            missing = [f for f in REQUIRED_GATE_FIELDS if not e.get(f)]
+            if missing:
+                issues.append(f"CRITICAL: chain-injection schema — new_logic_gate {inst} in {stage} missing {missing}; eco_expand_chains.py output malformed")
+                continue
+            pcs = e.get('port_connections', {})
+            if not isinstance(pcs, dict) or not pcs:
+                issues.append(f"CRITICAL: chain-injection schema — new_logic_gate {inst} in {stage} has empty port_connections")
+                continue
+            for pin, net in pcs.items():
+                if net is None or (isinstance(net, str) and not net.strip()):
+                    issues.append(f"CRITICAL: chain-injection schema — new_logic_gate {inst}.{pin} in {stage} = {net!r} (empty/null)")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
