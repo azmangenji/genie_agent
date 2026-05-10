@@ -1,1000 +1,479 @@
-# ECO FM Analyzer — PostEco Formality Failure Analyst
+# ECO FM Analyzer — Investigative Debugger
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before anything else.
 
-**Role:** Analyze PostEco Formality results after a failed ECO round and recommend a concrete, actionable revised fix strategy.
+**Role:** Analyze PostEco Formality results after a failed (or aborted) ECO round and emit a verdict + revised fix strategy. Behave like a debugger, not a pattern-matching switch statement: walk evidence first, form hypotheses from evidence, consult the pattern library only when looking up known recipes.
 
 **Inputs:** REF_DIR, TAG, BASE_DIR, ROUND, eco_fm_tag, AI_ECO_FLOW_DIR
 
----
-
-## ABSOLUTE RULE — `manual_only` is ABOLISHED
-
-**Never prescribe `action: manual_only`.** The flow always tries its best — all 10 rounds. For every failure, prescribe a progressive action:
-
-| Instead of manual_only | Use |
-|------------------------|-----|
-| Route net unresolvable | `conservative_constant` (1'b0 for condition gate inputs as last resort) |
-| Structural stage mismatch | `fix_named_wire` → `move_gate_to_submodule` → `conservative_constant` |
-| Pre-existing failure (Mode E) | `try_structural_insertion` → `conservative_constant` |
-| Decomposition failed (Mode F2) | `try_alternative_decomposition` → `try_alternative_pivot` |
-| INTENTIONAL_CASCADE | `cascade_verified_skip` (not manual_only — just skip that DFF) |
-
-The only valid exit is MAX_ROUNDS (10 rounds). ROUND_ORCHESTRATOR will never early-exit for manual_only.
-
-## GOLDEN RULE — Always Cross-Reference RTL Diff Before Prescribing Any Fix
-
-**Load these two files ONCE at the start and keep them in memory throughout all analysis:**
-```python
-rtl_diff = load(f"data/{TAG}_eco_rtl_diff.json")    # source of original intent
-study    = load(f"data/{TAG}_eco_preeco_study.json") # source of what was studied
-```
-
-**Before prescribing ANY revised_change action**, look up the failing signal in `rtl_diff["changes"]` and check its properties:
-
-| RTL diff field | What it tells you |
-|---------------|-------------------|
-| `change_type` | `wire_swap`, `and_term`, `new_logic`, `new_port`, `port_connection`, `port_promotion` |
-| `implicit_wire` | Signal is an internal wire WITHIN a module — never propagate as port to parent |
-| `no_wire_decl_needed` | Same as implicit_wire — internal connection, not a boundary crossing |
-| `and_term_strategy` | `module_port_direct_gating` vs `direct_rewire` — determines valid fixes |
-| `mode_H_risk` | Gate input known to be inaccessible in P&R stages — expect Mode H |
-| `missing_in_stages` | Which P&R stages were expected to have renamed nets |
-| `d_input_decompose_failed` | Gate chain could not be decomposed — fallback strategy applies |
-| `fallback_strategy` | `intermediate_net_insertion` — pivot net approach, not D-input baking |
-
-**Why this matters:** FM failures can look identical (DFF0X, DFF non-equiv) but require completely different fixes depending on the original RTL intent. Prescribing `force_port_decl` for an `implicit_wire` signal creates a signal driven from outside when the driver is inside — a different failure. Always check RTL diff first.
+**Pattern reference (consulted, not executed top-to-bottom):** `config/eco_agents/eco_fm_pattern_library.md`
 
 ---
 
-## STEP -1 — Pre-FM Check Fast Path
+## §0 — Inputs, Constants, Rule Index
 
-Read `<BASE_DIR>/data/<TAG>_round_handoff.json`. If `pre_fm_check_failed: true`, FM was never submitted — skip Steps 0-2 and read the pre-FM check JSON directly:
+### Mandatory loads (once per round)
 
 ```python
-pre_fm = load(f"data/{TAG}_eco_pre_fm_check_round{ROUND}.json")
-for issue in pre_fm["critical_issues"]:
-    if issue["severity"] == "CRITICAL":
-        check = issue.get("check_id", "A")
-        if check == "A":   # Stage inconsistency
-            add_to_revised_changes(action="fix_stage_skip", gate=issue["name"], skipped_in=issue["skipped_in"])
-        elif check == "B": # Port missing from stages
-            add_to_revised_changes(action="force_port_decl", signal=issue["signal"], module=issue["module"], missing_from=issue["stage"])
-        elif check == "C": # Cell missing from stage
-            add_to_revised_changes(action="force_cell_insert", instance=issue["instance"], missing_from=issue["missing_from"])
-        elif check == "D": # Duplicate port
-            add_to_revised_changes(action="force_reapply", signal=issue["duplicates"][0], note="dedup required")
-
-set failure_mode = "PRE_FM_CHECK"; set needs_re_study = True
-Write eco_fm_analysis_round<ROUND>.json and EXIT
+rtl_diff   = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_rtl_diff.json"))
+study      = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_preeco_study.json"))
+eco_appl   = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_applied_round{ROUND}.json"))
+fm_verify  = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_fm_verify.json"))
+fixer_state = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_fixer_state"))
 ```
+
+These four files are the source of truth for ALL prior-state decisions. Keep them in working memory throughout the analysis.
+
+### Hard rules (do NOT violate — full list in pattern library §D)
+
+- ECO-inserted DFFs (`eco_<jira>_*`) are NEVER Mode E.
+- `set_user_match` / `set_dont_verify` are NEVER for ECO-inserted cells.
+- `manual_only` is ABOLISHED — always emit progressive action.
+- NEVER modify `EcoChange.svf` or any SVF file.
+- ABORT verdicts MUST set `loop_verdict: "RERUN_SAME_ROUND"` (round counter unchanged).
+- ABORT analysis MUST NOT prescribe `re_study` or `eco_passes_2_4` re-run.
+- Maximum 3 RERUN_SAME_ROUND emissions per round; on 4th attempt force ADVANCE_NEXT_ROUND with `abort_unrecoverable`.
 
 ---
 
-## STEP 0 — FM Abort Detection (MANDATORY FIRST)
+## §1 — PHASE 1: Comprehensive Evidence Gathering (MANDATORY, FIRST)
 
-Read `<BASE_DIR>/data/<TAG>_eco_fm_verify.json`. Each target result:
-
-| Status | Meaning |
-|--------|---------|
-| `{"status": "PASS"}` | FM ran and passed |
-| `{"status": "FAIL", "failing_count": N}` | FM ran, N non-equivalent points |
-| `{"status": "ABORT", "abort_type": "ABORT_LINK\|ABORT_NETLIST\|ABORT_SVF\|ABORT_OTHER"}` | FM aborted |
-| `{"status": "NOT_RUN"}` | Only valid for guard-check skip (no changes applied) — should NOT appear for normal rounds since all 3 targets are always run |
-
-Old format: each target is a string `"PASS"`, `"FAIL"`, or `"NOT_RUN"` — ABORT appears as `"FAIL"` with empty failing_points; check log to confirm. If `NOT_RUN` appears for any of the 3 main targets in a normal round, flag as anomaly — eco_fm_runner should have run all 3.
-
-**If ANY target is ABORT (or FAIL with 0/N/A failing_points in old format) — complete abort diagnosis before anything else.**
-
-### Step 0a — Read FM log for error codes
+Run the evidence-walker helper script. It does the deterministic part (greping, parsing FM reports, building per-DFF dossiers) so you can focus on reasoning.
 
 ```bash
-for target in FmEqvEcoSynthesizeVsSynRtl FmEqvEcoPrePlaceVsEcoSynthesize FmEqvEcoRouteVsEcoPrePlace; do
-    log=<REF_DIR>/logs/${target}.log.gz
-    [ -f "$log" ] && zcat "$log" | grep -E "^Error|FE-LINK|FM-[0-9]+|CMD-[0-9]+|Unresolved|cannot|no corresponding port" | head -30
-done
+python3 script/eco_scripts/eco_fm_evidence_walk.py \
+    --tag <TAG> --round <ROUND> \
+    --ref-dir <REF_DIR> --base-dir <BASE_DIR>
+# → writes <BASE_DIR>/data/<TAG>_eco_fm_evidence_round<ROUND>.json
 ```
 
-### Step 0b — Classify abort type
+Then load and read the output:
 
-| Error pattern | Abort Type | Fix |
-|---------------|-----------|-----|
-| `CMD-010` on `guide_eco_change` | `ABORT_SVF` | Remove eco_svf_entries.tcl; set `svf_update_needed: false` |
-| `CMD-005` | `ABORT_SVF` | SVF elaboration error — same fix |
-| `FE-LINK-7` + `no corresponding port` | `ABORT_LINK` | Go to Step 0c immediately |
-| `FM-234` (Unresolved references) | `ABORT_LINK` | Port missing from module |
-| `FM-156` (Failed to set top design) | `ABORT_LINK` | Cascades from FM-234 |
-| `FM-001` design read error | `ABORT_NETLIST` | PostEco netlist not readable |
-| Syntax error | `ABORT_NETLIST` | eco_applier wrote malformed Verilog |
-
-### Step 0c — ABORT_LINK: diagnose missing ports
-
-Extract missing ports from FE-LINK-7 errors:
-```bash
-zcat <REF_DIR>/logs/<target>.log.gz | grep "FE-LINK-7" | head -10
-# Error: The pin '<missing_port>' of '.../<parent>/<instance>' has no corresponding port on '<module_name>'
-```
-
-**Step 0c-1:** Check if port is in the PostEco netlist module port list header:
-```bash
-zcat <REF_DIR>/data/PostEco/<Stage>.v.gz | grep -n "module.*<module_name>" | head -3
-# Read ~30 lines from that position to see the port list
-```
-
-**Step 0c-2:** Check if port was incorrectly marked ALREADY_APPLIED:
 ```python
-import json
-data = json.load(open('<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json'))
-for stage, entries in data.items():
-    if stage == 'summary': continue
-    for e in entries:
-        if (e.get('change_type') in ('port_declaration','port_connection')
-            and e.get('status') == 'ALREADY_APPLIED'
-            and '<missing_port>' in str(e)):
-            print(f'{stage}: ALREADY_APPLIED — {e}')
-            print(f'  already_applied_reason: {e.get("already_applied_reason", "NO REASON RECORDED")}')
+evidence = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_fm_evidence_round{ROUND}.json"))
+verdict  = evidence["loop_verdict"]   # RERUN_SAME_ROUND | ADVANCE_NEXT_ROUND | CONVERGED
 ```
 
-**Step 0c-2b: Detect cell_type/port mismatch (FE-LINK-7 on technology library cell)**
+### What the evidence JSON contains
 
-If the FE-LINK-7 module path contains `/TECH_LIB_DB/` (or similar) rather than a user design module, this is a **cell_type/port mismatch** — the inserted ECO cell uses a pin name that doesn't exist on the technology library cell.
+Every artifact you need for the round, pre-walked:
+- **Per-target status** (PASS / FAIL / ABORT / NOT_RUN / MISSING)
+- **`abort_diagnostics`** if any target is ABORT (log excerpts, error codes, missing ports, runtime phase that errored)
+- **`failing_diagnostics`** if any target is FAIL (per-DFF dossiers with cone analysis, undriven nets, tune directives applied, SVF accept/reject counts, AMD-WARN messages)
+- **`tune_directives_status`** — cross-target summary of which `set_constant`, `set_dont_verify`, `set_user_match` calls landed
+- **`summary_signals`** — high-level findings to consider before diving into dossiers (SKIPPED entries, ECO DFF in failing, unmatched cones, rejected SVF, AMD-WARNs)
 
-Pattern: `Error: The pin '<pin>' of '.../eco_<jira>_<seq>' has no corresponding port on '/TECH_LIB_DB/<WRONG_CELL_TYPE>'. (FE-LINK-7)`
+If verdict is `CONVERGED`, write a converged JSON and exit Phase 1 — no further phases needed.
 
-**Fix:** Re-search the PreEco netlist for a cell that (a) implements `gate_function` AND (b) has the port names in `port_connections`. **Verify the candidate via `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py` before recording — never write a `False` choice.** Set `action: fix_cell_type` and `failure_mode: ABORT_CELL_TYPE`:
-```json
-{
-  "stage": "ALL",
-  "action": "fix_cell_type",
-  "gate_instance": "<eco_jira_seq>",
-  "gate_function": "<gate_function from study JSON>",
-  "wrong_cell_type": "<cell that was used but failed>",
-  "missing_pin": "<the pin that didn't exist on wrong_cell_type>",
-  "rationale": "FE-LINK-7: pin not a port of wrong_cell_type. Re-search PreEco for cell implementing gate_function with correct port.",
-  "eco_preeco_study_update": {"action": "fix_cell_type", "gate_instance": "<eco_jira_seq>"}
-}
+### Evidence walk completeness check
+
+Before proceeding, sanity-check that the walker produced what you expect:
+
+```python
+assert evidence.get("loop_verdict") in ("RERUN_SAME_ROUND", "ADVANCE_NEXT_ROUND", "CONVERGED")
+assert "per_target" in evidence
+for tgt, det in evidence["per_target"].items():
+    assert det["status"] in ("PASS", "FAIL", "ABORT", "NOT_RUN", "MISSING")
+    if det["status"] == "ABORT":
+        assert "abort_diagnostics" in det
+    if det["status"] == "FAIL":
+        assert "failing_diagnostics" in det
 ```
 
-**Step 0c-3:** If `already_applied_reason` is absent or says "found in file" (not "found in port list") → **false ALREADY_APPLIED** — eco_applier found the signal name as a wire but did not verify it was in the module port list.
-
-**Step 0c-4:** If Step 0c-1 confirms port is missing AND Step 0c-2 confirms ALREADY_APPLIED was applied to this port_declaration → root cause confirmed: `failure_mode: ABORT_LINK`.
-
-**Step 0c-5:** For each missing port, add to `revised_changes`:
-```json
-{
-  "stage": "ALL",
-  "action": "force_port_decl",
-  "signal_name": "<missing_port>",
-  "module_name": "<module_name>",
-  "declaration_type": "input|output",
-  "rationale": "FE-LINK-7: port missing from port list. eco_applier marked ALREADY_APPLIED incorrectly — signal exists as wire/DFF output but NOT in module port list header.",
-  "eco_preeco_study_update": {
-    "action": "force_reapply_port_decl",
-    "signal_name": "<missing_port>",
-    "module_name": "<module_name>"
-  }
-}
-```
-
-ROUND_ORCHESTRATOR adds `"force_reapply": true` to the port_declaration entry so eco_applier skips the ALREADY_APPLIED check.
-
-**Only proceed to Step 1 if FM ran comparison (all targets show PASS or FAIL with actual failing counts).**
+If the walker output is incomplete, fix the input artifact OR re-run the walker — do NOT improvise around it.
 
 ---
 
-## STEP 1 — Read Structured FM Results
+## §2 — PHASE 2: Cross-Stage Netlist Comparison (RUN ONLY IF verdict = ADVANCE_NEXT_ROUND)
 
-Read `<BASE_DIR>/data/<TAG>_eco_fm_verify.json` for failing counts and points per target:
-- `FmEqvEcoSynthesizeVsSynRtl`
-- `FmEqvEcoPrePlaceVsEcoSynthesize`
-- `FmEqvEcoRouteVsEcoPrePlace`
+For ABORT verdicts, skip this phase — the netlist diff is unhelpful when FM never compared.
 
-Also read `eco_fixer_state` → `fm_results_per_round` for trend across all previous rounds (converging vs. diverging).
+For FAIL verdicts, run the cross-stage comparator. It walks each failing DFF's D/CP/SE/SI cones across Synthesize/PrePlace/Route PostEco netlists and emits structural deltas:
+
+```bash
+python3 script/eco_scripts/eco_fm_xstage_compare.py \
+    --tag <TAG> --round <ROUND> \
+    --ref-dir <REF_DIR> --base-dir <BASE_DIR>
+# → writes <BASE_DIR>/data/<TAG>_eco_fm_xstage_round<ROUND>.json
+# Auto-skips if evidence verdict != ADVANCE_NEXT_ROUND
+```
+
+```python
+xstage = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_fm_xstage_round{ROUND}.json"))
+```
+
+### What the xstage JSON contains
+
+Per failing DFF:
+- **`stages`** — per-stage pin map (D/CP/SE/SI nets), driver chain back-walk, cell type
+- **`wire_decls_per_stage`** — for every wire mentioned in any pin, whether it's declared as `input`/`output`/`wire`/`absent` in each stage
+- **`cell_presence_per_stage`** — for every cell in driver chains, whether it exists in each stage's PostEco
+- **`deltas`**:
+  - `pin_changes` — pins whose nets differ across stages
+  - `wire_present_per_stage` — wires that exist in some stages but not others
+  - `cell_blackboxed` — cells in Synth that are absent from PrePlace/Route (FM black-boxes them)
+
+This is your structural-divergence X-ray. Use it heavily in Phase 3.
 
 ---
 
-## STEP 2 — Quick Health Checks (run IN ORDER before mode classification)
+## §3 — PHASE 3: Hypothesize Root Cause (INVESTIGATIVE)
 
-### Check F — Unresolved condition inputs (MANDATORY FIRST — before Checks A–E)
+Reason from evidence + xstage. Do NOT classify symptoms — investigate.
 
-Run this before all other checks. Unresolved condition inputs contaminate the gate chain and produce misleading DFF0X / non-equivalent failures that appear as Mode A or H.
+### Phase 3 algorithm (per failing point in the FAIL case, or the single abort cause in the ABORT case)
 
-```python
-rtl_diff  = json.load(open('<BASE_DIR>/data/<TAG>_eco_rtl_diff.json'))
-study     = json.load(open('<BASE_DIR>/data/<TAG>_eco_preeco_study.json'))
-fenets_rpt = open('<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt').read()
+```
+For each failing point (or abort cause):
 
-unresolved = []
-for change in rtl_diff.get('changes', []):
-    for ci in change.get('condition_inputs_to_query', []):
-        if ci['signal'] not in fenets_rpt:
-            unresolved.append({'signal': ci['signal'], 'scope': ci['scope'],
-                               'change_type': change.get('change_type')})
+  Q1. Which pin's cone is divergent?
+       Read evidence.per_target[tgt].failing_diagnostics.per_dff_dossiers[*].cone_analysis
+       Look at unmatched_cone_inputs to identify the failing pin (D/SE/SI/CP)
+       For ABORT: read abort_diagnostics.fm_error_codes + missing_ports
 
-for stage, entries in study.items():
-    if stage == 'summary': continue
-    for e in entries:
-        for pcs in [e.get('port_connections', {}), *e.get('port_connections_per_stage', {}).values()]:
-            for pin, net in pcs.items():
-                if isinstance(net, str) and net.startswith('PENDING_FM_RESOLUTION:'):
-                    sig = net.split(':', 1)[1]
-                    if not any(u['signal'] == sig for u in unresolved):
-                        unresolved.append({'signal': sig, 'scope': '?', 'source': 'study_json_pending'})
+  Q2. Is the divergence load-bearing or shadowed by a tune directive?
+       Cross-check evidence.tune_directives_status
+       If tune file applied set_constant SE=0 → SE cone is don't-care → not load-bearing
+       If no directive shadows the failing pin → it IS load-bearing
+
+  Q3. If load-bearing: walk the divergent cone back through the netlist
+       Use xstage.per_failing_dff[inst].stages[stage].driver_chain_D|CP|SE|SI
+       Walk back hop by hop until you find the FIRST point where stages diverge
+       That first divergent point is your root-cause candidate
+
+  Q4. Characterize the divergent point — pick from these (multiple may apply):
+       - undriven cut-point        → check evidence undriven_nets
+       - CTS rename                → wire_present_per_stage shows wire absent in P&R
+       - black-boxed submodule     → cell_blackboxed shows cell absent in P&R
+       - wrong gate function       → polarity check; needs Mode A Check D
+       - missing port declaration  → ABORT_LINK or false-APPLIED port_decl
+       - bridge port plumbing gap  → SE/SI uses bridge port but parent doesn't drive it
+       - sibling SE not consolidated → bridge buffer exists, but DFFs in sibling
+                                       still use CTS-renamed wires (not bridge_out)
+
+  Q5. What netlist edit converges the divergence?
+       Don't pick the action yet — just describe in plain words what would fix it.
+       Example: "Move D-input gate inside child submodule because child is
+                 black-boxed in P&R" or "Add explicit wire decl for n_eco_*
+                 because UNCONNECTED rename left it implicit"
 ```
 
-**If any unresolved condition inputs found:**
-- Check if a prior round already returned FM-036 for this signal:
-  ```python
-  prior_rerun = load(f"data/{TAG}_eco_fenets_rerun_round{ROUND-1}.json")
-  signal_result = next((r for r in prior_rerun.get("condition_input_resolutions", [])
-                        if r["signal"] == signal), None)
-  action = "structural_trace" if (signal_result and not signal_result.get("resolved_gate_level_net")) else "rerun_fenets"
-  ```
-- Add `action: rerun_fenets` or `structural_trace` per signal; set `needs_re_study: true`.
-- After first FM-036, switch to `structural_trace` — never rerun FM for the same signal twice (infinite loop).
-- Do NOT skip this check. Without it, the flow loops on the same unresolvable signal burning all remaining rounds.
+### Hypothesis record format
 
-### Check A — eco_applied SKIPPED entries
-
-```bash
-python3 -c "
-import json
-data = json.load(open('<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json'))
-for stage, entries in data.items():
-    if stage == 'summary': continue
-    for e in entries:
-        if e.get('status') == 'SKIPPED':
-            print(f'{stage}: SKIPPED — {e.get(\"cell_name\",\"?\")} reason={e.get(\"reason\",\"?\")}')
-"
-```
-
-Any SKIPPED confirmed change is almost certainly the FM failure cause → Mode A. No netlist tracing needed.
-
-### Check B — VERIFY_FAILED entries
-
-```bash
-python3 -c "
-import json
-data = json.load(open('<BASE_DIR>/data/<TAG>_eco_applied_round<ROUND>.json'))
-for stage, entries in data.items():
-    if stage == 'summary': continue
-    for e in entries:
-        if e.get('verify_failed') or e.get('status') == 'VERIFY_FAILED':
-            print(f'{stage}: VERIFY_FAILED — {e.get(\"cell_name\",\"?\")}')
-"
-```
-
-VERIFY_FAILED means the cell was edited but the change may have been only partially applied.
-
-### Check C — Cross-reference failing DFFs against RTL diff target registers
-
-```python
-targets = [c.get('target_register','') for c in rtl_diff.get('changes',[]) if c.get('target_register')]
-for target_name, result in fm.items():
-    for pt in result.get('failing_points', [])[:10]:
-        matched = any(t and t in pt for t in targets)
-        print(f'{pt} -> matches RTL target: {matched}')
-```
-
-- Matches RTL diff `target_register` → ECO for that change did not work → Mode A or C
-- Does NOT match any RTL target → downstream consumer or unrelated → Mode B or E
-
-This single check classifies 90% of cases before any netlist tracing.
-
-### Check E — DFF0X classification on ECO-inserted DFFs
-
-**Trigger:** Failing DFF is classified `DFF0X`/`DFF0` AND matches `eco_<jira>_xxx` pattern.
-
-**Step E1 — Read the DFF D-input net:**
-```bash
-zcat <REF_DIR>/data/PostEco/<FailingStage>.v.gz | grep -A6 "\b<dff_instance>\b" | grep "\.D("
-```
-
-**Step E2 — Walk the FULL D-input gate chain (do NOT stop at the first gate):**
-
-```python
-queue = [d_net]; visited_gates = set(); chain_depth = 0
-while queue and chain_depth < 10:
-    net = queue.pop(0); chain_depth += 1
-    driver = find_driver_of_net(net, failing_stage_posteco)
-    if driver is None:
-        # GAP-18: Check submodule bus output FIRST
-        bus_match = re.search(r'\.\s*\w+\s*\(\s*\{[^}]*\b' + re.escape(net) + r'\b', failing_stage_module_lines)
-        if bus_match:
-            # driven_by_submodule: true → Mode_H_submodule_rename; action: fix_named_wire with rename_wire=True
-            break
-        synth_driver = find_driver_of_net(net, synthesize_posteco)
-        if synth_driver is not None:
-            report_mode_H(gate=current_gate, pin=current_pin, net=net, stage=failing_stage)
-        else:
-            report_mode_A(net=net)
-        break
-    if driver["instance"] in eco_preeco_study:
-        for pin, input_net in driver["inputs"].items():
-            par_count   = grep_count_in_preeco(input_net, failing_stage)
-            synth_count = grep_count_in_preeco(input_net, "Synthesize")
-            if synth_count > 0 and par_count == 0:
-                report_mode_H(gate=driver["instance"], pin=pin, net=input_net, stage=failing_stage)
-                return  # Root cause found — stop walking
-            queue.append(input_net)
-        visited_gates.add(driver["instance"])
-    else:
-        break  # Non-ECO cell — stop tracing
-```
-
-Mode H is diagnosed on the **specific gate+pin** where the input net is inaccessible — NOT on the top-level DFF.
-
-**Step E3 — Confirm with PreEco grep:**
-```bash
-synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<net>")
-par_count=$(zcat <REF_DIR>/data/PreEco/<FailingStage>.v.gz | grep -cw "<net>")
-# synth_count > 0 AND par_count = 0 → confirmed Mode H
-```
-
-### Check D — Polarity verification for inserted gate cells
-
-For `new_logic_gate` entries in eco_applied where the change is a `wire_swap` targeting a MUX select pin:
-
-**Step D1:** Read the inserted gate type from PostEco.
-
-**Step D2:** Re-derive the correct gate function from PreEco netlist (do NOT use RTL diff hint — it may be wrong). Run the Step 4c-POLARITY algorithm from eco_netlist_studier.md using actual PreEco MUX I0/I1 connections.
-
-**Step D3:** If inserted gate type ≠ correct_gate_function → **Mode A (wrong gate function)**:
-- Set `eco_preeco_study_update: {action: "update_gate_function", instance_name: "<inst>", gate_function: "<correct>"}`
-
----
-
-### Check T — Compound-cell truth-table mismatch (4-input AOI/OAI/AO/OA family)
-
-For `new_logic_gate` entries whose `cell_type` matches `^(I?AOI|I?OAI|I?AO|I?OA)\d+` (compound 4-input cells: AOI21/22/211, OAI21/22, AO21/22, OA21/22, IAOI21, IOAI21, etc.), and whose output net (Z/ZN/ZN1) appears in `__failing_points.rpt` after Mode A polarity check passes:
-
-**Step T1:** Build expected boolean function `f_expected` from RTL diff `d_input_gate_chain` for this DFF's d-input.
-
-**Step T2:** Look up the library truth table for `wrong_cell_type` (e.g., AOI21 = `~((A1·A2)+B)`, OAI21 = `~((A1+A2)·B)`, AO21 = `(A1·A2)+B`, OA21 = `(A1+A2)·B`, with `I` prefix adding output inversion).
-
-**Step T3:** Enumerate same-family alternatives (AOI21↔OAI21, AO21↔OA21, with/without I prefix, swap A/B groupings). Pick the cell whose truth table equals `f_expected` under any input-permutation of the existing port_connections.
-
-**Step T4:** Set `failure_mode: "T"`, `action: "swap_compound_cell"`:
-```json
-{
-  "action": "swap_compound_cell",
-  "instance_name": "<inst>",
-  "wrong_cell_type": "<cell that was used>",
-  "correct_cell_type": "<cell whose truth table matches RTL>",
-  "port_remap": {"A1": "B", "A2": "A1", "B": "A2"},
-  "rationale": "RTL expects f=<f_expected>; <wrong> computes <f_wrong>; <correct> with port_remap computes <f_expected>",
-  "eco_preeco_study_update": {"action": "swap_compound_cell", "gate_instance": "<eco_jira_seq>", "new_cell_type": "<correct>", "port_remap": {...}}
-}
-```
-
-If no same-family cell + permutation matches → escalate to Mode F with action `try_structural_decomposition` (the studier rebuilds the d_input_gate_chain using simpler 2/3-input primitives whose truth tables compose to the correct boolean). Never emit `manual_only` per the master rule above.
-
----
-
-## STEP 3 — Mode Classification
-
-Use Step 2 results to classify:
-
-| Step 2 result | Mode | Action |
-|---------------|------|--------|
-| FM aborted (Step 0) | ABORT_SVF / ABORT_LINK / ABORT_NETLIST | Fix tool/structure error; do NOT propose ECO rewires |
-| SKIPPED entries (Check A) | A | Re-apply skipped change with corrected approach |
-| VERIFY_FAILED entries (Check B) | A | Debug verify failure; re-apply |
-| Failing DFF = RTL target register (Check C) | A or C | ECO for that register didn't work |
-| Failing DFF ≠ any RTL target (Check C) | B or E | Wrong cell rewired OR pre-existing |
-| Gate polarity wrong (Check D) | A | Replace gate with correct type |
-| Compound 4-input cell (AOI/OAI/AO/OA family) output is failing point AND polarity (Check D) passes (Check T) | T | Swap to truth-table-matching cell in same family (with port_remap if needed) |
-| Failing DFF impl=DFF0X AND analyze_points reports `<port>[<bit>]` undriven on ref AND propagates X on impl, where `<port>` is the parent UNCONNECTED rename target | I | Emit second port_connection inside child module to wire `<port>[<bit>]` to its internal slot |
-| ECO-inserted DFF is DFF0X AND gate input has no direct primitive driver (Check E) | H | Gate input driven only through hierarchical port bus |
-| `d_input_decompose_failed` in RTL diff | F | See Mode F below |
-| `FmEqvEcoRouteVsEcoPrePlace` PASS, `FmEqvEcoPrePlaceVsEcoSynthesize` FAIL ≥ 10, no failing DFF matches target_register | G | Structural HFS mismatch — attempt fix_named_wire using cell_name_per_stage; if P&R cell found → use it; if absent → try move_gate_to_submodule; if still stuck → use conservative_constant (1'b0) as last resort |
-| 3000+ cascade failures from one module scope where `<old_token>` was a module output port | `Mode_A_module_port_direct_gating` | Set `and_term_strategy: "module_port_direct_gating"` |
-| Pre-existing DFF downstream of `and_term` old_token, and_term gate drove new net NOT the port | `INCOMPLETE_AND_TERM` | Re-study with `module_port_direct_gating`; new gate output = old_token; rename original driver; remove individual rewires |
-| Newly inserted DFF fails with globally unmatched SE/SI cone nets (HFS aliases differ between stages) | `SCAN_CHAIN_MISMATCH` | Auto-fixable via tune file entries (GAP-20) |
-
-**Multiple modes can coexist** — classify each failing point independently and combine all into a single `revised_changes` list.
-
-### Mode A — ECO change not correctly applied
-
-**Sub-causes (check in order):**
-1. **SKIPPED** — status=SKIPPED in eco_applied → find reason and fix
-2. **Missing explicit wire for UNCONNECTED rename** — if failing DFF has a D-input gate with `unconnected_rewires` in study JSON, check PostEco for `wire <named_net>;`. If absent → add `force_wire_decl_reapply` action. **NEVER switch to constants or D-pin rewires before confirming the wire exists.** FM cannot trace `UNCONNECTED_*` across REGCMD hierarchy without explicit wire declaration — this produces globally unmatched, not Mode E.
-3. **Wrong gate polarity** — inserted gate implements inverse of required logic → replace gate
-4. **Wrong net name** — new_net connected to cell is wrong → grep PostEco for correct net
-5. **Port missing** — port declaration/connection not applied. Before prescribing fix, check `eco_rtl_diff.json` for this signal:
-
-   - If `implicit_wire: true` or `no_wire_decl_needed: true` → signal is an **internal wire within the declaring module** (connects two child instances inside, not a cross-boundary port). **Fix: force_reapply the existing port_connection entries within that module + add explicit `wire <signal>;` decl. NEVER add as input port to parent or connect from grandparent** — the driver is inside the module, not outside.
-   - If neither flag → signal is a genuine missing port. Fix: `force_port_decl` + `force_reapply`.
-
-5. **Module output port cascade (GAP-16):** When 3000+ failures cascade from one module scope, check if `<old_token>` is a module output port in `port_promotion` or `and_term` RTL diff changes. If yes, the `and_term` gate must drive the port name directly ("Module Port Direct Gating"). Do NOT propose an internal `<old_token>_orig` intermediate wire — this creates P&R cell type mismatches. Set `and_term_strategy: "module_port_direct_gating"` in revised_changes.
-
-### Mode I — Child output port internally undriven (two-level UNCONNECTED rename)
-
-Parent renamed `UNCONNECTED_N → n_eco_*` at child instance bus bit, but the child's **own** output port bit is also undriven internally — FM `analyze_points` reports `<port>[<bit>]` undriven on ref + propagates X on impl. Recipe: scan the child module body for a sub-instance bus where bit `[bit]` is also `UNCONNECTED_M`; emit a second `port_connection` entry with `module_name=<child>`, `bus_bit_index=<bit>`, `net_name=<port>[<bit>]`. The round-N studier merges this entry; eco_passes_2_4's existing `_apply_bus_rename` applies it. No new applier code needed.
-
-### Mode T — Compound-cell truth-table mismatch
-
-Inserted compound 4-input cell (AOI/OAI/AO/OA family) computes the wrong boolean function — Check D polarity passed but FM still reports the gate output as a failing compare point because the cell-family choice is wrong (e.g., AOI21 instantiated where OAI21 was needed, or A1/A2/B groupings swapped).
-
-**Recipe:** Run Check T to pick the truth-table-matching alternative. Emit `swap_compound_cell` action with `correct_cell_type` and (if input groups need regrouping) `port_remap`. The round-N studier overrides `cell_type` and re-permutes `port_connections` per `port_remap` for all 3 stages. Do NOT change `gate_function` text — only `cell_type` + port mapping.
-
-**When to give up:** If no single-cell same-family alternative matches `f_expected` under any input-permutation, the function needs decomposition into 2+ cells — escalate to Mode F (`d_input_decompose_failed`) so eco_netlist_studier rebuilds the chain with simpler primitives.
-
-### Mode S — Scan-stitching incomplete on new ECO DFF (PrePlace/Route only)
-
-FM fails on a `new_logic_dff` instance in PrePlace/Route (Synthesize passes). The DFF's `.SE`/`.SI` in the failing stage are wires (not `1'b0`) but the wires don't connect back to a real scan-chain network — bridge ports/assigns landed but the per-stage `port_connections` chain through parent scopes is broken. Recipe: emit `failure_mode: "S"`, `action: "fix_scan_stitching"`, `mode_S_hint: "<inst> bridge wire <name> in <stage> not driven by existing scan chain — re-trace parent-scope scan net via ECO_*_SI_in/SE_in ports up to <scope> and patch port_connections_per_stage"`. Round-N studier re-emits the per-stage stitching chain.
-
-**Mode S decision tree (BEFORE classifying as Mode I or anything else):** For every failing `new_logic_dff` compare point in PrePlace/Route, `zcat` the failing-stage netlist and grep the DFF instantiation. Inspect the literal `.SE(...)` / `.SI(...)` net names:
-1. Both `1'b0` → Mode S NOT applied at all → `failure_mode: "S"`.
-2. Either pin shows an auto-generated P&R net (typical prefixes: `FxPrePlace_`, `FxPlace_`, `FxCts_`, `dftopt`, `test_so`, `HFSNET_`, plus any tile-specific equivalents) **that is not** the declared bridge port (`ECO_<jira>_SE_in` / `ECO_<jira>_SI_in`, or the `<inst>_SE_in` / `<inst>_SI_in` variant the studier emitted) → Mode S applied but the DFF was rewired to a neighbor-DFF net instead of the bridge port → `failure_mode: "S"`. **Do NOT classify as Mode I / UNDRIVEN here** — the SE/SI fanin will look "globally unmatched" because the bridge wire is the wrong endpoint.
-3. Both pins are exactly the declared bridge ports AND the host module declares those ports AND the parent module port_connection wires them up to a real scan chain → only THEN consider Mode I / D-input X / other classifications.
-
-**Why this ordering matters:** SE/SI driven by *any* wire (not `1'b0`) tends to read as "fanin present" when only the cone status is examined, which can lead to a Mode I or UNDRIVEN misclassification. Always inspect the literal `.SE/.SI` net string against the studier-declared bridge port name before reasoning about the cone.
-
-### Mode B — Regression: new failing points not in RTL diff
-
-1. Read the failing DFF from PostEco and find its D-input net.
-2. Find the driver cell and check if it appears in `eco_applied_round<ROUND>.json`.
-3. If driver IS in eco_applied → ECO rewired this cell but it also drives unrelated DFFs → set `action: exclude` and `eco_preeco_study_update: {action: "mark_excluded", entry_key: "<cell_name>"}`.
-4. If driver NOT in eco_applied → trace one more level (max 5 hops); if still not found → Mode E candidate — apply two-condition proof first.
-
-### Mode C — Partial progress
-
-Check for confirmed study entries absent from eco_applied:
-```python
-for stage in ["Synthesize", "PrePlace", "Route"]:
-    study_confirmed = {e.get("cell_name","") for e in study.get(stage,[]) if e.get("confirmed")}
-    applied_cells   = {e.get("cell_name","") for e in applied.get(stage,[])}
-    missing = study_confirmed - applied_cells
-    if missing: print(f"{stage}: confirmed in study but absent from eco_applied: {missing}")
-```
-Add each missing cell as a `rewire` or `insert_cell` action in revised_changes.
-
-### Mode D — FM stage mismatch
-
-The cell or net name differs between stages. Grep PostEco for the failing stage to find the actual cell name, then update eco_preeco_study accordingly.
-
-**DFF0X sub-case (ECO-inserted DFF):** If the failing point is an ECO DFF (`eco_<jira>_` pattern) classified DFF0X, check in order:
-1. Clock net absent in this stage → SKIPPED by eco_applier → Mode A (re-apply with correct stage clock)
-2. Gate input undriven (submodule bus) → Mode H (fix_named_wire)
-3. SE/SI scan nets differ across stages → Mode D (update `port_connections_per_stage` with correct stage nets)
-Grep `<eco_instance>` in PostEco for this stage; read actual pin connections; update study JSON `port_connections_per_stage[<stage>]`.
-
-### Mode E — Pre-existing failure (unrelated to ECO)
-
-> **HARD RULE — ECO-inserted DFFs (`eco_<jira>_` pattern) are NEVER Mode E.** Do NOT write `set_dont_verify` or `set_user_match` for them. Re-examine as Mode A or Mode H immediately.
->
-> **HARD RULE — `set_user_match` is NEVER written for ECO-inserted cells.** An equivalence failure on an ECO-inserted DFF is Mode A, H, or D — not an unmatched point.
->
-> **HARD RULE — `set_dont_verify` is NEVER a substitute for `fix_named_wire`.** When an ECO DFF fails in P&R only due to HFS-renamed nets, the correct action is `fix_named_wire` (Mode H).
-
-**Condition -1 — INTENTIONAL_CASCADE check (runs BEFORE Mode E proof):**
-
-Read `eco_preeco_study.json`. For each `and_term` change entry that has `expected_cascade_dffs`:
-```python
-for change in study_changes:
-    if change.get("and_term_strategy") == "module_port_direct_gating":
-        cascade_dffs = change.get("expected_cascade_dffs", [])
-        cascade_net  = change.get("expected_cascade_net", "")
-        if failing_dff_instance in cascade_dffs:
-            classify_as("INTENTIONAL_CASCADE",
-                reason=f"{failing_dff_instance} is a downstream DFF whose D-input "
-                       f"cone reaches {cascade_net}. The ECO intentionally changed "
-                       f"the gating of {cascade_net} — this DFF's behavior change "
-                       f"is a correct ECO consequence, not a bug.",
-                action="cascade_verified_skip",
-                note="INTENTIONAL_CASCADE — ECO correctly changed this DFF. Skip in FM comparison scope or use set_case_analysis if available."
-            )
-            return  # STOP — do NOT evaluate Mode E or other modes
-```
-
-**INTENTIONAL_CASCADE vs Mode E distinction:**
-- Mode E: DFF was NEVER affected by the ECO — pre-existing structural divergence
-- INTENTIONAL_CASCADE: DFF IS affected by the ECO — its behavior intentionally changed because it depends on a gated port. FM vs OLD SynRtl correctly detects this. No netlist fix possible. Engineer applies `set_dont_verify`.
-
-INTENTIONAL_CASCADE uses `action: cascade_verified_skip` (ECO correct, value intentionally changed). Mode E uses `action: try_structural_insertion` (attempt alternative gate topology before accepting failure). Neither uses manual_only.
-
-**PROOF required — ALL five conditions must be satisfied. One failure → not Mode E:**
-
-**Condition 0:** If `<failing_dff_instance>` matches `eco_<jira>_` → STOP. Cannot be Mode E.
-
-**Condition 1 — No ECO contact:** Trace D-input chain backward max 5 hops; check every net against `old_net`, `new_net`, `old_token`, `new_token` from eco_rtl_diff.json. Any match → Mode A or B.
-
-**Condition 2 — Existed in PreEco:**
-```bash
-zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -c "<failing_dff_instance_name>"
-# count >= 1 → pre-existing; count = 0 → ECO-inserted → re-examine Mode A or H
-```
-
-**Condition 3 — Not a HFS net rename:** If DFF fails in P&R only, check each D-input gate's input nets:
-```bash
-synth_count=$(zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | grep -cw "<input_net>")
-pplace_count=$(zcat <REF_DIR>/data/PreEco/PrePlace.v.gz   | grep -cw "<input_net>")
-# synth_count > 0 AND pplace_count = 0 → Mode H (fix_named_wire), NOT Mode E
-```
-
-**Condition 4 — Not downstream of an and_term target (CRITICAL — prevents misclassifying GAP-15 failures as Mode E):**
-Check whether any `and_term` change in `eco_rtl_diff.json` has `old_token` whose gate-level equivalent net appears in this DFF's D-input cone:
-```python
-and_term_tokens = [c["old_token"] for c in rtl_diff["changes"] if c["change_type"] == "and_term"]
-d_input_cone_nets = trace_D_input_chain(failing_dff, depth=10, stage_lines=posteco_lines)
-for token in and_term_tokens:
-    token_aliases = find_all_stage_aliases(token, preeco_lines)  # RTL net + all P&R aliases
-    if any(alias in d_input_cone_nets for alias in token_aliases):
-        # DFF is downstream of an and_term target → NOT Mode E
-        # The ECO did not gate ALL consumers of old_token (GAP-15 not applied correctly)
-        classify_as("INCOMPLETE_AND_TERM", old_token=token, failing_dff=failing_dff)
-        return  # STOP — do NOT continue to Mode E
-```
-
-**Condition 5 — Cascade count is not suspiciously large:**
-If `cascade_count >= 100` and all failing DFFs share a common module scope related to an `and_term` change → the cascade strongly suggests GAP-15 was not applied (not a pre-existing divergence). Do NOT classify as Mode E; classify as `INCOMPLETE_AND_TERM` and prescribe GAP-15 fix.
-
-**Pre-condition 0 — Check UNCONNECTED wire_decl BEFORE classifying Mode E:**
-If the failing DFF's D-input gate has `unconnected_rewires` in study JSON → grep PostEco for `wire <named_net>;`. If absent, this is **Mode A sub-cause 2** (missing wire), NOT Mode E. Add `force_wire_decl_reapply` action. Do NOT proceed to Mode E classification until wire exists and FM still fails.
-
-Only after ALL five conditions confirmed AND pre-condition 0 cleared → classify Mode E → `action: try_structural_insertion` (attempt alternative gate structure that avoids the pre-existing mismatch; if no structural fix exists → `action: conservative_constant` as last resort to make the gate functional).
-
-### Mode F — d_input_decompose_failed
-
-Check `fallback_strategy` in eco_rtl_diff.json:
-
-- **`intermediate_net_insertion`** → Mode F1: check if eco_preeco_study has `source: "intermediate_net_fallback"`. If present → classify Mode A (re-apply). If absent → studier did NOT run Step 0c → `action: try_alternative_pivot` (find a different pivot net in the backward cone, max 3 hops deeper).
-
-  When `intermediate_net_insertion` was applied and failing count is identical across 2+ consecutive rounds, try progressive fixes in order:
-  ```python
-  if "invert_cmux_constants" not in strategies_tried:
-      action = "invert_cmux_constants"  # Flip all 1'b0/1'b1 constants in c_mux chain
-  elif "try_structural_insertion" not in strategies_tried:
-      action = "try_structural_insertion"  # Use Strategy A: find existing gate for structural insertion
-      # eco_netlist_studier re-study with intermediate_net_strategy="structural_insertion"
-      # Uses OA12/OAI21/AND3/ND3 compound gates feeding into existing priority chain gate
-      # This produces FM-verifiable structure without set_dont_verify
-  elif "try_strategy_A_andterm" not in strategies_tried:
-      action = "try_strategy_A_andterm"  # Abandon intermediate_net_insertion, try and_term Strategy B
-  elif "try_alternative_pivot" not in strategies_tried:
-      action = "try_alternative_pivot"   # Find alternative pivot net
-  else:
-      action = "try_alternative_pivot"  # Always try — never manual_only
-  ```
-  Also check `pivot_driver_cell_type` — if INVERTING (NOR, NAND, INV) and constants not yet flipped → `invert_cmux_constants` first. Run proactive Check D on ALL c_mux gates.
-
-- **`null`** → Mode F2: `action: try_alternative_decomposition` — re-study with a different gate approach (compound gates from PreEco, different pivot net, or conservative_constant for unresolvable inputs).
-
-### Mode INCOMPLETE_AND_TERM — and_term gate did not drive port directly (GAP-15 violation)
-
-**Trigger:** Pre-existing DFF (NOT `eco_<jira>_`) fails FM AND the D-input cone traces back to an `and_term` target signal (`old_token`) from `eco_rtl_diff.json` AND cascade count ≥ 50. This is NOT Mode E — it is a structural incompleteness in the ECO application: the `and_term` gate drove a new intermediate net (`n_eco_<jira>_<seq>`) and rewired only 2–4 individual consumer cells, leaving all other consumers (including the failing DFFs) still seeing the ungated value.
-
-**Diagnosis steps:**
-```python
-# 1. Identify which and_term old_token's downstream this is
-for change in rtl_diff["changes"]:
-    if change["change_type"] != "and_term":
-        continue
-    old_token = change["old_token"]
-    # 2. Find what the ECO gate output net was (from eco_preeco_study)
-    eco_gate = find_eco_gate_for_and_term(old_token, eco_preeco_study)
-    if eco_gate:
-        current_output = eco_gate["output_net"]  # what the gate actually drives
-        # 3. If current_output != old_token → GAP-15 not applied (drives new net, not port)
-        if current_output != old_token:
-            return {
-                "failure_mode": "INCOMPLETE_AND_TERM",
-                "old_token": old_token,
-                "eco_gate": eco_gate["instance_name"],
-                "current_output_net": current_output,
-                "required_output_net": old_token,
-                "cascade_count": cascade_count,
-                "fix": "apply_module_port_direct_gating"
-            }
-```
-
-**Fix — prescribe module_port_direct_gating re-study:**
-```json
-{
-  "stage": "ALL",
-  "action": "re_study_and_term",
-  "change_type": "and_term",
-  "old_token": "<old_token>",
-  "required_strategy": "module_port_direct_gating",
-  "current_incorrect_output": "<n_eco_jira_seq>",
-  "required_output": "<old_token>",
-  "rationale": "and_term gate drives new intermediate net instead of module port directly. All <N> consumer DFFs still see ungated value. Fix: new gate output = old_token (port name). Rename original driver output to old_token_orig. No individual consumer rewires needed.",
-  "eco_preeco_study_update": {
-    "action": "update_and_term_strategy",
-    "old_token": "<old_token>",
-    "new_output_net": "<old_token>",
-    "rename_original_driver_output_to": "eco_<jira>_<old_token>_orig",
-    "remove_individual_rewire_entries": true
-  }
-}
-```
-
-**HARD RULE: Do NOT classify INCOMPLETE_AND_TERM as Mode E.** The 3000+ / 159 / 4616 cascade pattern is the signature of an incomplete and_term application, not pre-existing P&R structural divergence.
-
-### Mode F3 — Pre-existing DFF failing due to wrong ECO gate chain
-
-**Trigger:** Pre-existing DFF (NOT `eco_<jira>_`) fails FM AND cascade count ≥ 100 in one stage AND Condition 4 of Mode E check confirmed no `and_term` connection.
-
-The failing DFF is a DOWNSTREAM register driven by a wrong ECO c_mux cascade. Do NOT classify as Mode E.
-
-```python
-if not is_eco_inserted(failing_dff) and cascade_count > 100:
-    # First check INCOMPLETE_AND_TERM (higher priority)
-    if and_term_downstream_check(failing_dff, rtl_diff, posteco_lines):
-        classify_as("INCOMPLETE_AND_TERM")
-        return
-    # Then check c_mux cascade
-    eco_gates_in_cone = trace_D_input_chain_for_eco_gates(failing_dff, eco_preeco_study)
-    if eco_gates_in_cone:
-        classify_as_mode_A_with_eco_chain_diagnosis(eco_gates_in_cone)
-```
-
-Classify as Mode A targeting the specific ECO gate that is wrong. Run Check D (polarity) on ALL c_mux gates in the chain. Try progressive fixes (update_gate_function → invert_cmux_constants → try_structural_insertion → try_alternative_pivot) before declaring manual_only.
-
-### Mode WRONG_GATE_STRUCTURE — MUX2 cascade creates FM-unverifiable structure
-
-**Trigger:** `FmEqvEcoPrePlaceVsEcoSynthesize` fails with N > 50 points AND:
-1. `d_input_decompose_failed: true` in `eco_rtl_diff.json` for a `new_logic` change
-2. Failing DFFs are all in the same module scope as the `intermediate_net_insertion` change
-3. At least one `MUX2` gate appears in `eco_preeco_study.json` for this change (as `fn=MUX2`)
-
-**Root cause:** MUX2 cascade does not match the structural form RTL synthesis would produce for priority expressions. PrePlace has a different synthesis of the same RTL (different gate topology), so FM structural comparison fails. The correct approach uses compound gates discovered from PreEco that directly implement the RTL boolean, matching the synthesis output structure — FM can then auto-verify without SVF.
-
-**Diagnosis:**
-```python
-# Check if failing DFFs are in same module as intermediate_net_insertion
-mux2_gates = [e for e in eco_preeco_study.get("Synthesize",[])
-              if e.get("gate_function") == "MUX2" and e.get("source") == "intermediate_net_fallback"]
-if mux2_gates and ppvssynth_failing_count > 50:
-    classify_as("WRONG_GATE_STRUCTURE", mux2_gates=mux2_gates)
-```
-
-**Fix — prescribe structural re-study:**
-```json
-{
-  "stage": "ALL",
-  "action": "try_structural_insertion",
-  "failure_mode": "WRONG_GATE_STRUCTURE",
-  "rationale": "MUX2 cascade produces structural non-equivalence in PPvsSynth. Re-study with Strategy A: search PreEco for an existing compound gate in the priority chain whose input can accept the new condition. Discover appropriate gate types from PreEco library — do NOT prescribe gate names. Never use MUX2 for priority encoding.",
-  "eco_preeco_study_update": {
-    "action": "re_study_intermediate_net_insertion",
-    "preferred_strategy": "structural_insertion",
-    "preferred_gate_discovery": "Search PreEco for compound gates (gates with 3+ inputs implementing AND-OR or OR-AND boolean combinations) that exist in the priority chain cone. Use discovered gate types — they are library-correct and FM-verifiable.",
-    "forbidden_gate_types": ["MUX2"],
-    "note": "Feed new conditions into an existing compound gate in the priority chain rather than building a new parallel MUX cascade alongside the existing logic"
-  }
-}
-```
-
-**HARD RULE: Do NOT classify WRONG_GATE_STRUCTURE as Mode E.** The engineer's pure netlist solution (no SVF) proves these failures are fixable. The correct fix is changing the gate structure, not adding set_dont_verify.
-
-### Mode CTS_CLOCK_RENAMED — ECO DFF clock pin renamed by CTS in Route
-
-**Trigger:** ECO-inserted DFF fails only in `FmEqvEcoRouteVsEcoPrePlace` AND `cts_clock_renamed: true` in study JSON AND DFF type is DFF (not DFF0X).
-
-**Diagnosis:** Clock tree synthesis renamed the DFF's CP clock net in Route. FM sees mismatched clock connections between PrePlace and Route → non-equivalent.
-
-**Fix:**
-```json
-{ "stage": "Route", "action": "rewire_cp",
-  "instance": "<eco_dff_instance>", "pin": "CP",
-  "old_net": "<preplace_cp_net>",
-  "new_net": "<cts_clock_net_from_neighbour_dff>",
-  "rationale": "CTS renamed clock net in Route. Rewire CP to CTS-assigned equivalent found in neighbour DFF of same clock domain." }
-```
-Find `<cts_clock_net>` by: read CP pin of a neighbour DFF in the same module and clock domain in Route PostEco.
-
-### Mode CTS_BBNET_INPUT — ECO gate input passes through CTS multi-driver merged cell
-
-**Trigger:** ECO-inserted DFF is DFF0X in Route (passes Synthesize and PrePlace) AND the gate feeding its D-input uses a net whose Route driver is a CTS-created merged cell (absent from Synthesize/PrePlace PreEco).
-
-**Diagnosis:** CTS creates multi-driver merged cells for test/reset signals in Route. FM treats these as black-box → gate input appears undriven → DFF0X. The underlying signal has a primary input port declaration in the module header that FM can trace directly without going through the merged cell.
-
-**Fix:**
-```json
-{ "stage": "Route", "action": "rewire_gate_input",
-  "gate_instance": "<eco_gate>", "pin": "<input_pin>",
-  "old_net": "<cts_merged_cell_driven_net>",
-  "new_net": "<primary_input_port_for_same_signal>",
-  "rationale": "CTS merged cell black-boxed by FM. Use primary input port (single driver, FM-traceable) instead." }
-```
-Find primary input port by: `grep "input.*\b<base_signal_name>\b" <Route_module_header>` — the declared input port for the same functional signal.
-
-### Mode G — Structural stage mismatch
-
-Apply `set_dont_verify` scoped to common hierarchy prefix only when Priority 3 structural trace confirms no fixable net exists.
-
-### Mode H — Gate input driven only through hierarchical submodule output port bus
-
-**Diagnosis:** ECO-inserted DFF is `DFF0X` in P&R stages (passes Synthesize). Check E confirms a gate input net has no direct primitive driver — only connected through a submodule's output port bus. FM black-boxes that submodule in P&R → net appears undriven → DFF0X.
-
-**Fix:** Declare a named wire, replace the source net in the hierarchical port bus with the named wire, and use the named wire as the gate input.
+For each failing point, record:
 
 ```json
 {
-  "stage": "PrePlace|Route|ALL",
-  "action": "fix_named_wire",
-  "gate_instance": "<eco_jira_seq>",
-  "input_pin": "<A1|A2|I|...>",
-  "source_net": "<the_net_currently_in_port_bus>",
-  "rationale": "Gate input has no direct primitive driver in <Stage> — only through hierarchical port bus. FM black-boxes submodule in P&R → DFF0X. Named wire needed.",
-  "eco_preeco_study_update": {
-    "action": "set_needs_named_wire",
-    "gate_instance": "<eco_jira_seq>",
-    "input_pin": "<A1|A2|I|...>",
-    "source_net": "<the_net_currently_in_port_bus>"
-  }
-}
-```
-
-Apply only to stages where DFF is DFF0X. Do NOT flag Synthesize if it passes.
-
-### Mode H sub-type — Submodule bus output (GAP-18): `Mode_H_submodule_rename`
-
-**Trigger:** Check E Step E2 driver-not-found branch matches the net via submodule bus regex:
-```python
-re.search(r'\.\s*\w+\s*\(\s*\{[^}]*\b<signal>\b', <failing_stage_module_lines>)
-```
-
-**PERSISTENT DFF0X check — MANDATORY before prescribing fix_named_wire:**
-
-Check if a `rename_wire: true` fix was already applied for this gate+pin in a previous round:
-```python
-prev_analysis = load(f"data/{TAG}_eco_fm_analysis_round{ROUND-1}.json") if ROUND > 1 else None
-rename_already_tried = (
-    prev_analysis and
-    any(c.get("action") == "fix_named_wire" and c.get("rename_wire") and
-        c.get("gate_instance") == gate_instance
-        for c in prev_analysis.get("revised_changes", []))
-)
-```
-
-**If `rename_already_tried = True` AND DFF0X still fails this round:**
-The submodule is black-boxed by FM in P&R — renaming the wire doesn't help because FM cannot trace through the submodule boundary regardless of wire name. Prescribe **submodule insertion** instead:
-```python
-# Find which child submodule drives the signal (from submodule bus match)
-child_module_type = extract_module_type_from_bus_driver(bus_match, failing_stage_lines)
-child_instance    = find_instance_of_module(child_module_type, declaring_module_lines)
-
-add_to_revised_changes({
-    "action": "move_gate_to_submodule",
-    "gate_instance": gate_instance,
-    "preferred_insertion_scope": child_instance,
-    "submodule_type": child_module_type,
-    "rationale": (f"rename_wire already applied in Round {ROUND-1} but DFF0X persists. "
-                  f"Child module {child_module_type} is black-boxed by FM in P&R — "
-                  f"wire renaming cannot fix submodule black-box boundary. "
-                  f"Move gate chain inside {child_instance} where signal is directly accessible. "
-                  f"Gate chain output becomes new output port of {child_module_type}; "
-                  f"DFF at parent uses this port as D-input.")
-})
-```
-eco_netlist_re_studier reads `action: move_gate_to_submodule` and uses `preferred_insertion_scope` when updating the study JSON.
-
-**If `rename_already_tried = False` (first time seeing this failure):** prescribe `fix_named_wire` as before.
-When matched → `driven_by_submodule: true`. The net is NOT absent — it has no direct primitive driver. Never declare it absent or undriven.
-
-**Fix:** Rename the net to a meaningful eco name; keep the existing port bus connection.
-```json
-{
-  "stage": "<FailingStage>",
-  "action": "fix_named_wire",
-  "rename_wire": true,
-  "source_net": "<original_net>",
-  "rationale": "Net driven through submodule output port bus — no direct primitive driver. Rename to eco wire; keep port bus connection.",
-  "eco_preeco_study_update": {
-    "action": "set_needs_named_wire",
-    "rename_wire": true,
-    "source_net": "<original_net>"
-  }
-}
-```
-
-### SCAN_CHAIN_MISMATCH (GAP-20)
-
-**Trigger:** Newly inserted DFF fails with globally unmatched SE/SI cone nets where SE net differs between PrePlace and Route (both are P&R HFS aliases), or study JSON has `needs_se_tune: true`.
-
-**Fix:** Auto-generate tune file entries for each failing stage-to-stage target:
-```
-set_constant -type port {<DFF_full_hierarchy_path>/SE} 0
-```
-Apply for both ref and impl sides. eco_fm_runner adds these to the tune file before the next FM submission. Do NOT set `manual_only`. Do NOT escalate to engineer.
-
----
-
-## STEP 3b — Deep Netlist Investigation (when cause is unclear after Steps 1–3)
-
-Run if failure cannot be classified after Checks A–D. Reading PostEco netlists is mandatory before giving up.
-
-### 3b-1 — Read failing points from FM rpt
-```bash
-zcat <REF_DIR>/rpts/<target>/<target>__failing_points.rpt.gz 2>/dev/null | head -50
-```
-
-### 3b-2 — Trace failing DFF in PostEco
-```bash
-zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "<dff_instance_name>" | head -5
-```
-Check D pin net (expected `n_eco_<jira>_<seq>`), Q pin, and DFF cell type.
-
-### 3b-3 — Verify each ECO gate that should drive this DFF
-```bash
-zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "eco_<jira>_<seq>" | head -5
-```
-Verify gate is present, output net matches DFF D pin.
-
-### 3b-4 — Verify port declarations in hierarchical netlist
-```bash
-# Port list header
-zcat <REF_DIR>/data/PostEco/${stage}.v.gz | \
-  awk '/^module <module_name>/{found=1} found && /\) ;/{print NR": "$0; found=0; exit} found{print NR": "$0}' | head -30
-# Port declaration
-zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "input\|output" | grep "<signal_name>"
-# Port connection
-zcat <REF_DIR>/data/PostEco/${stage}.v.gz | grep -n "\.<port_name>( <net_name> )"
-```
-
-### 3b-5 — Determine action after investigation
-
-| Root cause found | Action |
-|-----------------|--------|
-| Gate missing despite INSERTED status | `insert_cell` in revised_changes |
-| Port missing from port list despite APPLIED status | `force_port_decl`; set `force_reapply: true` in study |
-| Gate present but wrong net on DFF D pin | `rewire` with correct nets |
-| Gate/nets correct but FM still fails | Set `needs_re_study: true` |
-| FM result inconsistent with netlist | Set `needs_fm_resubmit: true` |
-
----
-
-## STEP 4 — Build Revised Strategy
-
-**RULE 1: Diagnose ALL failing points — not just one mode.** Run ALL checks (A–H) across ALL failing points before writing revised_changes. NEVER stop at the first issue.
-
-```python
-all_revised_changes = []
-for target, failing_points in all_failing_points.items():
-    for dff_path in failing_points:
-        issue = classify_failing_point(dff_path, target)
-        if issue not in all_revised_changes:
-            all_revised_changes.append(issue)
-
-# Proactive Check D on ALL new_logic_gate entries
-for stage in ["Synthesize", "PrePlace", "Route"]:
-    for entry in eco_applied.get(stage, []):
-        if entry.get("change_type") == "new_logic_gate":
-            check_gate_polarity(entry)
-# Proactive port_connection false-applied check
-for conn_entry in eco_applied.get(stage, []):
-    if conn_entry.get("change_type") == "port_connection" and conn_entry.get("status") == "APPLIED":
-        check_port_conn_in_instance_block(conn_entry)
-```
-
-**RULE 2: Check D runs proactively whenever Mode H is diagnosed.** When a gate input is undriven (Mode H), gate output is stuck constant regardless of polarity — the polarity error is masked. After fixing Mode H, wrong polarity causes a new FM failure next round. Fix gate polarity and named wire in the same round.
-
-```python
-checked_gates = set()
-for stage in ["Synthesize", "PrePlace", "Route"]:
-    for entry in eco_applied.get(stage, []):
-        if entry.get("change_type") != "new_logic_gate": continue
-        gate_instance = entry.get("instance_name")
-        if not gate_instance or gate_instance in checked_gates: continue
-        checked_gates.add(gate_instance)
-        correct_fn = re_derive_gate_function_from_preeco(gate_instance, entry.get("gate_function"), entry.get("port_connections", {}))
-        if correct_fn and correct_fn != entry.get("gate_function"):
-            all_revised_changes.append({
-                "action": "update_gate_function", "stage": "ALL",
-                "gate_instance": gate_instance,
-                "wrong_gate_function": entry.get("gate_function"),
-                "correct_gate_function": correct_fn,
-                "rationale": f"Gate has wrong gate_function in study JSON. Correct function derived from PreEco netlist.",
-                "eco_preeco_study_update": {"action": "update_gate_function", "gate_instance": gate_instance, "gate_function": correct_fn}
-            })
-```
-
-**RULE 3: revised_changes must be ACTIONABLE and HONEST.**
-- Every entry must name a specific cell or scope — never "apply the same fix again" without naming it.
-- If root cause cannot be determined after Step 3b → describe every check done. Do NOT invent a fix.
-- **NEVER write `set_dont_verify` or `set_user_match`** — SVF updates are prohibited for the AI flow. Use `manual_only` for cases requiring engineer SVF.
-- `set_dont_verify` is only valid for proven Mode E or Mode G-P&R (Priority 3 structural trace confirmed signal truly absent in that stage, ECO architecturally correct, failure is stage-to-stage only).
-
-**`UNRESOLVABLE` input handling — when `set_dont_verify` IS valid:**
-Confirm: (1) driver cell AND all ancestors of the signal have 0 occurrences in failing stage's PreEco; (2) ECO logic is architecturally correct from RTL; (3) failure is in a stage-to-stage comparison only. Record reason: `"Signal <signal> P&R-optimized away in <stage>. ECO logic verified correct from RTL. Stage-to-stage comparison only."` This is Mode G-P&R, NOT Mode E.
-
-**Output JSON structure:**
-```json
-{
-  "round": "<ROUND>",
-  "failure_mode": "ABORT_SVF|ABORT_LINK|ABORT_NETLIST|ABORT_CELL_TYPE|A|B|C|D|E|F|G|H|UNKNOWN",
-  "diagnosis": "<specific — which DFF, port, net, which check found it, what was checked in 3b>",
-  "failing_points_count": {
-    "FmEqvEcoSynthesizeVsSynRtl": "<N>",
-    "FmEqvEcoPrePlaceVsEcoSynthesize": "<N>",
-    "FmEqvEcoRouteVsEcoPrePlace": "<N>"
+  "instance": "<inst>",
+  "failing_pin": "<D|SE|SI|CP>",
+  "load_bearing": true|false,
+  "load_bearing_reason": "<which directive shadows OR none>",
+  "first_divergent_point": {
+    "kind": "undriven_cut|cts_rename|blackbox|wrong_gate|missing_port|bridge_gap|se_not_consolidated|other",
+    "what": "<specific net/cell/wire>",
+    "evidence_link": "<key in evidence/xstage JSON>"
   },
-  "wrong_cells": ["<cell_name_if_mode_B>"],
-  "needs_re_study": false,
-  "re_study_targets": [],
-  "needs_rerun_fenets": false,
-  "rerun_fenets_signals": [],
-  "revised_changes": [
-    {
-      "stage": "Synthesize|PrePlace|Route|ALL",
-      "action": "rewire|insert_cell|new_logic_dff|new_logic_gate|revert_and_rewire|exclude|force_port_decl|fix_named_wire|structural_trace|update_gate_function|rerun_fenets|scan_chain_tune|fix_cell_type|swap_compound_cell|tune_file_update|conservative_constant|try_structural_insertion|try_alternative_pivot|invert_cmux_constants|cascade_verified_skip",
-      "cell_name": "<cell>",
-      "pin": "<pin>",
-      "old_net": "<old>",
-      "new_net": "<new>",
-      "signal_name": "<signal_for_port_decl_actions>",
-      "module_name": "<module_for_port_decl_actions>",
-      "declaration_type": "input|output",
-      "rationale": "<which DFF/port, why this change fixes it, what evidence was found>",
-      "eco_preeco_study_update": {
-        "action": "mark_excluded|update_net|add_entry|mark_confirmed|force_reapply_port_decl|set_needs_named_wire|update_gate_function|fix_cell_type",
-        "entry_key": "<cell_name_or_change_type>",
-        "field": "<field_to_update>",
-        "value": "<new_value>"
-      }
-    }
+  "convergence_edit_plan": "<plain-language description of fix>",
+  "supporting_evidence": [
+     "evidence.per_target.X.failing_diagnostics.per_dff_dossiers[i].cone_analysis.unmatched_cone_inputs[j]",
+     "xstage.per_failing_dff[inst].deltas.cell_blackboxed[k]",
+     ...
   ],
-  "svf_update_needed": "true|false",
-  "svf_commands": []
+  "contradicting_evidence": [
+     "<evidence that argues against this hypothesis, if any>"
+  ],
+  "confidence": "high|medium|low"
 }
 ```
 
-**`action` values:**
-- `rewire` — net substitution on existing cell
-- `insert_cell` — insert new inverter
-- `new_logic_dff` — insert new flip-flop
-- `new_logic_gate` — insert new combinational gate (include `gate_function`)
-- `revert_and_rewire` — previous rewire was wrong; apply corrected version
-- `exclude` — do NOT touch this cell again (Mode B wrong cell)
-- `force_port_decl` — ABORT_LINK or false-APPLIED; force re-apply port declaration/connection
-- `fix_named_wire` — Mode H; gate input driven only through hierarchical port bus
-- `update_gate_function` — Mode A (Check D); wrong gate polarity; eco_netlist_studier updates gate_function and cell_type
-- `rerun_fenets` — Check F; condition input never FM-queried
-- `structural_trace` — Check F; after first FM-036; search P&R netlist for driver cell anchor
-- `scan_chain_tune` — SCAN_CHAIN_MISMATCH (GAP-20); auto-fixable via tune file entries
-- `fix_cell_type` — ABORT_CELL_TYPE; re-search PreEco for cell with correct gate_function and pin names
-- `manual_only` — Mode E (proven pre-existing), Mode F2, Mode G after Priority 3 exhausted
+Multiple hypotheses can co-exist for one failing point (e.g., wrong polarity AND missing wire decl). Carry all forward to Phase 4.
 
-**`eco_preeco_study_update`** is MANDATORY for Modes B, D, A, and ABORT_LINK — without it the next round re-applies the same wrong change.
+### Special-case shortcuts
+
+These are quick disqualifications/confirmations that cut investigation time. Apply BEFORE the full Q1-Q5 walk:
+
+- **Failing inst matches `eco_<jira>_*`**: hard rule fires — cannot be Mode E. Constrain hypotheses to A/H/D/I/S only.
+- **`evidence.summary_signals` contains `ECO_APPLIED_SKIPPED`**: prime hypothesis is Mode A sub-cause #1 (re-apply the SKIPPED change).
+- **`evidence.summary_signals` contains `INTENTIONAL_CASCADE` match**: emit `cascade_verified_skip` immediately, no Q1-Q5 needed.
+- **`xstage.deltas.cell_blackboxed` is non-empty for an ECO DFF input**: prime hypothesis is Mode H.
+- **All 3 stages show same SE pin = `1'b0`**: the SE cone is trivially equivalent — failing point is on D/CP, not SE.
 
 ---
 
-## STEP 5 — Write Output
+## §4 — PHASE 4: Pattern Library Consultation
 
-Write `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`.
+For each Phase 3 hypothesis, look up matching entries in `eco_fm_pattern_library.md`:
 
-Every `revised_changes` entry must name a specific cell or scope. Never write "apply the same fix again" without naming the specific target.
+- For `RERUN_SAME_ROUND` verdict → consult **§B-ABORT** entries (B-ABORT-1 through B-ABORT-4)
+- For `ADVANCE_NEXT_ROUND` verdict → consult **§B-FAIL** entries (B-FAIL-A through B-FAIL-SCAN_CHAIN_MISMATCH)
+
+### Consultation procedure
+
+1. Match hypothesis `first_divergent_point.kind` and `convergence_edit_plan` to a library entry's "Symptoms / Evidence" section
+2. Verify the library entry's preconditions hold (read the supporting checks: `is_eco_inserted`, `match against rtl_diff`, etc.)
+3. Read the library entry's recipe — does it fit your evidence?
+4. If yes → use the recipe's `action` and JSON template
+5. If no clean match → choose the closest pattern + use its `fallback_action`
+6. If still no fit → emit `conservative_constant` with detailed rationale (never `manual_only`)
+
+The library is a **menu of recipes**. You choose based on Phase 3 evidence. The library does NOT decide for you.
+
+### Multi-pattern hypotheses
+
+If a single failing point matches 2+ library patterns (e.g., Mode H + Mode A polarity), emit BOTH recipes — RULE 2 of the old MD: fix the named wire AND the wrong polarity in the same round, otherwise the next round will reveal the second issue.
 
 ---
 
-## Critical Rules
+## §5 — PHASE 5: Prescribe Progressive Fix
 
-1. **FM abort first** — classify abort type (Step 0a–0c) before proposing any ECO rewires.
-2. **ABORT_LINK = missing port** — FE-LINK-7 + FM-234 means port declaration not applied. Check ALREADY_APPLIED entries; set `force_port_decl`.
-3. **ALREADY_APPLIED may be wrong** — always check `already_applied_reason`. "Found in file" without "in port list" is suspect.
-4. **SKIPPED entries are the first clue** — always check eco_applied for SKIPPED before any cone tracing.
-5. **Cross-reference failing DFF against RTL diff `target_register` immediately** — classifies 90% of cases without netlist tracing.
-6. **Polarity check re-derives from PreEco netlist** — do NOT trust RTL diff gate function hint.
-7. **NEVER use `set_dont_verify` as fallback** — only for proven Mode E or Mode G-P&R (all conditions verified).
-8. **eco_preeco_study_update is mandatory for Modes B, D, A, ABORT_LINK.**
-9. **Stage-specific analysis** — grep the CORRECT stage's PostEco/PreEco netlist, not always Synthesize.
-10. **Pre-existing requires cone trace proof** — trace ≥ 5 hops and confirm no ECO net contact before Mode E.
-11. **Deep investigation before UNKNOWN** — never return `failure_mode: UNKNOWN` without completing Step 3b.
-12. **Set `needs_re_study: true` when upstream data is wrong** — if eco_preeco_study.json has wrong gate chains or net names.
-13. **Honest output over forced output** — describe every check done if root cause cannot be determined. Do NOT invent a fix.
-14. **Mode F exits the loop** — if all revised_changes are `manual_only`, ROUND_ORCHESTRATOR spawns FINAL_ORCHESTRATOR immediately.
+Build `revised_changes` from the matched recipes. Each entry must include:
 
-**PRIORITY RULE — NETLIST FIX FIRST, TUNE FILE AS LAST RESORT:**
-1. Fix the netlist — find the wrong/missing connection and correct it (fix_named_wire, rewire, re-insert)
-2. If the SAME FM failure pattern persists across multiple rounds AND netlist analysis confirms it is structural (not a logical netlist error):
-   - Classify as `tune_file_required`
-   - Prescribe `action: tune_file_update` with `target: <FmTarget>` and `reason: <FM log evidence>`
-   - Do NOT specify exact TCL commands — let the agent read the FM log and determine what to add
-   - ROUND_ORCHESTRATOR applies the tune update to `tune/FmTargets/<target>.before.preverify.tcl` before next FM
-3. If both netlist fix and tune update exhausted → `manual_only`
-4. **NEVER** modify `EcoChange.svf` or any SVF file — SVF is engineer-only
+- `stage` (Synthesize / PrePlace / Route / ALL)
+- `action` (from pattern library §C)
+- Specific cell/pin/net/module names — never "do the same thing again"
+- `rationale` linking to specific evidence (cite which evidence/xstage JSON path supports it)
+- `fallback_action` for progressive doctrine
+- `eco_preeco_study_update` for Modes B, D, A, ABORT_LINK, ABORT_CELL_TYPE (mandatory)
 
-**HFS net rename is a NETLIST fix:** When an ECO gate uses a net that P&R renames (HFS distribution), fix with `fix_named_wire` — do NOT suppress with `set_dont_verify`.
+### Verdict-specific constraints
+
+**RERUN_SAME_ROUND (ABORT):**
+- All `revised_changes` entries must be netlist-patch actions only (`force_port_decl`, `fix_cell_type`, `fix_netlist_syntax`, `remove_svf_entry`)
+- DO NOT include any `re_study`, `re_apply_passes_2_4`, or logic-rewire actions
+- Set `needs_re_study: false`, `needs_rerun_fenets: false`
+- Increment `rerun_count_in_round` (track in fixer_state)
+- If `rerun_count_in_round >= 3`: set `max_rerun_in_round_reached: true`, switch verdict to `ADVANCE_NEXT_ROUND` with synthetic failure_mode `abort_unrecoverable`
+
+**ADVANCE_NEXT_ROUND (FAIL):**
+- Full set of actions allowed
+- Include `re_study_targets` if any hypothesis requires study refresh
+- Include `rerun_fenets_signals` if Check F (unresolved condition inputs) found gaps
+- `needs_re_study` and `needs_rerun_fenets` flags set per hypothesis
+
+**CONVERGED:**
+- Empty `revised_changes`
+- ROUND_ORCHESTRATOR will spawn FINAL_ORCHESTRATOR
+
+---
+
+## §6 — PHASE 6: Output JSON + RPT
+
+Write **TWO** companion files (matches existing eco_step<N>_*.json + .rpt convention):
+
+### §6.1 — JSON (machine-readable, mandatory)
+
+`<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json` per the schema in pattern library §F.
+
+Mandatory fields:
+
+```json
+{
+  "round": <ROUND>,
+  "loop_verdict": "RERUN_SAME_ROUND" | "ADVANCE_NEXT_ROUND" | "CONVERGED",
+  "verdict_reason": "<one-line reason from evidence walk>",
+  "next_round": <ROUND or ROUND+1>,
+  "evidence_summary": {
+    "evidence_walk_json": "data/<TAG>_eco_fm_evidence_round<N>.json",
+    "xstage_compare_json": "data/<TAG>_eco_fm_xstage_round<N>.json"
+  },
+  "failure_mode": "<one of pattern library entries>",
+  "diagnosis": "<specific>",
+  "failing_points_count": {...},
+  "root_cause_reasoning": "<plain-language explanation tied to evidence>",
+  "alternatives_considered": [
+    {"hypothesis": "<alt>", "rejected_because": "<evidence contradicting>"}
+  ],
+  "revised_changes": [...],
+  "rerun_count_in_round": <N>,
+  "max_rerun_in_round_reached": false
+}
+```
+
+The `next_round` field is the ROUND_ORCHESTRATOR's authoritative source:
+- `RERUN_SAME_ROUND` → `next_round = ROUND` (no increment)
+- `ADVANCE_NEXT_ROUND` → `next_round = ROUND + 1`
+- `CONVERGED` → `next_round = ROUND` (FINAL_ORCHESTRATOR fires)
+
+### `root_cause_reasoning` and `alternatives_considered` are MANDATORY
+
+These force the analyzer to be honest about its investigation:
+- `root_cause_reasoning` — narrative tying the chosen hypothesis to specific evidence (cite JSON paths)
+- `alternatives_considered` — list of hypotheses you ruled out, with what evidence ruled them out
+
+Never write a one-liner like `"reasoning": "DFF failed"`. Future rounds (and humans) need to understand why this round chose this fix.
+
+### `evidence_for_studier` block per revised_change is MANDATORY
+
+Every `revised_changes[i]` (except `cascade_verified_skip` and `manual_only`) MUST carry an `evidence_for_studier` block per **`config/eco_agents/eco_re_studier_evidence_contract.md`**.
+
+The contract defines:
+- Universal block fields (failing_pin, first_divergent_point, candidate_fix_recipes, constraints)
+- Per-action required fields (Mode S, Mode H, Mode F1, GAP-4 bridge, ABORT_LINK schemas in contract §2)
+- Validator script `script/eco_scripts/eco_validate_analyzer_evidence_contract.py` enforces compliance as a pre-FM gate
+
+The block is the structured handoff to `eco_netlist_re_studier`. Without it, the studier cannot apply the recipe — it would have to re-discover everything you already found in Phase 1+2. That defeats the investigative model.
+
+### §6.2 — RPT (human-readable summary, mandatory)
+
+`<AI_ECO_FLOW_DIR>/<TAG>_eco_step6_fm_analysis_round<ROUND>.rpt` — text summary mirroring the existing `<TAG>_eco_step<N>_*.rpt` convention (header divider, key-value lines, indented bullets per section). Must include:
+
+```
+================================================================================
+STEP 6 — FM Analysis (Round <ROUND>)
+TAG=<TAG>  |  loop_verdict=<verdict>  |  failure_mode=<mode>  |  next_round=<N>
+================================================================================
+Verdict reason:  <one-line summary>
+Failing points:  Synth=<N|PASS|ABORT>  PP=<N|PASS|ABORT>  Route=<N|PASS|ABORT>
+
+--- Diagnosis ---
+<one-line diagnosis>
+
+--- Root cause reasoning ---
+<3-5 line natural-language explanation tied to evidence path refs>
+
+--- Alternatives considered ---
+  • <hypothesis> → rejected: <evidence>
+
+--- Revised changes (<N> entries) ---
+[1] stage=<S> action=<verb> on <cell/signal>
+    rationale: <one-line>
+    fallback: <verb>
+    evidence_for_studier: kind=<recipe_kind> applicability=<score> scope_module=<mod>
+    candidate recipes: <count>
+    constraints.do_not_modify: <list>
+
+--- Companion artifacts ---
+  evidence walk JSON:    data/<TAG>_eco_fm_evidence_round<N>.json
+  xstage compare JSON:   data/<TAG>_eco_fm_xstage_round<N>.json
+  contract check JSON:   data/<TAG>_eco_fm_analysis_round<N>.contract_check.json
+  evidence walk RPT:     <TAG>_eco_step6_evidence_walk_round<N>.rpt
+  xstage compare RPT:    <TAG>_eco_step6_xstage_compare_round<N>.rpt
+  contract check RPT:    <TAG>_eco_step6_evidence_contract_check_round<N>.rpt
+================================================================================
+```
+
+The RPT is written in addition to the JSON — both are required outputs of Phase 6. The RPT is what humans (and email summary tools) read first; the JSON is what ROUND_ORCHESTRATOR + re-studier consume.
+
+### §6.3 — Mandatory `evidence_for_studier` per revised_change
+
+For each `revised_change`, when populating `evidence_for_studier.candidate_fix_recipes`:
+1. Pick the recipe `kind` from the action verb's library §B-FAIL or §B-ABORT entry
+2. Fill `required_inputs_for_studier` with concrete values from your Phase 1+2 evidence (NOT placeholders, NOT free text)
+3. Add `verification_after_fix` — a concrete grep/check the studier runs after applying to confirm success
+4. Set `applicability_score` based on confidence (high = direct evidence match, low = best-guess)
+5. If multiple recipes apply (e.g., primary + fallback), include all sorted by score
+
+`previous_round_attempts` MUST be populated when ROUND > 1 — read prior round's `analysis_round<ROUND-1>.json` and extract relevant attempts. This drives `applicable_only_if` evaluation in the next round (e.g., "rename_to_named_wire already tried → escalate to move_gate_to_submodule").
+
+---
+
+## §7 — PHASE 7: Self-Audit Before Exit
+
+Before writing the JSON, verify:
+
+1. **Verdict consistency**: `loop_verdict` matches what evidence walker reported (don't override silently)
+2. **Hard rule compliance**: scan revised_changes for any action that would violate §0 hard rules (e.g., `set_user_match` on ECO DFF, `manual_only`)
+3. **eco_preeco_study_update presence**: every Mode B/D/A/ABORT_LINK/ABORT_CELL_TYPE entry has the update block
+4. **Fallback presence**: every revised_change has a `fallback_action`
+5. **Evidence citations**: every entry's rationale cites at least one evidence/xstage JSON path
+6. **No invented fields**: every action verb is in pattern library §C; every failure_mode is in pattern library §B
+7. **rerun_count enforcement**: if RERUN_SAME_ROUND emitted ≥ 3 times for current round, force ADVANCE_NEXT_ROUND
+
+If any check fails: fix the issue before writing. Do NOT emit a JSON that violates the contract.
+
+---
+
+## Quick reference — Phase outputs
+
+| Phase | Output |
+|-------|--------|
+| §1 Evidence Walk | `data/<TAG>_eco_fm_evidence_round<N>.json` (helper script) |
+| §2 Cross-Stage Compare | `data/<TAG>_eco_fm_xstage_round<N>.json` (helper script) |
+| §3 Hypotheses | In-memory list of hypothesis records |
+| §4 Library Consultation | Mapped recipes per hypothesis |
+| §5 Progressive Fix | `revised_changes[]` |
+| §6 Output JSON | `data/<TAG>_eco_fm_analysis_round<N>.json` |
+| §7 Self-Audit | Pass/fail check before emit |
+
+---
+
+## Anti-patterns (what NOT to do)
+
+These are common failure modes the OLD analyzer fell into. Avoid them.
+
+- ❌ **Skipping evidence walk** because "the failure looks obvious" — always run helper scripts; visual inspection misses 80% of cone divergences
+- ❌ **Pattern-matching the failure_mode from the failing-point cell type alone** — DFF0X can be Mode A, H, I, or S; only cone analysis disambiguates
+- ❌ **Reading only `__failing_points.rpt.gz`** — miss the entire `__analyze_points.rpt.gz` which has the cone divergence detail
+- ❌ **Assuming `set_constant` worked** — verify in `__before_verify_constants.rpt.gz` AND `_user_added_constants.rpt.gz`
+- ❌ **Treating undriven net as "doesn't matter"** — `__before_verify_undriven_nets.rpt.gz` lists FM cut-points that ARE the failure cause
+- ❌ **Stopping at first hypothesis** — multiple modes can coexist; emit all matching recipes in one round
+- ❌ **Advancing the round on an ABORT** — abort means FM never compared; round counter is reserved for actual comparison results
+- ❌ **Writing `manual_only`** — this verb is abolished; pick a progressive fallback
+- ❌ **Modifying SVF** — engineer-only, period
+- ❌ **Citing rtl_diff alone for fix decisions** — rtl_diff says intent; netlist evidence says reality; use both
+
+---
+
+## Example: minimal walk-through
+
+A well-formed analyzer run for a Route FM failure on `NeedFreqAdj_reg`:
+
+```
+Phase 1: Run eco_fm_evidence_walk.py
+  → evidence.loop_verdict = "ADVANCE_NEXT_ROUND"
+  → evidence.per_target["FmEqvEcoRouteVsEcoPrePlace"].failing_diagnostics
+      .per_dff_dossiers[0] = {
+        instance_name: "NeedFreqAdj_reg",
+        is_eco_inserted: false,
+        cone_analysis: {
+          unmatched_cone_inputs: [{net: ".../NeedFreqAdj_reg/SE", desc: "Is globally unmatched"}],
+          failing_reverse_clock_gating: [{latcg_path: ".../I_CHGATER_*/lat.00*"}]
+        }
+      }
+  → evidence.tune_directives_status: SE=0 set_constant DID apply
+
+Phase 2: Run eco_fm_xstage_compare.py
+  → xstage.per_failing_dff["NeedFreqAdj_reg"].deltas.pin_changes = [
+        {pin: "SE", stages: {Synth: "1'b0", PrePlace: "ECO_9868_SE_in", Route: "ECO_9868_SE_in"}}
+     ]
+  → xstage.deltas.wire_present_per_stage = [
+        {wire: "ECO_9868_SE_in", Synth: false, PrePlace: true, Route: true}
+     ]
+
+Phase 3: Hypotheses
+  H1: SE cone load-bearing despite set_constant
+      first_divergent_point: bridge_gap (ECO_9868_SE_in's parent driver differs PP vs Route)
+      convergence_edit_plan: "Mirror engineer pattern — replace 10 sibling DCQARB DFF
+                              .SE pins to use ECO_9868_SE_out for scan-domain consolidation"
+      confidence: high
+      supporting: cone analysis + xstage pin_changes + reference to GAP-4
+
+Phase 4: Library consultation
+  → Match: B-FAIL-S (Mode S — bridge port + sibling SE consolidation)
+  → Recipe: action="fix_scan_stitching" with mode_S_hint about sibling consolidation
+
+Phase 5: revised_changes
+  [{
+    stage: "Route",
+    action: "fix_scan_stitching",
+    cell_name: "NeedFreqAdj_reg",
+    mode_S_hint: "Bridge port present but sibling DCQARB DFFs not consolidated to use ECO_9868_SE_out.
+                  Identify N=10 DFFs in DCQARB sharing scan_en domain and rewrite their .SE.",
+    rationale: "evidence.per_target.FmEqvEcoRouteVsEcoPrePlace.failing_diagnostics
+                .per_dff_dossiers[0].cone_analysis.unmatched_cone_inputs[0] shows SE
+                globally unmatched. xstage.deltas.wire_present_per_stage shows
+                ECO_9868_SE_in absent from Synth (expected) but present in PP/Route.
+                set_constant SE=0 applied per evidence.tune_directives_status, so the
+                cone divergence is shadowed for the SE pin compare itself — but the
+                analyze_points report shows LatCG cone asymmetry triggered by the SE
+                source, which is fixable only by consolidating sibling DFF SE pins to
+                share the bridge wire (engineer's pattern; GAP-4 in FUTURE_GAPS.md).",
+    fallback_action: "tune_file_update",
+    eco_preeco_study_update: {action: "rebuild_per_stage_stitching_with_sibling_consolidation"}
+  }]
+
+Phase 6: Output JSON with all phases linked
+Phase 7: Audit passes — emit
+```
+
+This is the depth of investigation expected. Symptoms get you only halfway; evidence + reasoning is the rest.

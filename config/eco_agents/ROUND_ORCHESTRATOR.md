@@ -28,68 +28,102 @@ Read `<ROUND_HANDOFF_PATH>` (passed in your prompt) to get:
 - `round` — the round that just failed (e.g., 1)
 - `eco_fm_tag` — FM tag from the failed round
 - `status` — should be `FM_FAILED`
+- **`loop_verdict`** (NEW) — `"RERUN_SAME_ROUND" | "ADVANCE_NEXT_ROUND" | "CONVERGED"` from the prior round's `eco_fm_analyzer` output. Defaults to `"ADVANCE_NEXT_ROUND"` if missing (e.g., very first round before any analysis).
 
 Set `AI_ECO_FLOW_DIR = ai_eco_flow_dir` from handoff.
 
-Read `<BASE_DIR>/data/<TAG>_eco_fixer_state` to confirm current round and get `strategies_tried`.
+Read `<BASE_DIR>/data/<TAG>_eco_fixer_state` to confirm current round and get `strategies_tried` + `rerun_count_in_round` (default 0).
+
+---
+
+## LOOP VERDICT HANDLING (read FIRST after inputs)
+
+The new `loop_verdict` field from the prior round's analyzer drives this round's behavior:
+
+| `loop_verdict` | Round counter | Steps to run | Steps to skip |
+|---|---|---|---|
+| `RERUN_SAME_ROUND` | UNCHANGED (FM aborted, never compared — this round is a retry) | 6a (email/HTML), 6b (revert), 6d-VERDICT, RERUN-PATCH (apply abort fixes only), 5 (pre-FM check), 6 (FM resubmit) | 6e (round increment), 6f-FENETS, 6f (re-study), 4 (eco_apply_fix) — these are for failing-point fixes, not abort fixes |
+| `ADVANCE_NEXT_ROUND` | INCREMENT (FM compared, found failures — study + fix + retry next round) | All steps 6a → 6b → 6d → 6e → 6f-FENETS → 6f → 4 → 5 → 6 (existing flow) | none |
+| `CONVERGED` | UNCHANGED | Just spawn FINAL_ORCHESTRATOR and exit | everything else |
+
+**Hard rules for verdict handling:**
+1. ABORT verdict (RERUN_SAME_ROUND) MUST NOT trigger re-study or eco_passes_2_4 re-run. Only netlist patches that fix the elaboration error.
+2. Maximum 3 RERUN_SAME_ROUND emissions per round counter value. On 4th attempt, force `ADVANCE_NEXT_ROUND` with synthetic failure_mode `abort_unrecoverable` (records all 3 prior abort attempts in fixer_state).
+3. The analyzer MUST emit `loop_verdict` and `next_round` fields. Both feed into the spawn decision below.
+
+**Tracking `rerun_count_in_round`:**
+```python
+# In fixer_state, track per-round rerun count:
+if loop_verdict == "RERUN_SAME_ROUND":
+    fixer_state["rerun_count_in_round"] = fixer_state.get("rerun_count_in_round", 0) + 1
+    if fixer_state["rerun_count_in_round"] >= 4:
+        # Hard rule trip — force advance with synthetic failure
+        loop_verdict = "ADVANCE_NEXT_ROUND"
+        synthetic_failure_mode = "abort_unrecoverable"
+elif loop_verdict == "ADVANCE_NEXT_ROUND":
+    fixer_state["rerun_count_in_round"] = 0  # reset for next round
+```
 
 ---
 
 ## STEP 6a — Write Per-Round HTML and Send Email
 
-**Check if FM was submitted this round:**
-```python
-handoff = load(f"data/{TAG}_round_handoff.json")
-pre_fm_check_failed = handoff.get("pre_fm_check_failed", False)
+> **All HTML assembly is delegated to the deterministic helper script:**
+> `script/eco_scripts/eco_build_round_html.py`
+>
+> Do NOT build HTML inline in this MD. The script reads ALL per-round artifacts
+> (handoff, fm_verify, eco_applied, evidence walk, xstage compare, FM analysis,
+> contract check, fixer_state, pre-FM check rpt) and emits a structured 10-section
+> HTML with verdict banner, evidence summaries, cross-stage deltas, root cause
+> reasoning, alternatives, evidence_for_studier recipes, and contract compliance.
+> The script is idempotent + verdict-aware (handles RERUN_SAME_ROUND, ADVANCE_NEXT_ROUND,
+> CONVERGED, and pre-FM-check-failed cases).
+
+**Step 6a-1 — Build the HTML:**
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_build_round_html.py \
+    --tag <TAG> --round <ROUND> \
+    --base-dir <BASE_DIR> \
+    --jira <JIRA> --tile <TILE> \
+    --ai-eco-flow-dir <AI_ECO_FLOW_DIR>
+# → writes <BASE_DIR>/data/<TAG>_eco_report_round<ROUND>.html
+# → embeds the email subject as an HTML comment on line 1
 ```
 
-If `pre_fm_check_failed: true` — FM was never submitted (blocked by Step 5). Write a **simplified HTML** noting pre-FM check failure and skip the FM failing points section. Do NOT try to read `eco_fm_tag_spec` (it doesn't exist). Send email with subject indicating "Pre-FM Check Failed".
+The script automatically handles:
+- **`pre_fm_check_failed: true` from handoff** → emits a simplified HTML noting pre-FM check failure (no FM section)
+- **CONVERGED verdict** → green banner + minimal sections
+- **RERUN_SAME_ROUND verdict** → orange banner with rerun count (N/3)
+- **ADVANCE_NEXT_ROUND verdict** → blue banner with full diagnostic sections
 
-If `pre_fm_check_failed: false` (normal FM failure) — write full HTML using this template:
+**CHECKPOINT 6a-1:** Verify `data/<TAG>_eco_report_round<ROUND>.html` exists and is non-zero.
 
-```html
-<html><body style="font-family:Arial,sans-serif;margin:20px">
-<h2>ECO Round <ROUND> — JIRA <JIRA> (<TILE>)</h2>
-<p><b>Tag:</b> <TAG> | <b>eco_fm_tag:</b> <eco_fm_tag> | <b>Status:</b> FM FAIL/ABORT</p>
-
-<h3>FM Results</h3>
-<table border="1" cellpadding="6" style="border-collapse:collapse">
-<tr><th>Target</th><th>Status</th><th>Failing Points</th></tr>
-<tr><td>FmEqvEcoSynthesizeVsSynRtl</td><td><PASS/FAIL/ABORT></td><td><N></td></tr>
-<tr><td>FmEqvEcoPrePlaceVsEcoSynthesize</td><td><PASS/FAIL/ABORT></td><td><N></td></tr>
-<tr><td>FmEqvEcoRouteVsEcoPrePlace</td><td><PASS/FAIL/ABORT></td><td><N></td></tr>
-</table>
-
-<h3>Failing Points Detail</h3>
-<pre><read from data/<eco_fm_tag>_spec — list all failing DFF hierarchy paths></pre>
-
-<h3>ECO Changes This Round</h3>
-<p>Applied: <N> | Inserted: <N> | Skipped: <N> | Already: <N> | VerifyFailed: <N></p>
-<p><read summary from data/<TAG>_eco_applied_round<ROUND>.json summary field></p>
-
-<h3>Pre-FM Check (Round <ROUND>)</h3>
-<pre><read from data/<TAG>_eco_step5_pre_fm_check_round<ROUND>.rpt — first 30 lines></pre>
-
-<h3>Failure Diagnosis</h3>
-<p><failure_mode from eco_fm_analysis_round<ROUND>.json></p>
-<p><diagnosis excerpt — first 300 chars></p>
-
-<h3>Next Round Plan</h3>
-<p><revised_changes summary from eco_fm_analysis_round<ROUND>.json — list action per change></p>
-</body></html>
-```
-
-Populate each section by reading the actual files — do NOT write placeholder text like "N/A" or "see logs". Every section must contain real data from the round's output files.
-
-Then send:
+**Step 6a-2 — Send the email:**
 ```bash
 cd <BASE_DIR>
 python3 script/genie_cli.py --send-eco-email <TAG> --eco-round <ROUND>
 ```
 
-**MANDATORY CHECKPOINT — Do NOT proceed to Step 6b until this command succeeds.**
+The genie_cli reads the HTML file written above + extracts the `<!-- subject: ... -->` comment for the email subject line. Recipients are pulled from `assignment.csv` (debugger field).
+
+**MANDATORY CHECKPOINT 6a-2 — Do NOT proceed to Step 6b until this command succeeds.**
 Verify output contains: `Email sent successfully`
 If it fails, retry once. If still fails, log the error — but never skip the attempt.
+
+> **Sections produced by the helper (current order):**
+> 1. FM Results table (per-target Status + Failing Points)
+> 2. Failing Points Detail (full DFF hierarchy paths)
+> 3. Evidence Walk Summary (signals grouped by level: critical/high/info + tune directives applied)
+> 4. Cross-Stage Netlist Deltas (per failing DFF: pin_changes, wire_present_per_stage, cell_blackboxed)
+> 5. ECO Changes Applied This Round (Applied/Inserted/Skipped/Already/VerifyFailed counts)
+> 6. Pre-FM Check (first 30 lines of step5 rpt)
+> 7. Failure Diagnosis (failure_mode + diagnosis + root_cause_reasoning + alternatives_considered)
+> 8. Revised Changes + Evidence For Studier (per change: rationale + fallback + top recipe + scope/avoid chips + first divergent point)
+> 9. Analyzer Evidence Contract (compliance pass/fail + violations table)
+> 10. Companion Artifacts (full path + existence checkmark for all step6 JSONs + RPTs)
+>
+> Plus a **verdict banner** at the top (color-coded: green/blue/orange/red/gray).
 
 ---
 
@@ -150,6 +184,89 @@ for stage in Synthesize PrePlace Route:
 **CORE RULE: `manual_only` is ONLY a final outcome at max rounds. Within the fix loop, it means "try a different strategy next round". NEVER exit early purely because revised_changes are all manual_only unless NEXT_ROUND ≥ max_rounds.**
 
 **RULE: Early-exit decisions happen HERE immediately after Step 6d — but ONLY when ALL strategies exhausted (all manual_only AND at max rounds), OR revised_changes is empty.**
+
+---
+
+## STEP 6d-VERDICT — Route Based on `loop_verdict` (NEW)
+
+Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json` and extract:
+```python
+loop_verdict   = analysis["loop_verdict"]    # mandatory
+next_round     = analysis["next_round"]      # mandatory
+failure_mode   = analysis["failure_mode"]
+revised_changes = analysis["revised_changes"]
+```
+
+Branch:
+
+### Branch A — `loop_verdict == "CONVERGED"`
+
+This shouldn't happen at Step 6d (we only reach 6d when FM failed), but if the analyzer disagrees with our FM-failed assumption, trust the analyzer:
+- Skip Steps 6e, 6f-FENETS, 6f, 4, 5
+- Update round_handoff.json with `status: "FM_PASSED"`, `loop_verdict: "CONVERGED"`
+- Spawn FINAL_ORCHESTRATOR and EXIT
+
+### Branch B — `loop_verdict == "RERUN_SAME_ROUND"` (FM aborted)
+
+The analyzer detected an FM ABORT — the netlist failed elaboration, FM never compared. The fix is structural (port missing, wire syntax error, SVF error). Apply ONLY the netlist patches and resubmit FM in this round.
+
+**Pre-check: enforce max-rerun rule**
+```python
+fixer_state = json.load(open(f"data/{TAG}_eco_fixer_state"))
+fixer_state["rerun_count_in_round"] = fixer_state.get("rerun_count_in_round", 0) + 1
+if fixer_state["rerun_count_in_round"] >= 4:
+    # Hard rule #2 trip — abort retry exhausted, force advance
+    loop_verdict = "ADVANCE_NEXT_ROUND"
+    failure_mode = "abort_unrecoverable"
+    print("HARD RULE TRIP: 3 RERUN_SAME_ROUND already attempted; forcing ADVANCE.")
+    # Continue to Branch C below
+else:
+    json.dump(fixer_state, open(f"data/{TAG}_eco_fixer_state", "w"), indent=2)
+```
+
+If `loop_verdict` is still `RERUN_SAME_ROUND` after the rerun-count check:
+
+**Step 6d-RERUN-VERIFY:** All `revised_changes` entries MUST have `action` ∈ {`force_port_decl`, `fix_cell_type`, `fix_netlist_syntax`, `remove_svf_entry`}. If any entry has a non-abort action, this is an analyzer bug — log and treat as ADVANCE_NEXT_ROUND fallback.
+
+**Step 6d-RERUN-PATCH:** Apply the netlist patches inline (no eco_passes_2_4 re-run needed for these focused patches):
+```python
+for change in revised_changes:
+    if change["action"] == "force_port_decl":
+        # Re-invoke eco_passes_2_4 in surgical mode for THIS port_declaration entry only
+        run_eco_passes_2_4_surgical(stage=change["stage"], entry={
+            "change_type": "port_declaration",
+            "signal_name": change["signal_name"],
+            "module_name": change["module_name"],
+            "declaration_type": change["declaration_type"],
+            "force_reapply": True,
+        })
+    elif change["action"] == "fix_cell_type":
+        # Update study JSON cell_type field, re-apply that one change
+        update_study_cell_type(change["gate_instance"], change["correct_cell_type"])
+        run_eco_passes_2_4_surgical(stage=change["stage"], entry=updated_entry)
+    elif change["action"] == "fix_netlist_syntax":
+        # Direct text edit of PostEco file
+        apply_text_edit(change["file"], change["error_line"], change["fix_description"])
+    elif change["action"] == "remove_svf_entry":
+        # Edit eco_svf_entries.tcl
+        remove_svf_op(change["op_id"])
+```
+
+**Step 6d-RERUN-CHECKPOINT:** Verify all patches applied successfully (each `revised_change` has a corresponding entry in the new `eco_applied_round<ROUND>.json` with `status: APPLIED`).
+
+**Step 6d-RERUN-FM:** Skip directly to **Step 5 (pre-FM check)** then **Step 6 (FM submit)** with the SAME `ROUND` value (no increment). Update round_handoff.json with `loop_verdict: "RERUN_SAME_ROUND"` and `rerun_count_in_round: <new value>`.
+
+**Important:** Do NOT run Step 6e (round increment), Step 6f-FENETS, Step 6f (re-study), or Step 4 (eco_apply_fix) for RERUN_SAME_ROUND. These are for failing-point fixes, and a RERUN doesn't have failing points to fix.
+
+### Branch C — `loop_verdict == "ADVANCE_NEXT_ROUND"` (FM failed)
+
+The original failing-point flow. Continue to **Step 6e** as before. Reset `rerun_count_in_round` to 0:
+```python
+fixer_state["rerun_count_in_round"] = 0
+json.dump(fixer_state, open(f"data/{TAG}_eco_fixer_state", "w"), indent=2)
+```
+
+The remainder of this MD (Steps 6e, 6f-FENETS, 6f, 4, 5, 6) executes only for Branch C.
 
 ---
 
@@ -476,11 +593,16 @@ Read `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` to get `eco_fm_tag` — save 
 
 ## After Step 6 — Spawn Next Agent
 
-> **HARD RULE: Read eco_fm_verify.json ONCE and spawn the next agent. Do not loop.**
-> - `status: "PASS"` on ALL targets → FINAL_ORCHESTRATOR
-> - `status: "FAIL"` on ANY target → new ROUND_ORCHESTRATOR (if rounds remain)
-> - `status: "ABORT"` on ANY target → treated as FAIL → new ROUND_ORCHESTRATOR (eco_fm_analyzer will diagnose the abort in Step 6d of the next round)
+> **HARD RULE: Read eco_fm_verify.json ONCE and spawn the next agent. Do not loop within this orchestrator.**
+> - `status: "PASS"` on ALL targets → FINAL_ORCHESTRATOR (verdict is now CONVERGED)
+> - `status: "FAIL"` on ANY target → new ROUND_ORCHESTRATOR (the next analyzer run will set verdict ADVANCE_NEXT_ROUND)
+> - `status: "ABORT"` on ANY target → new ROUND_ORCHESTRATOR (the next analyzer run will set verdict RERUN_SAME_ROUND if rerun_count < 3)
 > - NEVER re-submit FM here. NEVER apply patches here. NEVER re-run eco_applier here.
+
+**The actual round number used by the next ROUND_ORCHESTRATOR depends on the verdict:**
+- If the analysis just completed had `loop_verdict: "RERUN_SAME_ROUND"` → next round uses the SAME round number (this round was a retry — the `ROUND` value did not change)
+- If the analysis just completed had `loop_verdict: "ADVANCE_NEXT_ROUND"` → next round uses `NEXT_ROUND = ROUND + 1`
+- If the analysis just completed had `loop_verdict: "CONVERGED"` → no next ROUND_ORCHESTRATOR; FINAL_ORCHESTRATOR fires instead
 
 Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 ```json
@@ -491,12 +613,16 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
   "jira": "<JIRA>",
   "base_dir": "<BASE_DIR>",
   "ai_eco_flow_dir": "<AI_ECO_FLOW_DIR>",
-  "round": "<NEXT_ROUND>",
+  "round": "<NEXT_ROUND or SAME_ROUND per verdict>",
   "fenets_tag": "<fenets_tag>",
   "eco_fm_tag": "<new eco_fm_tag>",
-  "status": "<FM_PASSED|FM_FAILED|MAX_ROUNDS>"
+  "status": "<FM_PASSED|FM_FAILED|MAX_ROUNDS>",
+  "loop_verdict": "<RERUN_SAME_ROUND|ADVANCE_NEXT_ROUND|CONVERGED>",
+  "rerun_count_in_round": <N>
 }
 ```
+
+The next ROUND_ORCHESTRATOR reads `loop_verdict` and `rerun_count_in_round` from this handoff to know whether to enter Branch B (RERUN) or Branch C (ADVANCE) of Step 6d-VERDICT.
 
 **CRITICAL: `ai_eco_flow_dir` MUST be in every round_handoff.json.** Every subsequent ROUND_ORCHESTRATOR and FINAL_ORCHESTRATOR reads `ai_eco_flow_dir` from this file. If it is missing, all file copies to AI_ECO_FLOW_DIR will fail in subsequent rounds. The value never changes across rounds — always `<REF_DIR>/AI_ECO_FLOW_<TAG>`.
 
@@ -548,7 +674,14 @@ Update handoff: `"status": "MAX_ROUNDS"`
 | File | Written by | Content |
 |------|-----------|---------|
 | `data/<TAG>_eco_report_round<ROUND>.html` | ROUND_ORCHESTRATOR (Step 6a) | Per-round HTML summary before revert |
-| `data/<TAG>_eco_fm_analysis_round<ROUND>.json` | eco_fm_analyzer (Step 6d) | FM failure diagnosis + revised_changes |
+| `data/<TAG>_eco_fm_evidence_round<ROUND>.json` | eco_fm_evidence_walk.py (Step 6d Phase 1) | Per-DFF dossier from 12+ FM reports + log |
+| `<AI_ECO_FLOW_DIR>/<TAG>_eco_step6_evidence_walk_round<ROUND>.rpt` | eco_fm_evidence_walk.py | Human-readable summary of evidence walk |
+| `data/<TAG>_eco_fm_xstage_round<ROUND>.json` | eco_fm_xstage_compare.py (Step 6d Phase 2) | 3-way Synth/PrePlace/Route netlist deltas (FAIL verdicts only) |
+| `<AI_ECO_FLOW_DIR>/<TAG>_eco_step6_xstage_compare_round<ROUND>.rpt` | eco_fm_xstage_compare.py | Human-readable summary of cross-stage compare |
+| `data/<TAG>_eco_fm_analysis_round<ROUND>.json` | eco_fm_analyzer (Step 6d) | FM failure diagnosis + revised_changes WITH evidence_for_studier blocks |
+| `<AI_ECO_FLOW_DIR>/<TAG>_eco_step6_fm_analysis_round<ROUND>.rpt` | eco_fm_analyzer | Human-readable analysis summary |
+| `data/<TAG>_eco_fm_analysis_round<ROUND>.contract_check.json` | eco_validate_analyzer_evidence_contract.py | Validator output: contract violations (if any) |
+| `<AI_ECO_FLOW_DIR>/<TAG>_eco_step6_evidence_contract_check_round<ROUND>.rpt` | eco_validate_analyzer_evidence_contract.py | Human-readable contract check summary |
 | `data/<TAG>_eco_fenets_rerun_round<ROUND>.json` | eco_fenets_runner RERUN_MODE (Step 6f-FENETS) | condition_input_resolutions from re-queried signals |
 | `data/<TAG>_eco_step2_fenets_rerun_round<ROUND>.rpt` | eco_fenets_runner RERUN_MODE (Step 6f-FENETS) | Per-signal FM results from rerun |
 | `data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` | eco_netlist_studier_round_N (Step 6f) | What was re-studied, what was updated in study JSON |

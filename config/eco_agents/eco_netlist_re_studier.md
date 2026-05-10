@@ -8,16 +8,48 @@
 
 ---
 
-## Step 1 — Read eco_fm_analyzer Output
+## Step 1 — Read eco_fm_analyzer Output (with Evidence Contract)
 
-Read `FM_ANALYSIS_PATH`. Extract: `failure_mode`, `revised_changes`, `re_study_targets`, `needs_re_study`.
+Read `FM_ANALYSIS_PATH`. Extract:
+- **Verdict + control fields:** `loop_verdict`, `next_round`, `failure_mode`
+- **Action set:** `revised_changes`, `re_study_targets`, `needs_re_study`
+- **Evidence summary:** `evidence_summary.evidence_walk_json`, `evidence_summary.xstage_compare_json`
+
+> **MANDATORY — Verdict gate (added with the new investigative analyzer):**
+> ```python
+> if loop_verdict == "RERUN_SAME_ROUND":
+>     # Re-studier MUST NOT run on aborts. ROUND_ORCHESTRATOR Branch B handles
+>     # via netlist patches only. If we got called here, exit early with no-op rpt.
+>     write_rpt("RERUN_SAME_ROUND verdict — re-studier skipped per evidence contract")
+>     copy_to_ai_eco_flow_dir(); EXIT
+> if loop_verdict == "CONVERGED":
+>     # All targets pass; no work for re-studier.
+>     write_rpt("CONVERGED — no study updates needed"); EXIT
+> # else: loop_verdict == "ADVANCE_NEXT_ROUND" — proceed
+> ```
+
+> **MANDATORY — Load analyzer's evidence dossier (NEW):**
+> ```python
+> evidence = json.load(open(analysis["evidence_summary"]["evidence_walk_json"]))
+> xstage   = json.load(open(analysis["evidence_summary"]["xstage_compare_json"]))
+> ```
+> These dossiers contain per-DFF failing_diagnostics, cone_analysis, undriven_nets, tune_directives_status, and 3-way Synth/PrePlace/Route netlist deltas. The analyzer pre-walked them; consume directly via `evidence_path_refs` instead of re-greping reports.
+
+> **MANDATORY — Validate analyzer evidence contract:**
+> ```bash
+> python3 script/eco_scripts/eco_validate_analyzer_evidence_contract.py \
+>     --analysis-json $FM_ANALYSIS_PATH
+> # Exit code 0 → all revised_changes have valid evidence_for_studier blocks
+> # Exit code 1 → contract violated; ABORT this re-study round, force re-spawn analyzer
+> ```
+> The contract (`config/eco_agents/eco_re_studier_evidence_contract.md`) requires every actionable `revised_change` to carry `evidence_for_studier` with universal + per-action structured fields. If the analyzer didn't comply, the re-studier cannot fulfill its role — fail loudly rather than guess.
 
 ## Step 2 — Load Existing Study JSON and Check for Graceful Exit
 
 - **Mode E / Mode G / ABORT_SVF** → write rpt noting no study updates needed, copy to AI_ECO_FLOW_DIR, **EXIT immediately.**
 - **`re_study_targets` is empty AND failure_mode is not ABORT_LINK/A/B/D/UNKNOWN** → write rpt "No re-study targets — study JSON unchanged", copy, **EXIT.**
 
-Only proceed to Step 3 for: `ABORT_LINK`, `ABORT_CELL_TYPE`, `A`, `B`, `C`, `D`, `H`, `UNKNOWN`, or mixed modes with non-empty `re_study_targets`.
+Only proceed to Step 3 for: `ABORT_LINK`, `ABORT_CELL_TYPE`, `A`, `B`, `C`, `D`, `H`, `I`, `S`, `T`, `INCOMPLETE_AND_TERM`, `WRONG_GATE_STRUCTURE`, `CTS_CLOCK_RENAMED`, `CTS_BBNET_INPUT`, `SCAN_CHAIN_MISMATCH`, `UNKNOWN`, or mixed modes with non-empty `re_study_targets`.
 
 ---
 
@@ -79,6 +111,64 @@ Log: `FORCE_REAPPLY_UNDO: added undo_instance for <inst> before re-insert`.
 ---
 
 ## Step 3 — Handle Each Failure Mode
+
+> **MANDATORY UNIVERSAL PATTERN — `evidence_for_studier` consumption (NEW):**
+>
+> Per the evidence contract, every actionable `revised_change` carries `evidence_for_studier.candidate_fix_recipes[]` — the analyzer's pre-vetted shortlist of recipes ranked by `applicability_score`. Use this pattern BEFORE falling back to mode-specific manual investigation:
+>
+> ```python
+> for change in analysis["revised_changes"]:
+>     action = change.get("action")
+>     if action in ("cascade_verified_skip", "manual_only"):
+>         continue
+>     e4s = change.get("evidence_for_studier")
+>     if not e4s:
+>         # Contract violation — should have been caught by validator in Step 1.
+>         # If we got here, the analyzer somehow shipped non-compliant output.
+>         log_error(f"Missing evidence_for_studier for {action} on {change.get('cell_name')}")
+>         continue
+>
+>     # 1. Honor scope constraints from the contract — abort if studier action
+>     #    would touch forbidden modules/signals
+>     scope_module = e4s["constraints"].get("scope_module")
+>     forbidden_mods = set(e4s["constraints"].get("do_not_modify_modules", []))
+>     forbidden_sigs = set(e4s["constraints"].get("do_not_touch_signals", []))
+>
+>     # 2. Pick the highest-applicability_score recipe whose `applicable_only_if`
+>     #    holds (evaluated against analysis context + previous_round_attempts)
+>     recipes = sorted(e4s["candidate_fix_recipes"],
+>                      key=lambda r: -r["applicability_score"])
+>     picked_recipe = None
+>     for recipe in recipes:
+>         cond = recipe.get("applicable_only_if")
+>         if cond and not eval_recipe_condition(cond, e4s, fixer_state):
+>             continue
+>         picked_recipe = recipe
+>         break
+>     if not picked_recipe:
+>         log_warn(f"No applicable recipe for {action} — falling back to mode-specific block below")
+>         # fall through to mode-specific handling
+>         continue
+>
+>     # 3. Apply the recipe's required_inputs_for_studier to study JSON.
+>     #    THIS is the recipe-driven path — no re-discovery needed; values already vetted.
+>     apply_recipe_to_study(picked_recipe["kind"],
+>                           picked_recipe["required_inputs_for_studier"],
+>                           study_json,
+>                           scope_module=scope_module,
+>                           forbidden_modules=forbidden_mods,
+>                           forbidden_signals=forbidden_sigs)
+>
+>     # 4. Verify per recipe's `verification_after_fix` BEFORE moving on.
+>     #    If verification fails, try next recipe in the sorted list.
+>     if not run_verification(picked_recipe["verification_after_fix"]):
+>         log_warn(f"Recipe {picked_recipe['kind']} verification failed; trying next candidate")
+>         # loop back to next recipe in sorted list
+> ```
+>
+> The mode-specific blocks below are **fallback** for when `candidate_fix_recipes` is empty or all recipes' `applicable_only_if` failed. Prefer the recipe-driven path.
+
+---
 
 **For `ABORT_LINK` (missing port from port list):** For each `force_port_decl` in `revised_changes`:
 1. Find matching `port_declaration` entry for `signal_name` + `module_name`
