@@ -471,7 +471,7 @@ Phase 5: revised_changes
                 cone divergence is shadowed for the SE pin compare itself — but the
                 analyze_points report shows LatCG cone asymmetry triggered by the SE
                 source, which is fixable only by consolidating sibling DFF SE pins to
-                share the bridge wire (engineer's pattern; GAP-4 in FUTURE_GAPS.md).",
+                share the bridge wire (engineer's pattern).",
     fallback_action: "tune_file_update",
     eco_preeco_study_update: {action: "rebuild_per_stage_stitching_with_sibling_consolidation"}
   }]

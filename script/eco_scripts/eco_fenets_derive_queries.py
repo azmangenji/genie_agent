@@ -17,6 +17,13 @@ Categories — same as eco_fenets_runner.md STEP A but enforced as code:
   Cat 5: port_promotion signal name.
   Cat 6: Mode I UNCONNECTED rename targets (submodule_instance/port_name[bit]).
   Cat 7: explicit hookup hints from rtl_diff (when present).
+  Cat 8: Mode-S anchor pins — for any new_logic_dff that is a potential Mode-S
+         target, query the SI/SE/Q paths of an anchor DFF in the chosen sibling
+         module. Lets the studier pick a stage-stable bridge source/consumer
+         using FM equivalence data instead of guessing.
+         Trigger: rtl_diff change with `potential_mode_s_targets` list, OR
+         any new_logic_dff with requires_scan_stitching=true that names a
+         `mode_s_anchor` field.
 
 Output JSON: a list of {net_path, signal, source, ...} entries, deduplicated
 by net_path. The fenets agent receives this list as input and may ADD entries
@@ -39,16 +46,25 @@ def _scope_of(c):
 
 
 def _abs_path(tile, scope, signal):
-    """Build the absolute net path FM expects:
-    `<tile>/<scope>/<signal>` — but skip the tile prefix when scope already
-    starts with the tile (rtl_diff_analyzer is inconsistent: emits `ARB/CTRLSW`
-    relative for child-scope changes, but `umccmd` absolute for top-scope ones).
+    """Build the tile-RELATIVE net path FM expects.
+
+    FM session is rooted at `r:/FMWORK_REF_<TILE_T>/ddrss_<tile>_t/` — i.e.
+    one level INSIDE the tile module. If we prepend `<tile>/` the path
+    resolves as `r:/.../ddrss_<tile>_t/<tile>/<rest>` → duplicate `umccmd/umccmd/`
+    → FM-036 on every query.
+
+    Rules:
+      1. NEVER prepend `<tile>/` (FM is already at tile depth).
+      2. If `scope` itself starts with `<tile>/` or equals `<tile>`, strip it.
+      3. Emit `<scope>/<signal>` (tile-relative). Top-scope DFFs (host module
+         is the tile itself, scope=tile) just emit `<signal>`.
     """
     parts = []
-    if tile and not (scope == tile or scope.startswith(tile + '/')):
-        parts.append(tile)
     if scope:
-        parts.append(scope)
+        if tile and (scope == tile or scope.startswith(tile + '/')):
+            scope = scope[len(tile):].lstrip('/')
+        if scope:
+            parts.append(scope)
     parts.append(signal)
     return '/'.join(p.strip('/') for p in parts if p)
 
@@ -142,6 +158,41 @@ def derive(rtl_diff, tile=''):
                     'signal':   h.get('signal') or np.rsplit('/', 1)[-1],
                     'category': 7,
                     'source':   f'changes[{idx}].hookup_hint',
+                })
+
+        # Cat 8: Mode-S anchor WIRES (NOT pin paths).
+        # FM `find_equivalent_nets` accepts wires/output-pin nets — querying
+        # input pin paths like <DFF>/SI returns FM-036 (Unknown name). The
+        # picker (eco_pick_sibling.py) resolves the anchor DFF's actual wire
+        # names from the netlist and emits them on the mode_s_anchor as
+        # anchor_si_wire / anchor_se_wire / anchor_q_wire — query those.
+        anchor = c.get('mode_s_anchor') or {}
+        sib   = anchor.get('sibling_module', '')
+        adff  = anchor.get('anchor_dff', '')
+        if sib and adff:
+            anchor_scope = anchor.get('anchor_scope') or sib
+            for role, wire_field in (('SI', 'anchor_si_wire'),
+                                     ('SE', 'anchor_se_wire'),
+                                     ('Q',  'anchor_q_wire')):
+                wire = anchor.get(wire_field)
+                if not wire:
+                    # Skip when picker didn't resolve this wire (e.g. DFF has
+                    # no .SI hookup or wire is a constant). Better to skip than
+                    # to emit a guess that returns FM-036.
+                    continue
+                # Skip constants
+                if str(wire).startswith(("1'b", "0'b", "1'h", "0'h")):
+                    continue
+                out.append({
+                    'net_path':       _abs_path(tile, anchor_scope, wire),
+                    'signal':         wire,
+                    'category':       8,
+                    'mode_s_anchor':  True,
+                    'anchor_pin':     role,        # SI/SE/Q role label (the pin this wire connects to)
+                    'anchor_dff':     adff,
+                    'anchor_wire':    wire,
+                    'sibling_module': sib,
+                    'source':         f'changes[{idx}].mode_s_anchor.{wire_field}',
                 })
 
     # Deduplicate by net_path (preserve first source)

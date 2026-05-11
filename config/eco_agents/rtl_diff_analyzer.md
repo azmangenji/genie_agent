@@ -536,6 +536,27 @@ grep -rn "define.*CONST_NAME" <REF_DIR>/data/SynRtl/*.v <REF_DIR>/data/SynRtl/*.
 ```
 Replace each macro with its numeric value before decomposing.
 
+### E2.5 — Boolean simplification BEFORE decomposition (MANDATORY)
+
+Before applying E3, you MUST rewrite the expression to minimize gate count. Each new gate widens the FM cone walk and increases cone-divergence risk across PP/Route stages. A literal text-to-cell decomposition (one INV per negated term, large outer AND) is FORBIDDEN.
+
+**MANDATORY rewrites — apply in order until no rule fires:**
+
+1. **De Morgan push-out (MANDATORY when ≥2 negated terms feed a common AND).** Collect every `~X` term that would otherwise appear as a separate INV cell into a single NOR-N (or OR-N + NR2) gate. The forbidden pattern is "≥2 INV cells whose outputs feed a common ANDN" — Step 1 validator Check 11 FAILs the chain when it detects this. NOR/NAND/AOI/OAI gates absorb negation in their truth table — use them.
+
+2. **Bus equality fold.** For `(B[N:0]==K1) | (B[N:0]==K2)` where K1, K2 differ in 1-2 bits, identify the differing bits and use XOR2/XNOR2 for the equality test instead of decomposing per-bit AND chains.
+
+3. **Reuse existing inverted signals (MANDATORY for every `~<RTL_signal>` term).** Before emitting any new INV cell, search PreEco for an existing wire whose driver is `INV(.I=<RTL_signal>)`. If found AND the inverted wire is stage-stable (or has known per-stage rename in fenets map), emit `inputs_per_stage` referencing the existing wire instead of inserting a new INV. The reuse claim MUST be backed by `inputs_per_stage[<stage>].use_existing_wire: true` for both PrePlace AND Route — Synth-only reuse does not satisfy the rule because PP/Route are where cone divergence happens.
+
+4. **Compound cell preference.** When a sub-expression fits a library compound cell (OAI21, AOI22, NR2, NAND4, NR3, etc.), use the compound in one entry instead of decomposing into simple gates.
+
+**Output requirements:**
+- Set `simplification_applied: true` and list every applied rewrite in `simplification_log`.
+- The chain MUST contain the reset signal when `reset_baked_in_d_input: true` (Check 10).
+- The chain MUST satisfy: NEW INV cells on RTL data/reset signals ≤ 1 (Check 9c-MULTI-INV-NO-REUSE) AND total cells ≤ distinct RTL input count (Check 9d).
+
+**On validator FAIL** (Check 9c, 9d, 10, or 11): re-run E2.5 from scratch with the failing pattern in mind. Do NOT bypass by claiming `reuse_existing_wire: true` without populated `inputs_per_stage` for both PP and Route.
+
 ### E3 — Decompose into gate chain (bottom-up)
 
 **If the D-input expression has no boolean operators after reset removal** (it is a single net or bit-select like `REG_X[i]`) → emit `d_input_gate_chain: []` and record the source net in `d_input_resolved_net`. Do NOT fabricate a `WIRE` / `BUF` pseudo-entry — `gate_function: "WIRE"` is not a real cell and breaks downstream agents.
@@ -559,17 +580,7 @@ Parse the expression recursively. For each sub-expression, assign a gate type:
 
 **DFF instance naming (different from gate chain):** The DFF itself uses `<target_register>_reg` as instance name and `<target_register>` as Q output net — NOT `eco_<jira>_dff<N>`. This matches the name FM synthesizes from the RTL, enabling auto-matching in `FmEqvEcoSynthesizeVsSynRtl` without `set_user_match`. Record in JSON: `"dff_instance_name": "<target_register>_reg"`, `"dff_output_net": "<target_register>"`.
 
-**Example decomposition for `~<rst> & <sig_A> & ~<sig_B> & ((<sig_C>[N:0] == <const_K1>) | (<sig_C>[N:0] == <const_K2>))`:**
-```
-d001: NOR<N+1>(<sig_C>[N], ..., <sig_C>[0])         → <sig_C> == <const_K1>  (all-zero constant: NOR of all bits)
-d002: INV(<sig_C>[i])                                → ~<sig_C>[i]            (bit i of <const_K2> is 0)
-d003: AND<M>(n_d002, <sig_C>[j], ...)               → <sig_C> == <const_K2>  (per-bit AND/INV per E3 table)
-d004: OR2(n_d001, n_d003)                            → comparison result
-d005: INV(<sig_B>)                                   → ~<sig_B>
-d006: INV(<rst>)                                     → ~<rst> (sync reset)
-d007: AND4(<sig_A>, n_d005, n_d004, n_d006)         → final D-input
-```
-Record `d_input_net: "n_eco_<jira>_d007"` — this is connected to the DFF .D pin.
+After decomposition, set `d_input_net: "n_eco_<jira>_d<last>"` (connected to DFF .D pin). Apply §E2.5 simplifications first to minimize chain length.
 
 ### E4 — Flag unsupported expressions and attempt intermediate net fallback
 
@@ -589,17 +600,7 @@ When the RTL diff shows the OLD expression still present as the last/default con
 
 #### E4b — Identify the fallback query signal
 
-Add a fenets query on `target_register` (the DFF output Q signal) to `nets_to_query`. The eco_netlist_studier will trace backward from `target_register.D` to find the pivot net in the gate-level PreEco netlist.
-
-```json
-{
-  "net_path": "<INST_A>/<INST_B>/<target_register>",
-  "hierarchy": ["<INST_A>", "<INST_B>"],
-  "reason": "d_input_decompose_failed fallback: trace backward from target_register.D to find pivot net for intermediate insertion",
-  "is_bus_variant": false,
-  "fallback_for_decompose_failed": true
-}
-```
+Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallback_for_decompose_failed: true`. The studier traces backward from `target_register.D` to find the pivot net.
 
 #### E4c — PreEco Compound Gate Discovery (PRIORITY 1 — run before E4d RTL decomposition)
 
@@ -662,6 +663,43 @@ The flag is MANDATORY (Step 1 validator rejects entries that omit it). To opt ou
   ...
 }
 ```
+
+**MANDATORY mode_s_anchor — when requires_scan_stitching=true.** Step 2 fenets uses this to query SI/SE/Q paths of an EXISTING anchor DFF in the chosen sibling module (Cat 8). Without this field, Step 2 has no equivalence data and Step 3 studier guesses bridge source/consumer wires.
+
+**MANDATORY: invoke the deterministic picker — DO NOT guess.** For each new_logic_dff with `requires_scan_stitching: true`, run:
+```bash
+python3 script/eco_scripts/eco_pick_sibling.py \
+    --netlist     <REF_DIR>/data/PreEco/PrePlace.v.gz \
+    --host-module <module_name from this entry> \
+    --output      data/<TAG>_eco_sibling_pick_<dff>.json
+```
+Read the output JSON and use `recommended_pick` directly:
+- `mode_s_anchor.sibling_module` ← `recommended_pick.module`
+- `mode_s_anchor.anchor_dff` ← `recommended_pick.anchor_dff`
+- `mode_s_anchor.anchor_scope` ← `<parent_module>/<recommended_pick.inst>` (parent_module from picker output)
+- `mode_s_anchor.anchor_si_wire` ← `recommended_pick.anchor_si_wire` (wire driving anchor's SI; FM Cat 8 queries this — pin paths return FM-036)
+- `mode_s_anchor.anchor_se_wire` ← `recommended_pick.anchor_se_wire`
+- `mode_s_anchor.anchor_q_wire`  ← `recommended_pick.anchor_q_wire`
+
+The picker enforces all selection constraints automatically: peer-module-only (excludes host), ≥10 DFFs in scan-en cluster, ranks by cluster size descending. Manual selection is FORBIDDEN — Check 12 will FAIL any entry where `sibling_module` matches the host.
+
+**If `recommended_pick` is null** (no viable peer in the host's parent — common for top-scope DFFs like umccmd-level): set `requires_scan_stitching: false` with `scan_stitching_skipped_reason: "no viable peer module under <parent> has ≥10 DFFs in scan-en cluster"`. Bridge_port doesn't apply; downstream uses neighbor_dff or constant_zero.
+
+Emit:
+```json
+{
+  "requires_scan_stitching": true,
+  "mode_s_anchor": {
+    "sibling_module":  "<recommended_pick.module>",
+    "anchor_dff":      "<recommended_pick.anchor_dff>",
+    "anchor_scope":    "<parent_module>/<recommended_pick.inst>",
+    "anchor_si_wire":  "<recommended_pick.anchor_si_wire>",
+    "anchor_se_wire":  "<recommended_pick.anchor_se_wire>",
+    "anchor_q_wire":   "<recommended_pick.anchor_q_wire>"
+  }
+}
+```
+Step 1 validator requires `mode_s_anchor` populated (or `requires_scan_stitching: false` with skip reason).
 
 **MANDATORY scope/hierarchy field — for every `new_logic` / `new_logic_dff`:**
 

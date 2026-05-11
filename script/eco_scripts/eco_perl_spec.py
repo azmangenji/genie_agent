@@ -267,6 +267,16 @@ def main():
 
         # ── new_logic_gate / new_logic_dff ───────────────────────────────────
         if ct in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
+            # GAP-7: existing-signal reuse — skip cell insertion entirely when
+            # the studier marked this INV gate as reusing an existing wire.
+            # The downstream gate that consumed this entry's output should
+            # already have its input substituted in port_connections_per_stage.
+            if e.get('reuse_existing_wire'):
+                ips = (e.get('inputs_per_stage') or {}).get(args.stage)
+                statuses.append({'name': inst, 'status': 'SKIPPED',
+                                 'reason': f'GAP-7: reuse_existing_wire — {args.stage} uses {ips!r} (no new INV cell)'})
+                continue
+
             if mod not in changes:
                 changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': []}
 

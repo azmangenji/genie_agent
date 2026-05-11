@@ -189,6 +189,71 @@ def main():
                             f"parent scope — without it the bridge wire dangles undriven "
                             f"and FM sees globally unmatched SE/SI on the new DFF.")
 
+            # GAP-4b enforcement: bridge buffer source wire must be verified
+            # stage-stable PP↔Route. The studier should record in the entry:
+            #   bridge_source_pp_route_match: { si: bool, se: bool }
+            # set true ONLY after checking the wire's parent-level driver is the
+            # SAME logical net in both PP and Route (via fenets rename map or
+            # structural cone trace). False / missing → fail this check.
+            uses_bridge_pp_route = (strat_per_stage.get('PrePlace') == 'bridge_port'
+                                    or strat_per_stage.get('Route') == 'bridge_port')
+            if uses_bridge_pp_route:
+                bsm = e.get('bridge_source_pp_route_match') or {}
+                for pin in ('si', 'se'):
+                    if bsm.get(pin) is not True:
+                        issues.append(
+                            f"HIGH: GAP-4b — Mode S {inst} bridge_port (PP/Route) requires "
+                            f"`bridge_source_pp_route_match.{pin}: true` in the study entry. "
+                            f"Studier must verify the {pin.upper()} bridge buffer source wire "
+                            f"has a stage-stable parent driver across PP→Route (use fenets "
+                            f"rename map). Missing/false = bridge cone diverges across stages "
+                            f"and FM fails on the new DFF.")
+
+            # GAP-4 + GAP-4c enforcement (studier-side): when bridge_port chosen,
+            # the study JSON MUST also contain matching companion entries:
+            #   - sibling_pin_consolidation entries (one per pin: SE, sometimes SI)
+            #   - si_consumer_replace entry (closes the bridge Q output)
+            # Without these, the bridge plumbing dangles and FM fails.
+            if uses_bridge_pp_route:
+                # Aggregate companion entries from any stage of study JSON
+                all_entries = []
+                for s in ('Synthesize', 'PrePlace', 'Route'):
+                    all_entries.extend(study.get(s, []))
+                jira_part = ''
+                if isinstance(si_name, str):
+                    m = re.match(r'ECO_(\w+?)_SI_in$', si_name)
+                    if m:
+                        jira_part = m.group(1)
+                # GAP-4: at least one sibling_pin_consolidation entry referencing
+                # this DFF's bridge wire (ECO_<jira>_SE_out)
+                want_se_net = f'ECO_{jira_part}_SE_out' if jira_part else None
+                consol_found = any(
+                    ce.get('change_type') == 'sibling_pin_consolidation'
+                    and ce.get('pin_name') == 'SE'
+                    and (want_se_net is None or ce.get('new_net') == want_se_net)
+                    for ce in all_entries
+                )
+                if not consol_found:
+                    issues.append(
+                        f"HIGH: GAP-4 — Mode S {inst} uses bridge_port but no "
+                        f"`sibling_pin_consolidation` entry (pin_name=SE"
+                        f"{f', new_net={want_se_net}' if want_se_net else ''}) found in study. "
+                        f"Bridge SE port is not consumed by sibling DFFs → FM cone divergence.")
+                # GAP-4c: at least one si_consumer_replace entry referencing
+                # this DFF's bridge Q port (ECO_<jira>_Q_in)
+                want_q_net = f'ECO_{jira_part}_Q_in' if jira_part else None
+                qclose_found = any(
+                    ce.get('change_type') == 'si_consumer_replace'
+                    and (want_q_net is None or ce.get('new_si_net') == want_q_net)
+                    for ce in all_entries
+                )
+                if not qclose_found:
+                    issues.append(
+                        f"HIGH: GAP-4c — Mode S {inst} uses bridge_port but no "
+                        f"`si_consumer_replace` entry"
+                        f"{f' (new_si_net={want_q_net})' if want_q_net else ''} found in study. "
+                        f"Bridge Q output dangles in sibling module → DFT scan break + FM warns.")
+
     # ── 3d. Mode S decision must match Step 1 (rtl_diff). When Step 1 emits
     #        requires_scan_stitching=true on a new_logic_dff, the studier MUST
     #        carry that decision through (mode_S_applied=true OR an explicit
@@ -597,6 +662,141 @@ def main():
             for pin, net in pcs.items():
                 if net is None or (isinstance(net, str) and not net.strip()):
                     issues.append(f"CRITICAL: chain-injection schema — new_logic_gate {inst}.{pin} in {stage} = {net!r} (empty/null)")
+
+    # ── 17. Strategy/Entry mutual exclusion: when ANY stage uses neighbor_dff,
+    #        the study must NOT contain sibling_pin_consolidation or
+    #        si_consumer_replace entries (those are bridge_port-only artifacts).
+    #        Mixing produces inconsistent applier behavior.
+    has_neighbor_dff = False
+    has_bridge_port  = False
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            strat_per_stage = e.get('mode_S_strategy_per_stage') or {}
+            for s in ('PrePlace', 'Route'):
+                v = strat_per_stage.get(s)
+                if v == 'neighbor_dff':
+                    has_neighbor_dff = True
+                elif v == 'bridge_port':
+                    has_bridge_port = True
+    if has_neighbor_dff and not has_bridge_port:
+        # neighbor_dff for all PP/Route stages but bridge artifacts present?
+        for stage in ('Synthesize', 'PrePlace', 'Route'):
+            for e in study.get(stage, []):
+                if e.get('change_type') in ('sibling_pin_consolidation', 'si_consumer_replace'):
+                    issues.append(
+                        f"HIGH: Strategy/Entry contradiction — {e.get('change_type')!r} entry in {stage} "
+                        f"sibling={e.get('sibling_module','?')!r} but no DFF uses bridge_port strategy. "
+                        f"sibling_pin_consolidation and si_consumer_replace belong to bridge_port only.")
+
+    # ── 18. Q-closure consumer must structurally exist in the named sibling.
+    #        si_consumer_replace.consumer_dff_inst MUST appear in sibling_module's
+    #        body in the PreEco netlist; otherwise applier silently no-ops.
+    seen_consumer_check = set()
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'si_consumer_replace':
+                continue
+            sib = e.get('sibling_module', '') or ''
+            consumer = e.get('consumer_dff_inst', '') or ''
+            key = (sib, consumer)
+            if not sib or not consumer or key in seen_consumer_check:
+                continue
+            seen_consumer_check.add(key)
+            # Module-scoped grep in PreEco PrePlace
+            netlist = f'{args.ref_dir}/data/PreEco/PrePlace.v.gz'
+            if not Path(netlist).exists():
+                continue
+            try:
+                # Extract sibling module body, then count consumer instances
+                cmd = (f"zcat '{netlist}' | "
+                       f"awk '/^module\\s+\\S*{re.escape(sib.replace('ddrss_umccmd_t_',''))}/,"
+                       f"/^endmodule/' | "
+                       f"grep -c '\\b{re.escape(consumer)}\\b'")
+                r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+                count = int(r.stdout.strip() or '0')
+            except Exception:
+                count = -1
+            if count == 0:
+                issues.append(
+                    f"HIGH: Q-closure consumer {consumer!r} not found in sibling "
+                    f"{sib!r} body (PreEco PrePlace). Applier will silently no-op the "
+                    f".SI rewire — DFT scan break + FM Und cut-point.")
+
+    # ── 19. Per-stage wire existence: pcs[stage].SI and .SE MUST exist in the
+    #        corresponding stage's PreEco netlist. Catches the PP→Route copy-paste
+    #        bug where studier reuses PP wire names that CTS removed in Route.
+    seen_wire_check = set()
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        netlist = f'{args.ref_dir}/data/PreEco/{stage}.v.gz'
+        if not Path(netlist).exists():
+            continue
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            inst = e.get('instance_name', '?')
+            pcs = e.get('port_connections_per_stage', {}).get(stage, {}) or {}
+            for pin in ('SI', 'SE'):
+                wire = pcs.get(pin)
+                if not isinstance(wire, str) or not wire:
+                    continue
+                # Skip constants and ECO-introduced ports/wires
+                if wire.startswith(("1'b", "0'b", "1'h")) or wire.startswith(('ECO_', 'eco')):
+                    continue
+                key = (stage, wire)
+                if key in seen_wire_check:
+                    continue
+                seen_wire_check.add(key)
+                try:
+                    r = subprocess.run(
+                        f"zgrep -c '\\b{re.escape(wire)}\\b' '{netlist}'",
+                        shell=True, capture_output=True, text=True, timeout=30)
+                    count = int(r.stdout.strip() or '0')
+                except Exception:
+                    count = -1
+                if count == 0:
+                    issues.append(
+                        f"CRITICAL: Per-stage wire missing — DFF {inst} stage={stage} "
+                        f".{pin}={wire!r} does NOT exist in PreEco/{stage}.v.gz "
+                        f"(0 hits). Likely PP→Route copy-paste; studier MUST run "
+                        f"per-stage neighbor_dff lookup independently from each stage's netlist.")
+
+    # ── 20. Consolidation cluster minimum size: when bridge_port is chosen,
+    #        sibling_pin_consolidation.consolidation_target_dffs MUST have ≥10
+    #        DFF instances. Smaller clusters indicate weak scan-en cluster — bridge
+    #        is symbolic only and FM cone matching is unstable.
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'sibling_pin_consolidation':
+                continue
+            tgts = e.get('consolidation_target_dffs') or []
+            if len(tgts) < 10:
+                issues.append(
+                    f"HIGH: Consolidation cluster too small — sibling_pin_consolidation "
+                    f"in {stage} sibling={e.get('sibling_module','?')!r} pin={e.get('pin_name','?')!r} "
+                    f"has only {len(tgts)} DFFs (minimum 10). The picker found a sparse "
+                    f"scan-en cluster — bridge will not be a meaningful scan path. "
+                    f"Either re-pick sibling with stronger cluster, or fall back to "
+                    f"neighbor_dff strategy for this DFF.")
+
+    # ── 21. mode_S_applied consistency: when mode_S_strategy_per_stage names a real
+    #        scan-integration strategy (neighbor_dff or bridge_port) for any P&R
+    #        stage, mode_S_applied MUST be true. Null/false silently disables
+    #        Mode S downstream.
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            strat = e.get('mode_S_strategy_per_stage') or {}
+            real_pp_rt = any(strat.get(s) in ('neighbor_dff', 'bridge_port')
+                             for s in ('PrePlace', 'Route'))
+            if real_pp_rt and e.get('mode_S_applied') is not True:
+                issues.append(
+                    f"HIGH: mode_S_applied missing — DFF {e.get('instance_name','?')} in {stage} "
+                    f"has real Mode-S strategy in PP/Route ({strat}) but mode_S_applied="
+                    f"{e.get('mode_S_applied')!r}. Set mode_S_applied: true so downstream "
+                    f"recognizes the DFF as Mode-S handled.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

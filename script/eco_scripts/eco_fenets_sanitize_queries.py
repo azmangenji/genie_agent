@@ -57,9 +57,26 @@ def main():
         queries = queries['queries']
     kept, fired = sanitize(queries)
     Path(args.queries_out).write_text(json.dumps(kept, indent=2))
+
+    # Marker file proves the script actually ran (not just that queries.json
+    # exists). Validators can check for this marker to enforce the orchestrator
+    # invoked the deterministic sanitize step rather than the agent producing
+    # queries.json by other means.
+    import datetime
+    marker_path = args.queries_out.replace('.json', '_sanitize_marker.txt')
+    Path(marker_path).write_text(
+        f'ECO_FENETS_SANITIZE_RAN\n'
+        f'timestamp:        {datetime.datetime.now().isoformat()}\n'
+        f'queries_in:       {args.queries_in}\n'
+        f'queries_out:      {args.queries_out}\n'
+        f'queries_count:    {len(queries)}\n'
+        f'dup_scope_fixed:  {fired}\n'
+    )
+
     print(f'ECO_RPT_GENERATED: sanitized queries → {args.queries_out}')
     print(f'  in:               {len(queries)}')
     print(f'  dup_scope_fixed:  {fired}')
+    print(f'  marker:           {marker_path}')
     return 0
 
 

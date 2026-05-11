@@ -87,8 +87,17 @@ def find_port_list_close(lines, mod_start):
 
 # ── Pass 2: port_declaration ─────────────────────────────────────────────────
 
-def apply_port_declaration(lines, entry):
-    """Add signal to module port list + direction declaration. Returns (lines, status, reason)."""
+def apply_port_declaration(lines, entry, stage='Synthesize'):
+    """Add signal to module port list + direction declaration. Returns (lines, status, reason).
+
+    GAP-3: stage-aware bridge port plumbing. When the entry is part of a Mode S
+    bridge_port strategy (entry.bridge_port_role in {'sibling_si','sibling_se','sibling_q','host_si','host_se','host_q'}),
+    skip in Synth — Synth uses constant_zero per the Mode S asymmetric pattern,
+    so adding bridge ports there creates dangling/wasted plumbing.
+    """
+    if entry.get('bridge_port_role') and stage == 'Synthesize':
+        return lines, 'SKIPPED', f"GAP-3: bridge_port_role={entry['bridge_port_role']} skipped in Synth (uses constant_zero)"
+
     mod_name = entry.get('module_name', '')
     signal   = entry.get('signal_name', '')
     direction = entry.get('declaration_type', 'input')  # 'input' or 'output'
@@ -153,6 +162,71 @@ def apply_port_declaration(lines, entry):
 
 # ── Pass 3: port_connection ───────────────────────────────────────────────────
 
+def _module_bounds(lines, line_no):
+    """Find (start, end) line indices of the module containing line_no.
+    Returns (None, None) if not inside a module."""
+    start = None
+    for i in range(line_no, -1, -1):
+        if re.match(r'^\s*module\s+', lines[i]):
+            start = i; break
+    if start is None:
+        return None, None
+    depth = 0
+    for j in range(start, len(lines)):
+        if re.match(r'^\s*module\s+', lines[j]):
+            depth += 1
+        elif re.match(r'^\s*endmodule', lines[j]):
+            depth -= 1
+            if depth == 0:
+                return start, j
+    return start, None
+
+
+def _cleanup_orphan_wire_and_add_new_decl(lines, mod_start, mod_end, old_net, new_net):
+    """GAP-2 cleanup: within (mod_start, mod_end] window:
+       (a) remove `wire <old_net> ;` if old_net has zero remaining references in module
+       (b) add `wire <new_net> ;` after the last existing wire decl, if not already declared
+    Returns (lines, removed_orphan: bool, added_decl: bool)."""
+    if mod_start is None or mod_end is None:
+        return lines, False, False
+    body = lines[mod_start:mod_end + 1]
+    # Step (a): remove orphan wire decl for old_net (only when old_net has no remaining refs)
+    removed_orphan = False
+    if old_net:
+        # Count non-decl references to old_net in module body
+        decl_re = re.compile(rf'^\s*wire\s+(?:\[[^\]]+\]\s+)?{re.escape(old_net)}\s*;')
+        ref_re  = re.compile(rf'\b{re.escape(old_net)}\b')
+        ref_count = 0
+        decl_idx_in_body = None
+        for i, ln in enumerate(body):
+            if decl_re.match(ln):
+                decl_idx_in_body = i
+                continue  # decl line itself doesn't count as a reference
+            if ref_re.search(ln):
+                ref_count += 1
+        if decl_idx_in_body is not None and ref_count == 0:
+            del body[decl_idx_in_body]
+            removed_orphan = True
+    # Step (b): add wire decl for new_net if not already declared
+    added_decl = False
+    if new_net:
+        new_decl_re = re.compile(rf'^\s*wire\s+(?:\[[^\]]+\]\s+)?{re.escape(new_net)}\s*;')
+        already_declared = any(new_decl_re.match(ln) for ln in body)
+        if not already_declared:
+            # Insert after the last `wire ... ;` decl in the body, before any non-decl content
+            last_wire_idx = -1
+            for i, ln in enumerate(body):
+                if re.match(r'^\s*wire\s+', ln):
+                    last_wire_idx = i
+            insert_at = last_wire_idx + 1 if last_wire_idx >= 0 else 1  # after `module` line as fallback
+            indent = '  '
+            body.insert(insert_at, f'{indent}wire {new_net} ;\n')
+            added_decl = True
+    if removed_orphan or added_decl:
+        lines[mod_start:mod_end + 1] = body
+    return lines, removed_orphan, added_decl
+
+
 def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bus_bit_index=None):
     """Replace a single net in .port_name({...}) bus concatenation.
     Two modes:
@@ -190,7 +264,16 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
                 in_port = True
             if in_port and re.search(rf'\b{re.escape(old_net)}\b', lines[i]):
                 lines[i] = re.sub(rf'\b{re.escape(old_net)}\b', new_net, lines[i], count=1)
-                return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name} {old_net}→{new_net}'
+                # GAP-2 cleanup: remove orphan UNCONNECTED decl + add new wire decl in same module
+                ms, me = _module_bounds(lines, inst_start)
+                only_unc = old_net.startswith(('UNCONNECTED_', 'SYNOPSYS_UNCONNECTED_'))
+                lines, rm, ad = _cleanup_orphan_wire_and_add_new_decl(
+                    lines, ms, me, old_net if only_unc else None, new_net)
+                tag = []
+                if rm: tag.append('removed_orphan')
+                if ad: tag.append('added_decl')
+                suffix = (' [' + ','.join(tag) + ']') if tag else ''
+                return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name} {old_net}→{new_net}{suffix}'
         return lines, 'SKIPPED', f'bus_rename: {old_net} not found in {inst_name}.{port_name}'
 
     # Mode (b): bus_bit_index → parse {...} concat by position
@@ -272,11 +355,167 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
     if not cand_elems or cand_elems[pos] != new_net:
         return lines, 'SKIPPED', f'bus_rename verify FAILED: position {pos} = {cand_elems[pos] if cand_elems else "?"} (expected {new_net}) — likely matched wrong instance'
     lines[open_line:end_line + 1] = candidate
-    return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name}[{bus_bit_index}] {old_at_pos}→{new_net}'
+    # GAP-2 cleanup: remove orphan UNCONNECTED decl + add new wire decl in same module
+    ms, me = _module_bounds(lines, inst_start)
+    only_unc = isinstance(old_at_pos, str) and old_at_pos.startswith(('UNCONNECTED_', 'SYNOPSYS_UNCONNECTED_'))
+    lines, rm, ad = _cleanup_orphan_wire_and_add_new_decl(
+        lines, ms, me, old_at_pos if only_unc else None, new_net)
+    tag = []
+    if rm: tag.append('removed_orphan')
+    if ad: tag.append('added_decl')
+    suffix = (' [' + ','.join(tag) + ']') if tag else ''
+    return lines, 'APPLIED', f'bus_rename: {inst_name}.{port_name}[{bus_bit_index}] {old_at_pos}→{new_net}{suffix}'
+
+
+def apply_si_consumer_replace(lines, entry, stage='Synthesize'):
+    """GAP-4c: Replace ONE sibling-module DFF's .SI net with the bridge Q_in port,
+    closing the scan chain at the sibling module. Skipped in Synth.
+
+    Entry schema:
+      {
+        "change_type": "si_consumer_replace",
+        "sibling_module": "<module_name>",
+        "consumer_dff_inst": "<dff_instance>",
+        "new_si_net": "ECO_<jira>_Q_in"
+      }
+    """
+    if stage == 'Synthesize':
+        return lines, 'SKIPPED', 'GAP-4c: si_consumer_replace skipped in Synth'
+
+    sib_mod = entry.get('sibling_module', '')
+    inst    = entry.get('consumer_dff_inst', '')
+    new_si  = entry.get('new_si_net', '')
+    if not (sib_mod and inst and new_si):
+        return lines, 'SKIPPED', 'si_consumer_replace entry missing required fields'
+
+    re_candidates = [
+        re.compile(rf'^module\s+{re.escape(sib_mod)}\b'),
+        re.compile(rf'^module\s+{re.escape(sib_mod)}_0\b'),
+        re.compile(rf'^module\s+{re.escape(sib_mod)}_1\b'),
+        re.compile(rf'^module\s+\S+_{re.escape(sib_mod)}\b'),
+    ]
+    mod_start = -1
+    for i, line in enumerate(lines):
+        if any(p.match(line) for p in re_candidates):
+            mod_start = i; break
+    if mod_start < 0:
+        return lines, 'SKIPPED', f'sibling module {sib_mod} not found in stage {stage}'
+    _, mod_end = _module_bounds(lines, mod_start)
+    if mod_end is None:
+        return lines, 'SKIPPED', f'cannot find endmodule for {sib_mod}'
+
+    inst_re = re.compile(rf'\b{re.escape(inst)}\s*\(')
+    inst_idx = -1
+    for i in range(mod_start, mod_end + 1):
+        if inst_re.search(lines[i]):
+            inst_idx = i; break
+    if inst_idx < 0:
+        return lines, 'SKIPPED', f'consumer DFF {inst} not found in {sib_mod}'
+
+    pin_re = re.compile(r'\.\s*SI\s*\(\s*([^)]+?)\s*\)')
+    depth = 0
+    for j in range(inst_idx, mod_end + 1):
+        for ch in lines[j].split('//')[0]:
+            if ch == '(': depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0: break
+        m = pin_re.search(lines[j])
+        if m:
+            old_si = m.group(1).strip()
+            if old_si == new_si:
+                return lines, 'ALREADY_APPLIED', f'{inst}.SI already = {new_si}'
+            lines[j] = pin_re.sub(f'.SI ( {new_si} )', lines[j], count=1)
+            return lines, 'APPLIED', f'si_consumer_replace: {sib_mod}/{inst}.SI {old_si}→{new_si}'
+        if depth == 0 and j > inst_idx:
+            break
+    return lines, 'SKIPPED', f'.SI pin not found on {inst} in {sib_mod}'
+
+
+def apply_sibling_pin_consolidation(lines, entry, stage='Synthesize'):
+    """GAP-4: Rewrite a list of sibling-module DFFs' .SE (or .SI) pin from their
+    current net to the new bridge wire. Module-scope-aware: only rewrites within
+    the named sibling_module body. Skipped in Synth (per GAP-3).
+
+    Entry schema:
+      {
+        "change_type": "sibling_pin_consolidation",
+        "sibling_module": "<module_name>",      # exact or with _0/_1 suffix
+        "pin_name": "SE",                       # or "SI"
+        "new_net": "<bridge_wire_name>",         # e.g. ECO_<jira>_SE_out
+        "consolidation_target_dffs": ["<inst1>", "<inst2>", ...]
+      }
+    """
+    if stage == 'Synthesize':
+        return lines, 'SKIPPED', 'GAP-4: sibling consolidation skipped in Synth'
+
+    sib_mod   = entry.get('sibling_module', '')
+    pin_name  = entry.get('pin_name', '')
+    new_net   = entry.get('new_net', '')
+    targets   = entry.get('consolidation_target_dffs') or []
+    if not (sib_mod and pin_name and new_net and targets):
+        return lines, 'SKIPPED', 'sibling consolidation entry missing required fields'
+
+    # Find sibling module body (any of: exact, _0, _1, prefix-match)
+    re_candidates = [
+        re.compile(rf'^module\s+{re.escape(sib_mod)}\b'),
+        re.compile(rf'^module\s+{re.escape(sib_mod)}_0\b'),
+        re.compile(rf'^module\s+{re.escape(sib_mod)}_1\b'),
+        re.compile(rf'^module\s+\S+_{re.escape(sib_mod)}\b'),
+    ]
+    mod_start = -1
+    for i, line in enumerate(lines):
+        if any(p.match(line) for p in re_candidates):
+            mod_start = i; break
+    if mod_start < 0:
+        return lines, 'SKIPPED', f'sibling module {sib_mod} not found in stage {stage}'
+    _, mod_end = _module_bounds(lines, mod_start)
+    if mod_end is None:
+        return lines, 'SKIPPED', f'cannot find endmodule for {sib_mod}'
+
+    rewired = []
+    not_found = []
+    for inst in targets:
+        # Find the instance line within the module body
+        inst_re = re.compile(rf'\b{re.escape(inst)}\s*\(')
+        inst_idx = -1
+        for i in range(mod_start, mod_end + 1):
+            if inst_re.search(lines[i]):
+                inst_idx = i; break
+        if inst_idx < 0:
+            not_found.append(inst)
+            continue
+        # Walk forward to find the .pin_name(...) line within the instance
+        pin_re = re.compile(rf'\.\s*{re.escape(pin_name)}\s*\(\s*([^)]+?)\s*\)')
+        depth = 0
+        for j in range(inst_idx, mod_end + 1):
+            for ch in lines[j].split('//')[0]:
+                if ch == '(': depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0: break
+            m = pin_re.search(lines[j])
+            if m and m.group(1).strip() != new_net:
+                lines[j] = pin_re.sub(f'.{pin_name} ( {new_net} )', lines[j], count=1)
+                rewired.append(inst)
+                break
+            if depth == 0 and j > inst_idx:
+                break
+    msg_parts = []
+    if rewired:   msg_parts.append(f'rewired={len(rewired)}')
+    if not_found: msg_parts.append(f'not_found={not_found}')
+    status = 'APPLIED' if rewired else 'SKIPPED'
+    return lines, status, f'sibling_pin_consolidation in {sib_mod} (stage={stage}): {", ".join(msg_parts)}'
 
 
 def apply_port_connection(lines, entry, gz_path=None, stage='Synthesize'):
-    """Add .port(net) to submodule instance block, OR perform bus-position rename."""
+    """Add .port(net) to submodule instance block, OR perform bus-position rename.
+
+    GAP-3: bridge_port instance hookups skipped in Synth (Synth uses constant_zero).
+    """
+    if entry.get('bridge_port_role') and stage == 'Synthesize':
+        return lines, 'SKIPPED', f"GAP-3: bridge_port_role={entry['bridge_port_role']} hookup skipped in Synth"
+
     parent_mod  = entry.get('module_name', '') or entry.get('parent_module', '')
     inst_name   = entry.get('instance_name', '') or entry.get('submodule_instance', '')
     port_name   = entry.get('port_name', '')     or entry.get('new_token', '')
@@ -576,13 +815,17 @@ def main():
         ct = e.get('change_type', '')
 
         if ct in ('port_declaration', 'port_promotion'):
-            lines, st, reason = apply_port_declaration(lines, e)
+            lines, st, reason = apply_port_declaration(lines, e, stage=args.stage)
         elif ct == 'port_connection':
             lines, st, reason = apply_port_connection(lines, e, gz_path=posteco, stage=args.stage)
         elif ct == 'rewire':
             lines, st, reason = apply_rewire(lines, e, stage=args.stage)
         elif ct == 'assign':
             lines, st, reason = apply_assign(lines, e)
+        elif ct == 'sibling_pin_consolidation':  # GAP-4
+            lines, st, reason = apply_sibling_pin_consolidation(lines, e, stage=args.stage)
+        elif ct == 'si_consumer_replace':  # GAP-4c
+            lines, st, reason = apply_si_consumer_replace(lines, e, stage=args.stage)
         else:
             continue  # Handled by eco_perl_spec.py (Pass 1) or other pass
 

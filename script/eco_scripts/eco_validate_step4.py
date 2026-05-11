@@ -97,6 +97,40 @@ def main():
         if applied.get(stage) and not Path(bak).exists():
             issues.append(f"MEDIUM: Backup {stage}.v.gz.bak_{tag}_round{args.round} not found — revert protection missing")
 
+    # ── 7. GAP-2 enforcement: bus_rename APPLIED entries should carry cleanup
+    # tags ([removed_orphan] / [added_decl]) when the old net was an UNCONNECTED.
+    # The applier prints these in the status `reason` string — verify presence.
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        for e in applied.get(stage, []):
+            if e.get('status') != 'APPLIED':
+                continue
+            reason = e.get('reason', '')
+            if 'bus_rename' not in reason or 'UNCONNECTED' not in reason:
+                continue
+            if '[' not in reason or ('removed_orphan' not in reason and 'added_decl' not in reason):
+                inst = e.get('instance_name') or e.get('cell_name') or '?'
+                issues.append(
+                    f"HIGH: GAP-2 — {stage} bus_rename on {inst} renamed an UNCONNECTED net but "
+                    f"reason text shows no [removed_orphan]/[added_decl] cleanup tag. "
+                    f"Orphan wire decl may still exist or new wire missing explicit decl. reason={reason!r}")
+
+    # ── 8. GAP-3 enforcement: bridge_port_role entries MUST be SKIPPED in Synth.
+    # Studier marks bridge plumbing entries with bridge_port_role; applier
+    # skips them when stage==Synthesize. Audit by cross-referencing study JSON.
+    bridge_role_insts = set()
+    for s in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(s, []):
+            if e.get('bridge_port_role'):
+                key = e.get('instance_name') or e.get('signal_name') or e.get('cell_name', '')
+                if key:
+                    bridge_role_insts.add(key)
+    for e in applied.get('Synthesize', []):
+        key = e.get('instance_name') or e.get('signal_name') or e.get('cell_name', '')
+        if key in bridge_role_insts and e.get('status') in ('APPLIED', 'INSERTED'):
+            issues.append(
+                f"HIGH: GAP-3 — Synthesize entry {key!r} has bridge_port_role in study but was "
+                f"APPLIED/INSERTED in Synth (expected SKIPPED — Synth uses constant_zero, no bridge plumbing).")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': tag, 'round': args.round, 'passed': passed, 'issues': issues}

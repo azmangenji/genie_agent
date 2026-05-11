@@ -45,6 +45,8 @@ ABSTRACT_GATE_FUNCTIONS = {
     "NOR4":  {"ZN": "~(A1 | A2 | A3 | A4)"},
     "XOR2":  {"Z":  "A1 ^ A2"},
     "XNOR2": {"ZN": "~(A1 ^ A2)"},
+    "INR2":  {"ZN": "A1 & ~B1"},
+    "INR3":  {"ZN": "A1 & ~B1 & ~B2"},
     "AOI21": {"ZN": "~((A1 & A2) | B)"},
     "AOI22": {"ZN": "~((A1 & A2) | (B1 & B2))"},
     "OAI21": {"ZN": "~((A1 | A2) & B)"},

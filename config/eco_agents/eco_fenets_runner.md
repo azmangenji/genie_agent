@@ -81,6 +81,10 @@ for idx, c in enumerate(rtl_diff["changes"]):
         if sm and port and bbi is not None:
             nets_to_query.append({"net_path": f"{scope}/{sm}/{port}[{bbi}]", "source": f"changes[{idx}].mode_I_candidate"})
     # Cat 7: new_port hierarchical hookup — TODO if rtl_diff_analyzer emits hookup hints
+    # Cat 8: Mode-S anchor pins — when a new_logic_dff carries `mode_s_anchor`
+    #        with sibling_module + anchor_dff, query SI/SE/Q paths of that
+    #        anchor DFF. Studier consumes responses to pick stage-stable
+    #        bridge source/consumer wires (avoid guessing).
 # Deduplicate
 seen = set(); valid_nets = []
 for n in nets_to_query:
@@ -92,31 +96,25 @@ for n in nets_to_query:
 
 **MANDATORY: derive the query list deterministically via script — do NOT hand-pick.**
 
-```bash
-cd <BASE_DIR>
-python3 script/eco_scripts/eco_fenets_derive_queries.py \
-    --rtl-diff data/<TAG>_eco_rtl_diff.json \
-    --tile     <TILE> \
-    --output   data/<TAG>_eco_fenets_queries_raw.json
-```
-
-You may ADD queries to `_queries_raw.json` (with explicit `category: 99` and `source: "agent_added: <reason>"`), but NEVER remove a script-derived entry. The orchestrator's Step 2 checkpoint compares the derived count against the rendered query list — silent drops fail the checkpoint.
-
-### STEP A1 — Sanitize the query plan before submission (MANDATORY)
-
-Run the duplicate-scope collapser on the derived list — this single rule is the only one delegated to a script. The other quality issues are agent responsibilities (rules below).
-
+**MANDATORY FIRST ACTION — invoke the deterministic sanitize script:**
 ```bash
 python3 script/eco_scripts/eco_fenets_sanitize_queries.py \
-    --queries-in   data/<TAG>_eco_fenets_queries_raw.json \
-    --queries-out  data/<TAG>_eco_fenets_queries.json
+    --queries-in  data/<TAG>_eco_fenets_queries_raw.json \
+    --queries-out data/<TAG>_eco_fenets_queries.json
 ```
+The script writes `queries.json` plus a sibling marker file `queries_sanitize_marker.txt` proving it ran. Step 2 validator FAILs if the marker is missing.
 
-**Agent quality rules — apply BEFORE writing `_queries_raw.json`:**
+**FROZEN — after sanitize, `queries.json` is your INPUT. DO NOT regenerate, edit, or rewrite it.** Submit each `net_path` to FM `find_equivalent_nets` exactly as written.
 
-1. **Skip `UNCONNECTED_<digits>` placeholders.** They are Verilog markers for undriven nets, never real signals — every query against one returns FM-036. The chain-input or Mode-I source must be traced to the real RTL signal first; if you cannot, drop the query and flag the change for studier-side resolution.
-2. **Validate every leaf signal name against PreEco SynRtl before queueing.** A quick `grep -wRn "<signal>" <REF_DIR>/data/PreEco/SynRtl/` is enough — if the bare name doesn't appear anywhere in the RTL, you hallucinated the port (e.g. invented a `BEQ_ARB_` prefix). Drop it; do not waste FM cycles on retries.
-3. **Expand bus signals into per-bit queries.** When a chain input references `Sig[N]` or the change carries a `bus_bit_index`, queue one query per `<scope>/<sig>_<N>_` instead of the bare bus name. FM resolves bus bits, not the bare base.
+If FM returns FM-036 on entries:
+- **DO NOT manually edit `queries.json` to "fix" paths.** This bypasses the deterministic sanitize step and silently drops queries.
+- Use FM-side scope adjustments via the retry rpts (let FM handle scope reconciliation through its built-in fallbacks).
+- If retries exhaust, write the failing entries to `data/<TAG>_eco_fenets_unresolved.json` for escalation.
+
+If you discover additional queries you believe should be added (e.g. agent-side analysis surfaces a signal not in the canonical list):
+- **DO NOT add to `queries.json`.** Append to `data/<TAG>_eco_fenets_agent_added.json` with explicit `category: 99` + `source: "agent_added: <reason>"`. Submit those separately.
+
+Step 2 validator (`eco_validate_step2.py`) compares the SANITIZED queries.json against the deriver's raw output and FAILs if any category lost entries. Manual queries.json edits will be detected and the flow will block.
 
 ### STEP A2 — Document DFF insertions that bypass FM
 
@@ -331,6 +329,18 @@ ls <AI_ECO_FLOW_DIR>/<fenets_tag>_find_equivalent_nets_raw.rpt
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
 ```
 If any is missing — copy before exiting.
+
+## STEP F — Run Step 2 validator (BLOCKING handoff to Step 3)
+
+```bash
+python3 script/eco_scripts/eco_validate_step2.py \
+    --queries     data/<TAG>_eco_fenets_queries.json \
+    --raw-rpts    data/<FENETS_TAG>_find_equivalent_nets_raw*.rpt \
+    --rename-map  data/<TAG>_eco_fenets_rename_map.json \
+    --output      data/<TAG>_eco_validate_step2.json
+```
+
+Exit 1 → block Step 3 handoff. Validator confirms every Cat 8 Mode-S anchor query was actually submitted to FM and returned equivalence data (not FM-036 / Unknown name). On fail, re-derive queries with `mode_s_anchor` populated and re-run fenets.
 
 ---
 

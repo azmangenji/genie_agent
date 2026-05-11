@@ -367,6 +367,40 @@ def main():
                 f"changes[{idx}] target={tgt}: requires_scan_stitching=false but "
                 f"`scan_stitching_skipped_reason` MISSING — opt-out must cite why "
                 f"(e.g. 'wrapper-only clock {c.get('dff_clock')!r} never carries scan_enable')")
+        elif rss is True:
+            anchor = c.get('mode_s_anchor') or {}
+            missing_anchor = [k for k in ('sibling_module', 'anchor_dff', 'anchor_scope')
+                              if not anchor.get(k)]
+            if missing_anchor:
+                new_logic_field_issues.append(
+                    f"changes[{idx}] target={tgt}: requires_scan_stitching=true but "
+                    f"`mode_s_anchor` MISSING fields {missing_anchor}. Step 2 Cat 8 "
+                    f"anchor query depends on this — without it studier has no equivalence "
+                    f"data to pick stage-stable bridge source/consumer wires.")
+            else:
+                # Check 12 — SIBLING-IS-SELF: sibling_module MUST be a peer module
+                # different from the host. Picking the host module as its own sibling
+                # is a degenerate self-loop that defeats the bridge_port strategy.
+                sib  = (anchor.get('sibling_module') or '').strip()
+                host = (c.get('module_name') or '').strip()
+                # Also derive host from scope's last segment as a fallback
+                if not host:
+                    scope = (c.get('scope') or c.get('instance_scope') or '').strip()
+                    if scope:
+                        host = scope.split('/')[-1]
+                # Compare with stripped trailing _0/_1 (DFT suffix variants)
+                def _norm(name):
+                    return re.sub(r'_\d+$', '', name)
+                if sib and host and (_norm(sib) == _norm(host) or
+                                     _norm(sib).endswith('_'+_norm(host)) or
+                                     _norm(host).endswith('_'+_norm(sib))):
+                    new_logic_field_issues.append(
+                        f"changes[{idx}] target={tgt} [FAIL/12-SIBLING-IS-SELF]: "
+                        f"mode_s_anchor.sibling_module={sib!r} matches the host module "
+                        f"{host!r}. Bridge_port requires a PEER module under the same "
+                        f"parent — using host as its own sibling is a degenerate self-loop "
+                        f"that produces no real cross-module bridging. Pick a different "
+                        f"peer module under the host's parent that contains scan-chain DFFs.")
         # Heuristic: clocks that are NOT wrapper-only (wrp_clk_*) propagate scan
         # enable and so require Mode S. Force the flag to true unless the agent
         # documented an exception.
@@ -510,6 +544,228 @@ def main():
         if issues:
             overall_pass = False
 
+    # Check 9: Chain Compactness (GAP-8) — flag d_input_gate_chain that's
+    # significantly larger than achievable via boolean simplification (De Morgan
+    # transform, bus-equality folding, existing-inverted-signal reuse).
+    # Engineer reference for 9868: 4-cell chain (INV+XOR2+OR4+NR2) vs our
+    # 7-cell chain (NOR3+INV+AN4+OR2+INV+INV+AN4) for same boolean function.
+    # Larger chain = larger cone for FM = higher chance of cone divergence
+    # across PP/Route stages. WARN issues do not block; FAIL only on grossly
+    # oversized chains.
+    chain_compact_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        chain = c.get('d_input_gate_chain') or []
+        if len(chain) < 4:
+            continue
+        tgt = c.get('target_register') or '?'
+
+        # 9a — De Morgan opportunity: ≥2 INV cells whose outputs feed into a
+        # final AND gate. Suggest collapsing to OR-of-positive + NOR transformation.
+        inv_cells = [g for g in chain if (g.get('gate_function') or '').upper() == 'INV']
+        final_gate = chain[-1] if chain else {}
+        final_fn = (final_gate.get('gate_function') or '').upper()
+        if len(inv_cells) >= 2 and final_fn.startswith('AN'):
+            inv_outputs = {g.get('output_net') for g in inv_cells}
+            and_inputs = set(final_gate.get('inputs', []))
+            consumed = inv_outputs & and_inputs
+            if len(consumed) >= 2:
+                saved = len(consumed) - 1  # OR-N + NR2 replaces N INVs feeding ANDN
+                chain_compact_issues.append(
+                    f"changes[{idx}] target={tgt} [WARN/9a-DEMORGAN]: "
+                    f"{len(consumed)} INV cells feed final {final_fn}. "
+                    f"De Morgan transform → 1 OR{len(consumed)+1} + 1 NR2 "
+                    f"saves ~{saved} cells. Engineer pattern preferred for FM cone simplicity.")
+
+        # 9b — Bus equality fold: NOR3 + INV + AND4 + OR2 sequence likely came
+        # from `(B==K1) | (B==K2)` where K1=000, K2=011. If K1, K2 differ in
+        # ≤2 bits, can fold to XOR2 + OR2 + NR2 (smaller cone).
+        nor_cells = [g for g in chain if (g.get('gate_function') or '').upper().startswith(('NOR', 'NR'))]
+        and_after_inv = False
+        for i, g in enumerate(chain[:-1]):
+            if (g.get('gate_function') or '').upper() == 'INV':
+                next_g = chain[i+1]
+                if (next_g.get('gate_function') or '').upper().startswith('AN'):
+                    and_after_inv = True
+                    break
+        or_in_chain = any((g.get('gate_function') or '').upper().startswith(('OR', 'OR2', 'OR3', 'OR4'))
+                          for g in chain)
+        if nor_cells and and_after_inv and or_in_chain:
+            chain_compact_issues.append(
+                f"changes[{idx}] target={tgt} [WARN/9b-BUS-FOLD]: "
+                f"chain has NOR+INV+AND+OR sequence likely from `(bus==K1) | (bus==K2)`. "
+                f"If K1,K2 differ by 1-2 bits → XOR2 fold saves cells.")
+
+        # 9c — Existing inverted signal reuse: each INV cell in the chain whose
+        # input is an RTL-level signal (not n_eco_*) is a candidate. The studier
+        # should look for an EXISTING wire in PreEco that already produces the
+        # inverted form — and use that wire per-stage instead of adding a new
+        # INV cell. Each new INV widens the FM cone walk.
+        # Per-INV: WARN. Aggregate: FAIL when ≥2 NEW INVs without reuse_existing_wire.
+        unreused_invs = []
+        for inv in inv_cells:
+            inputs = inv.get('inputs') or []
+            if not inputs:
+                continue
+            target_signal = inputs[0]
+            # Skip if input is already an internal eco net or constant
+            if target_signal.startswith(('n_eco_', "1'b", "1'b1", "1'b0")):
+                continue
+            # Skip if studier already marked this INV as reusing existing wire
+            if inv.get('reuse_existing_wire') is True:
+                continue
+            unreused_invs.append((inv.get('seq', '?'), target_signal))
+            chain_compact_issues.append(
+                f"changes[{idx}] target={tgt} [WARN/9c-REUSE-INV] "
+                f"seq={inv.get('seq','?')}: INV({target_signal}) is a NEW cell. "
+                f"Studier should grep PreEco for an existing wire = ~{target_signal} "
+                f"(per-stage rename like FxPlace_ZINV_*) and reuse it instead. "
+                f"Reduces FM cone divergence risk across PP/Route.")
+        if len(unreused_invs) >= 2:
+            chain_compact_issues.append(
+                f"changes[{idx}] target={tgt} [FAIL/9c-MULTI-INV-NO-REUSE]: "
+                f"{len(unreused_invs)} new INV cells without `reuse_existing_wire`: "
+                f"{[f'{s}=INV({sig})' for s, sig in unreused_invs]}. "
+                f"≥2 unreused INVs → high cone-divergence risk across PP/Route. "
+                f"Studier MUST search PreEco for existing inverted wires and emit "
+                f"`reuse_existing_wire: true` + `inputs_per_stage` on each.")
+            overall_pass = False
+
+        # Check 9c-v2: per-stage reuse verification — if reuse_existing_wire=true is
+        # claimed, BOTH PrePlace AND Route must have use_existing_wire=true in
+        # inputs_per_stage. Synth-only reuse doesn't count (Synth has no CTS-renamed
+        # wires; the cell still needs to be inserted, and PP/Route are where cone
+        # divergence happens). Catches the bypass pattern where the agent sets
+        # reuse=true on a flag basis without backing per-stage data.
+        for inv in inv_cells:
+            if inv.get('reuse_existing_wire') is not True:
+                continue
+            ips = inv.get('inputs_per_stage') or {}
+            pp_ok = (ips.get('PrePlace') or {}).get('use_existing_wire') is True
+            rt_ok = (ips.get('Route') or {}).get('use_existing_wire') is True
+            if not (pp_ok and rt_ok):
+                chain_compact_issues.append(
+                    f"changes[{idx}] target={tgt} [FAIL/9c-FAKE-REUSE] "
+                    f"seq={inv.get('seq','?')}: reuse_existing_wire=true claimed but "
+                    f"inputs_per_stage shows PP.use_existing_wire={pp_ok}, "
+                    f"Route.use_existing_wire={rt_ok}. Reuse claim must be backed "
+                    f"by existing wires in BOTH PP AND Route (the stages where "
+                    f"FM cone divergence happens). Synth-only reuse is NOT enough.")
+                overall_pass = False
+
+        # Check 11 — DEMORGAN-MISSED: structural detection of the forbidden pattern
+        # "≥2 INV cells whose outputs feed a common ANDN gate". Independent of any
+        # reuse_existing_wire flag. Catches "literal text-to-cell" decomposition
+        # that should have been rewritten via De Morgan to NOR-N + outer gate.
+        # Triggers regardless of whether reuse claims are populated, because the
+        # topology itself is FM-risky.
+        and_consumers = {}  # output_net of INV → list of (downstream_gate, seq) that consume it
+        for inv in inv_cells:
+            ip_net = inv.get('output_net')
+            if not ip_net:
+                continue
+            for g in chain:
+                if g is inv:
+                    continue
+                gf = (g.get('gate_function') or '').upper()
+                if not gf.startswith(('AN', 'AND')):
+                    continue
+                if ip_net in (g.get('inputs') or []):
+                    and_consumers.setdefault(g.get('seq', '?'), []).append(inv.get('seq', '?'))
+        for and_seq, inv_seqs in and_consumers.items():
+            if len(inv_seqs) >= 2:
+                chain_compact_issues.append(
+                    f"changes[{idx}] target={tgt} [FAIL/11-DEMORGAN-MISSED]: "
+                    f"AND gate seq={and_seq} consumes outputs of {len(inv_seqs)} INV cells "
+                    f"({inv_seqs}). FORBIDDEN pattern — De Morgan transform required: "
+                    f"collect the negated terms into a single NOR-N gate instead of "
+                    f"emitting per-term INV cells feeding a common AND. NOR absorbs "
+                    f"negation in its truth table; per-term INVs widen FM cone walks "
+                    f"through CTS-rebalanced infrastructure → cone divergence on "
+                    f"PP/Route stages.")
+                overall_pass = False
+
+        # 9d — Excessive cell count: if cells > 1.2× distinct RTL-input count
+        # (heuristic for "AND-of-positive-terms" verbosity), flag as FAIL.
+        # Engineer's reference chain for 9868: 4 cells for 5 inputs (0.8× ratio).
+        # Threshold of 1.2× catches our verbose 7-cell chain (1.4× ratio) while
+        # tolerating small overhead (e.g. 5 cells for 4 inputs).
+        distinct_inputs = set()
+        for g in chain:
+            for inp in (g.get('inputs') or []):
+                if inp and not inp.startswith('n_eco_') and not inp.startswith("1'b"):
+                    distinct_inputs.add(inp)
+        if distinct_inputs:
+            # Rule: chain cell count must not EXCEED distinct input count.
+            # Engineer 9868: 4 cells for 6 inputs (well under). Our verbose
+            # chain: 7 cells for 6 inputs (exceeds). Each gate combines ≥2
+            # signals into 1, so a well-decomposed chain has cells ≤ inputs - 1.
+            # Using just `inputs` as the threshold gives a small safety margin.
+            expected_max = max(4, len(distinct_inputs))
+            if len(chain) > expected_max:
+                chain_compact_issues.append(
+                    f"changes[{idx}] target={tgt} [FAIL/9d-OVERSIZED]: "
+                    f"chain has {len(chain)} cells for {len(distinct_inputs)} distinct RTL inputs "
+                    f"({sorted(distinct_inputs)[:5]}...). "
+                    f"Expected ≤{expected_max} cells. Mandatory simplification pass needed "
+                    f"(De Morgan + bus-fold + compound-cell preference). "
+                    f"See rtl_diff_analyzer.md §E2.5.")
+                overall_pass = False
+
+    # Check 10: Reset signal must be present in chain when reset_baked_in_d_input=True.
+    # When the DFF has no RN/R reset pin and reset is sync, the reset must be baked
+    # into the D-input combinational chain. If the reset signal is missing from
+    # both d_input_expected_function AND every chain entry's inputs, the chain is
+    # functionally INCOMPLETE — DFF will not zero out during reset → FM Synth-vs-RTL
+    # mismatch on the new DFF.
+    reset_inclusion_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        if not c.get('reset_baked_in_d_input'):
+            continue
+        rst = c.get('reset_signal') or ''
+        if not rst:
+            continue
+        tgt = c.get('target_register') or '?'
+        chain = c.get('d_input_gate_chain') or []
+        expr = c.get('d_input_expected_function') or ''
+        # Reset name may appear as IReset, IReset_, or with bit-select; bare-word search.
+        rst_word_re = re.compile(rf'\b{re.escape(rst)}\b')
+        in_expr  = bool(rst_word_re.search(expr))
+        in_chain = False
+        for g in chain:
+            for inp in (g.get('inputs') or []):
+                if isinstance(inp, str) and rst_word_re.search(inp):
+                    in_chain = True; break
+            if in_chain: break
+            # Also accept reset reuse via reuse_existing_wire pointing to the reset register's Q
+            ips = g.get('inputs_per_stage') or {}
+            for stg_wire in ips.values():
+                if isinstance(stg_wire, str) and rst_word_re.search(stg_wire):
+                    in_chain = True; break
+            if in_chain: break
+        if not in_expr and not in_chain:
+            reset_inclusion_issues.append(
+                f"changes[{idx}] target={tgt} [FAIL/10-RESET-MISSING]: "
+                f"reset_baked_in_d_input=True with reset_signal={rst!r} but the reset name "
+                f"appears in NEITHER d_input_expected_function NOR any chain entry's inputs. "
+                f"DFF has no reset pin → reset MUST be baked into D as `~{rst} & <data_logic>`. "
+                f"FM Synth-vs-RTL will fail (D=function-of-inputs in netlist vs D=0 during reset in RTL).")
+            overall_pass = False
+        elif not in_expr:
+            reset_inclusion_issues.append(
+                f"changes[{idx}] target={tgt} [FAIL/10-RESET-MISSING-EXPR]: "
+                f"reset_signal={rst!r} appears in chain but NOT in d_input_expected_function. "
+                f"Chain-equivalence check (Gap E) will pass against an incomplete reference → "
+                f"silently masks reset-handling bugs. Update d_input_expected_function to include `~{rst}`.")
+            overall_pass = False
+        elif not in_chain:
+            reset_inclusion_issues.append(
+                f"changes[{idx}] target={tgt} [FAIL/10-RESET-MISSING-CHAIN]: "
+                f"d_input_expected_function references {rst!r} but no chain entry consumes it. "
+                f"Chain is functionally incomplete vs declared expected_function.")
+            overall_pass = False
+
     out = {
         'rtl_diff': args.rtl_diff,
         'wire_swap_count':       len(results),
@@ -535,6 +791,10 @@ def main():
         'wire_swap_field_issues':        wire_swap_field_issues,
         'unconnected_var_issue_count':   len(unconnected_var_issues),
         'unconnected_var_issues':        unconnected_var_issues,
+        'chain_compactness_issue_count': len(chain_compact_issues),
+        'chain_compactness_issues':      chain_compact_issues,
+        'reset_inclusion_issue_count':   len(reset_inclusion_issues),
+        'reset_inclusion_issues':        reset_inclusion_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -543,7 +803,7 @@ def main():
 
     print('ECO_SCRIPT_LAUNCHED: eco_validate_step1.py')
     print(f'  rtl_diff: {args.rtl_diff}')
-    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}  new_logic_field_issues: {len(new_logic_field_issues)}  mode_i_field_issues: {len(mode_i_field_issues)}  scope_field_issues: {len(scope_field_issues)}  wire_swap_field_issues: {len(wire_swap_field_issues)}  unconnected_var_issues: {len(unconnected_var_issues)}')
+    print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}  new_logic_field_issues: {len(new_logic_field_issues)}  mode_i_field_issues: {len(mode_i_field_issues)}  scope_field_issues: {len(scope_field_issues)}  wire_swap_field_issues: {len(wire_swap_field_issues)}  unconnected_var_issues: {len(unconnected_var_issues)}  chain_compactness_issues: {len(chain_compact_issues)}  reset_inclusion_issues: {len(reset_inclusion_issues)}')
     print(f'  overall:  {"PASS" if overall_pass else "FAIL"}')
     for p in phantom:
         print(f'    - {p}')
@@ -566,6 +826,10 @@ def main():
     for p in wire_swap_field_issues:
         print(f'    - {p}')
     for p in unconnected_var_issues:
+        print(f'    - {p}')
+    for p in chain_compact_issues:
+        print(f'    - {p}')
+    for p in reset_inclusion_issues:
         print(f'    - {p}')
     for r in results:
         if r['issues']:

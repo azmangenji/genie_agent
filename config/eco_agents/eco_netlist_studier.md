@@ -194,27 +194,9 @@ eco_perl_spec reads `unconnected_rewires`: declares `wire <named_net>;` once, ap
 
 **PARENT SCOPE (DEFAULT):** Rename UNCONNECTED_* at the module scope where the ECO gate is inserted. Inventing fresh names inside the child module breaks FM's clock/cone analysis.
 
-**EXCEPTION — child output port internally undriven (Mode I wire-up — MANDATORY auto-detect):** If the renamed bus is `output` of the child AND the matching bit at any child sub-instance is also `UNCONNECTED_*`, the parent rename leaves the port pin undriven → FM `X` → DFF0X. **You MUST detect this in the studier — DO NOT defer to FM analyzer.** Algorithm:
+**EXCEPTION — child output port internally undriven (Mode I wire-up — MANDATORY auto-detect):** If the renamed bus is `output` of the child AND the matching bit at any child sub-instance is also `UNCONNECTED_*`, the parent rename leaves the port pin undriven → FM `X` → DFF0X. **You MUST detect this in the studier — DO NOT defer to FM analyzer.**
 
-```python
-# After emitting a parent-side bus_rename port_connection (UNCONNECTED → n_eco_*):
-def detect_mode_i_internal_gap(stage_text, child_module, port_name, bus_bit):
-    # Find the child module body
-    m = re.search(rf'^module\s+{re.escape(child_module)}\b.*?^endmodule', stage_text, re.MULTILINE | re.DOTALL)
-    if not m: return None
-    body = m.group(0)
-    # Find any submodule instance whose output bus has UNCONNECTED_<N> at bus_bit index
-    # (this is the internal driver of port_name[bus_bit]).
-    for inst_m in re.finditer(rf'\.\s*\w*UmcCfgEco\w*\s*\(\s*\{{([^{{}}]+)\}}\s*\)', body):
-        elems = [e.strip() for e in inst_m.group(1).split(',')]
-        width = len(elems)
-        pos = width - 1 - bus_bit  # MSB-first
-        if 0 <= pos < width and re.match(r'(SYNOPSYS_)?UNCONNECTED_\d+$', elems[pos]):
-            return elems[pos]  # this is the per-stage UNCONNECTED to rename
-    return None
-```
-
-When detected → emit a SECOND `port_connection` entry inside the child module, with:
+Algorithm: walk the child module body, find any submodule instance whose output bus has `UNCONNECTED_<N>` at the same `bus_bit_index` (MSB-first parse of `{}` concat). If found, emit a SECOND `port_connection` entry inside the child module, with:
 - `module_name`: child module (e.g. `ddrss_umccmd_t_umcregcmd`)
 - `instance_name`: the sub-instance whose bus output is undriven (e.g. the REGCMD internal block instance)
 - `port_name`: the bus port name on the sub-instance
@@ -266,6 +248,36 @@ For each gate in `d_input_gate_chain` (d001→d00N), create a skeleton `new_logi
 
 After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>"`. If `d_input_decompose_failed: true`: set `d_input_net = "SKIPPED_DECOMPOSE_FAILED"`, `confirmed: false`.
 
+**Existing-signal reuse for INV gates (procedure).** For every `gate_function: "INV"` entry whose input is an RTL-level signal (not a `n_eco_*` intermediate):
+
+1. **Grep PreEco for existing INV cells driving an inverted form of the input signal:**
+   ```bash
+   for STAGE in Synthesize PrePlace Route; do
+     zgrep -B1 -A1 "INV[A-Z0-9]* \w\+ ( .I ( <input_signal> )" \
+         <REF_DIR>/data/PreEco/$STAGE.v.gz | head -5
+   done
+   ```
+   Match cells where `.I` is the target signal — capture the `.ZN` net name per stage.
+
+2. **Verify stage-stability:** if all 3 stages return a `.ZN` wire whose name is identical OR whose per-stage variants are listed in `data/<TAG>_eco_fenets_rename_map.json` as equivalent → REUSE.
+
+3. **Reject reuse and keep new INV cell** if: (a) PreEco grep returns no hit in any stage, (b) the discovered wire is scan-test-only (`test_so*`, `dftopt_mbit*`), (c) per-stage wires diverge and the rename map has no entry binding them.
+
+4. When reusing, mark the chain entry:
+```json
+{
+  "seq": "d005",
+  "gate_function": "INV",
+  "reuse_existing_wire": true,
+  "inputs_per_stage": {
+    "Synthesize": "<wire_synth_or_inv_self>",
+    "PrePlace":   "<wire_pp>",
+    "Route":      "<wire_route>"
+  }
+}
+```
+The applier skips inserting the INV cell and substitutes the per-stage wire wherever any downstream gate consumed `n_eco_<jira>_d<seq>`. This avoids widening the FM cone with a new INV.
+
 **GAP-14 — Wire declaration flag:** For each new gate whose output net does not exist in PreEco (`grep -cw "<output_net>" /tmp/eco_study_<TAG>_Synthesize.v` = 0), set `needs_explicit_wire_decl: true`. **Output net ONLY — never set for input nets.**
 
 ### 0b-MODE-S — Scan stitching for new ECO DFFs in P&R (ASYMMETRIC, per-stage)
@@ -299,61 +311,108 @@ A new DFF inserted in a clock domain that reaches the scan chain (anything reach
 
 This makes per-stage decisions explicit and traceable.
 
+**Synth ALWAYS uses `constant_zero`.** When emitting bridge port/connection entries (port_declaration, port_connection on the bridge ports), tag each with `"bridge_port_role": "<sibling_si|sibling_se|sibling_q|host_si|host_se|host_q>"`. The applier skips tagged entries in Synth so Synth doesn't get wasted bridge plumbing.
+
+**Bridge source wire — verify stage-stable parent driver.** Before picking SI/SE bridge buffer source wires, verify each wire's PARENT-LEVEL driver is the SAME logical net in both PP and Route. Procedure:
+
+1. Read `data/<TAG>_eco_fenets_rename_map.json` produced by Step 2.
+2. Look up the candidate bridge source wire (e.g. picked by `eco_pick_bridge_dffs.py`) using its anchor key — `<sibling_scope>/<anchor_dff>/SE` for SE pin, `<sibling_scope>/<anchor_dff>/SI` for SI pin.
+3. Each map entry has fields `Synthesize`, `PrePlace`, `Route`. Compare:
+   - PP-resolved net == Route-resolved net → `true` (stage-stable; safe to use as bridge source)
+   - PP-resolved net != Route-resolved net → `false` (CTS-renamed; would cause cone divergence — pick a different anchor or reject this DFF)
+4. Apply both checks (SI and SE). Record on the new_logic_dff study entry:
+```json
+"bridge_source_pp_route_match": { "si": true, "se": true }
+```
+Step 3 validator FAILs handoff if either is missing/false.
+
+**Bridge Q closure.** When `bridge_port` strategy is chosen, the `ECO_<jira>_Q_in` port must be consumed at the sibling module's scan chain. Emit ONE `change_type: "si_consumer_replace"` entry:
+```json
+{
+  "change_type": "si_consumer_replace",
+  "sibling_module": "<module_name>",
+  "consumer_dff_inst": "<existing_dff>",
+  "new_si_net": "ECO_<jira>_Q_in"
+}
+```
+Selection heuristic: pick a DFF already in the SE-consolidation list (its original `.SI` becomes redundant after consolidation). The applier rewrites `.SI` from old net to bridge Q_in. Skipped in Synth.
+
+**MANDATORY structural verification.** `consumer_dff_inst` MUST be an instance that EXISTS inside `sibling_module`'s body. Verify with a module-scoped grep before emitting:
+```bash
+zcat <REF_DIR>/data/PreEco/PrePlace.v.gz | \
+  awk '/^module .*<sibling_module>/,/^endmodule/' | \
+  grep -c "<consumer_dff_inst>"
+# Must be ≥ 1, otherwise the consumer DFF lives elsewhere — applier will fail to rewire.
+```
+Picking a consumer that lives outside the named sibling produces a silent applier no-op and downstream FM cone error.
+
+**Deterministic bridge picker (MANDATORY when `bridge_port` chosen).** Run the helper to get the consolidation list, anchor DFF, Q-consumer, and bridge source wires — no manual selection:
+```bash
+python3 script/eco_scripts/eco_pick_bridge_dffs.py \
+    --netlist     <REF_DIR>/data/PreEco/PrePlace.v.gz \
+    --sibling-mod <module_name_from_mode_s_anchor.sibling_module> \
+    --output      data/<TAG>_eco_bridge_pick_<dff>.json
+```
+Output JSON populates the entries below directly: `consolidation_target_dffs`, `consumer_dff_inst`, candidate bridge source wires (cross-check with fenets rename map for stage-stability before assigning).
+
+**Sibling SE-pin consolidation.** When `bridge_port` strategy is chosen for any stage, also emit ONE `change_type: "sibling_pin_consolidation"` entry per pin (SE and SI as needed):
+```json
+{
+  "change_type": "sibling_pin_consolidation",
+  "sibling_module": "<module_name>",
+  "pin_name": "SE",
+  "new_net": "ECO_<jira>_SE_out",
+  "consolidation_target_dffs": ["<inst1>", "<inst2>", ...]
+}
+```
+Selection heuristic: pick N existing DFFs in the sibling module whose current `.SE` net is the same shared scan-en wire (most-common `.SE` net wins). The applier rewrites those DFFs' `.SE` to the new bridge wire. Module-scope-aware — won't affect other modules with same DFF instance names. Skipped in Synth.
+
+**MANDATORY minimum cluster size.** `consolidation_target_dffs` MUST contain at least 10 DFF instances. Smaller lists indicate the picker found a weak/sparse scan-en cluster — the bridge will not be a meaningful scan path participant and FM cone matching is unstable. If `eco_pick_bridge_dffs.py` returns fewer than 10, set `requires_scan_stitching: false` (or fall back to `neighbor_dff` strategy) — do NOT emit a 1-DFF "consolidation" that exists only on paper.
+
+**Real bridge stitching umbrella.** A complete `bridge_port` Mode-S strategy emits the following set of entries per new ECO DFF (engineer pattern). All carry `bridge_port_role` so the applier auto-skips them in Synth:
+
+| Entry | change_type | bridge_port_role |
+|---|---|---|
+| Sibling-module SI/SE/Q ports | `port_declaration` | `sibling_si`, `sibling_se`, `sibling_q` |
+| Host-module SI/SE/Q ports | `port_declaration` | `host_si`, `host_se`, `host_q` |
+| Parent-level bridge wires | `assign` | (no role tag — same in all stages but only PP/Route have driver) |
+| Sibling instance hookup | `port_connection` | `sibling_si`/`sibling_se`/`sibling_q` |
+| Host instance hookup | `port_connection` | `host_si`/`host_se`/`host_q` |
+| Sibling SE-pin consolidation | `sibling_pin_consolidation` | (skipped in Synth automatically) |
+| Bridge Q closure | `si_consumer_replace` | (skipped in Synth automatically) |
+
+Plus on the new_logic_dff entry itself: `bridge_source_pp_route_match: { si: true, se: true }` (verified via fenets rename map) and consumed candidates from `eco_bridge_candidates.json` (Cat 8 fenets queries).
+
 #### When `mode_S_strategy_per_stage[<stage>]: "neighbor_dff"` (default)
 
-In `port_connections_per_stage[<stage>]`, set SE/SI to the chosen neighbor DFF's exact SE/SI nets (per stage — may differ between PP and Route because of CTS rename). NO bridge port_decls or assigns needed for that stage.
+In `port_connections_per_stage[<stage>]`, set SE/SI to the chosen neighbor DFF's exact SE/SI nets per stage. NO bridge port_decls or assigns needed for that stage.
+
+**MANDATORY per-stage independent lookup:**
 
 ```python
-neighbor = pick_neighbor_dff(host_module, stage)  # any DFF in same module with valid scan
-dff_entry["port_connections_per_stage"][stage]["SE"] = neighbor.SE
-dff_entry["port_connections_per_stage"][stage]["SI"] = neighbor.SI
+for stage in ('Synthesize', 'PrePlace', 'Route'):
+    netlist = f'<REF_DIR>/data/PreEco/{stage}.v.gz'   # stage-specific file
+    neighbor = pick_neighbor_dff(host_module, netlist)  # walk THIS stage's body
+    se_wire, si_wire = neighbor.SE, neighbor.SI
+    # MANDATORY post-pick verification: wire MUST exist in this stage's netlist
+    assert grep_exists(se_wire, netlist) and grep_exists(si_wire, netlist)
+    dff_entry["port_connections_per_stage"][stage]["SE"] = se_wire
+    dff_entry["port_connections_per_stage"][stage]["SI"] = si_wire
 ```
+
+**FORBIDDEN:**
+- Reading `PreEco/PrePlace.v.gz` for the Route lookup (or vice versa) — stages have CTS-renamed wires that exist in one stage and not the other
+- Copying the result of one stage's lookup to another — wire names that exist in PP often disappear in Route after CTS optimization
+- Skipping the post-pick verification — silently writing a non-existent wire produces an undriven pin and FM cone divergence
+
+**Mutual exclusion with bridge_port:** If ANY stage uses `neighbor_dff`, you MUST NOT emit `sibling_pin_consolidation` or `si_consumer_replace` entries — those belong to the `bridge_port` strategy only. Mixing strategies and bridge artifacts produces inconsistent study output that the applier handles incorrectly.
 
 #### When `mode_S_strategy_per_stage[<stage>]: "bridge_port"` (fallback)
 
-Emit bridge port_decls + assign + parent-side wire decls + **driving assign on the bridge wire** (the producer side — without this the bridge wire dangles undriven, which is the bug class observed in 9868 R1). The driving assign taps a neighbor DFF's SE/SI at the PARENT scope.
-
-```python
-# (a) 3 port_decls on host module
-for pname, pdir in [(f"ECO_{jira}_SI_in","input"),
-                    (f"ECO_{jira}_Q_out","output"),
-                    (f"ECO_{jira}_SE_in","input")]:
-    study[stage].append({"change_type":"port_declaration",
-        "module_name": host_module_per_stage[stage], "signal_name": pname,
-        "declaration_type": pdir, ...})
-
-# (b) Q_out assign
-study[stage].append({"change_type":"assign",
-    "module_name": host_module_per_stage[stage],
-    "lhs": f"ECO_{jira}_Q_out", "rhs": dff_q_signal, ...})
-
-# (c) Parent-scope port_connection per hierarchy level up to umccmd
-for hier_inst, hier_parent in walk_up_to(host, "umccmd"):
-    for pname in [f"ECO_{jira}_SI_in", f"ECO_{jira}_Q_out", f"ECO_{jira}_SE_in"]:
-        study[stage].append({"change_type":"port_connection",
-            "module_name": hier_parent, "instance_name": hier_inst,
-            "child_module_name": <child_mod_full_name>,
-            "port_name": pname, "net_name": f"eco{jira}_<si|q|se>_bridge", ...})
-
-# (d) MANDATORY: bridge wire driver assigns at parent scope (closes the dangling
-#     bridge bug). Each bridge wire MUST be driven from a neighbor DFF's SE/SI
-#     in the parent module — picking a parent-scope neighbor that has working
-#     scan nets in this stage.
-parent_neighbor = pick_neighbor_dff(parent_module, stage)
-study[stage].append({"change_type":"assign",
-    "module_name": parent_module_per_stage[stage],
-    "lhs": f"eco{jira}_si_bridge", "rhs": parent_neighbor.SI,
-    "reason": "Mode S bridge driver — taps parent-scope neighbor scan_in"})
-study[stage].append({"change_type":"assign",
-    "module_name": parent_module_per_stage[stage],
-    "lhs": f"eco{jira}_se_bridge", "rhs": parent_neighbor.SE,
-    "reason": "Mode S bridge driver — taps parent-scope neighbor scan_en"})
-
-# (e) DFF entry references the bridge ports
-dff_entry["port_connections_per_stage"][stage]["SE"] = f"ECO_{jira}_SE_in"
-dff_entry["port_connections_per_stage"][stage]["SI"] = f"ECO_{jira}_SI_in"
-dff_entry["mode_S_applied"] = True  # for THIS stage
-```
+Emit the entries listed in the bridge stitching umbrella table below. Critical invariants:
+- DFF entry's `port_connections_per_stage[<stage>]` must reference the bridge ports (`ECO_<jira>_SI_in`, `ECO_<jira>_SE_in`) and set `mode_S_applied: true` for the stage
+- Bridge wire MUST be driven at parent scope via an `assign eco<jira>_<si|se>_bridge = <parent_neighbor_net>` (without this the wire dangles — the 9868 R1 bug class)
+- Walk up the hierarchy from host module to umccmd, emitting `port_connection` entries at each level so the bridge wire propagates correctly
 
 #### Per-stage strategy is INDEPENDENT — no consistency requirement
 
