@@ -249,8 +249,14 @@ def main():
         'targets_aborted':    sorted(set(c['target'] for c in classifications)),
         'classifications':    classifications,
         'remediation_hints':  remediation_hints,
-        'restart_from_step':  3 if primary_abort_type == 'ABORT_NETLIST' else 6,
+        # ABORT NEVER triggers re-study (Step 1/2/3) — per ROUND_ORCHESTRATOR.md
+        # line 50 ('ABORT verdict MUST NOT trigger re-study or eco_passes_2_4
+        # re-run. Only netlist patches that fix the elaboration error.'). The
+        # restart point is always Step 5 (re-validate after patch) → Step 6
+        # (resubmit FM), within the same round counter.
+        'restart_from_step':  5,
         'rerun_same_round':   True,
+        'loop_verdict':       'RERUN_SAME_ROUND',
     }
     Path(args.output).write_text(json.dumps(out, indent=2))
 
