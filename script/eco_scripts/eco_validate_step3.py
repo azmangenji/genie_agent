@@ -569,33 +569,35 @@ def main():
     # ── 14. Per-stage CP/SE/SI must come from an existing DFF in the same scope
     # for each stage. Catches "force same-as-Synthesize" anti-pattern and
     # ensures per-stage net names actually exist.
+    # _neighbors helper is hoisted to function scope so Check 25 (per-stage
+    # wrapper-clock detection) can reuse the same cache without re-reading
+    # 50MB+ gz files.
+    import gzip as _gz
+    neighbor_cache = {}
+    def _neighbors(stage, mod):
+        key = (stage, mod)
+        if key in neighbor_cache:
+            return neighbor_cache[key]
+        base = os.path.join(args.ref_dir, 'data', 'PostEco')
+        cands = sorted(os.path.join(base, n) for n in (os.listdir(base) if os.path.isdir(base) else []) if n.startswith(f'{stage}.v.gz.bak_'))
+        gz = cands[0] if cands else os.path.join(base, f'{stage}.v.gz')
+        sets = {'CP': set(), 'SE': set(), 'SI': set()}
+        if os.path.exists(gz):
+            try:
+                with _gz.open(gz, 'rt') as f: text = f.read()
+                text = _re.sub(r'/\*.*?\*/', '', text, flags=_re.DOTALL)
+                text = _re.sub(r'//[^\n]*', '', text)
+                body_m = _re.search(rf'^module\s+{_re.escape(mod)}(?:_0)?\b.*?^endmodule\b', text, _re.DOTALL | _re.MULTILINE)
+                if body_m:
+                    body = body_m.group(0)
+                    for pin in ('CP', 'SE', 'SI'):
+                        for m in _re.finditer(rf'\.\s*{pin}\s*\(\s*([^)]+?)\s*\)', body):
+                            sets[pin].add(m.group(1).strip())
+            except Exception:
+                pass
+        neighbor_cache[key] = sets
+        return sets
     if os.path.isdir(os.path.join(args.ref_dir, 'data', 'PostEco')):
-        import gzip as _gz
-        # Cache: (stage, module_name) → set of CP/SE/SI per pin used by existing DFFs
-        neighbor_cache = {}
-        def _neighbors(stage, mod):
-            key = (stage, mod)
-            if key in neighbor_cache:
-                return neighbor_cache[key]
-            base = os.path.join(args.ref_dir, 'data', 'PostEco')
-            cands = sorted(os.path.join(base, n) for n in (os.listdir(base) if os.path.isdir(base) else []) if n.startswith(f'{stage}.v.gz.bak_'))
-            gz = cands[0] if cands else os.path.join(base, f'{stage}.v.gz')
-            sets = {'CP': set(), 'SE': set(), 'SI': set()}
-            if os.path.exists(gz):
-                try:
-                    with _gz.open(gz, 'rt') as f: text = f.read()
-                    text = _re.sub(r'/\*.*?\*/', '', text, flags=_re.DOTALL)
-                    text = _re.sub(r'//[^\n]*', '', text)
-                    body_m = _re.search(rf'^module\s+{_re.escape(mod)}(?:_0)?\b.*?^endmodule\b', text, _re.DOTALL | _re.MULTILINE)
-                    if body_m:
-                        body = body_m.group(0)
-                        for pin in ('CP', 'SE', 'SI'):
-                            for m in _re.finditer(rf'\.\s*{pin}\s*\(\s*([^)]+?)\s*\)', body):
-                                sets[pin].add(m.group(1).strip())
-                except Exception:
-                    pass
-            neighbor_cache[key] = sets
-            return sets
         for stage in ['Synthesize', 'PrePlace', 'Route']:
             for e in study.get(stage, []):
                 if e.get('change_type') not in ('new_logic_dff', 'new_logic'): continue
@@ -627,6 +629,70 @@ def main():
                         # bridge wires not in module-scope neighbor set).
                         sev = "HIGH" if pin == "CP" else "MEDIUM"
                         issues.append(f"{sev}: ECO DFF {inst}.{pin} in {stage}={v!r} not used by any existing DFF in module {mod!r}. Existing values include {sample}. {'Pick one of those' if pin == 'CP' else 'Either pick a neighbor value OR add as new bridge port'} for per-stage consistency.")
+
+    # ── 25. PER-STAGE-CP-WRAPPER-CLOCK: detect tile-top wrapper-clock swap.
+    # At tile-top wrapper scope, RTL DFFs use the raw clock (e.g. UCLK01) in
+    # Synthesize, but P&R inserts wrapper clock-gating cells that derive
+    # `wrp_clk_*` and existing module-sibling DFFs use the wrapper clock in
+    # PP/Route. A new ECO DFF at this scope MUST swap CP per stage:
+    #   Synthesize: <UCLK*>     PP: wrp_clk_*     Route: wrp_clk_*
+    # Engineer 9868 EcoUseSdpOutstRdCnt does exactly this. Without the swap,
+    # the new DFF runs on a different clock from its module siblings — passes
+    # FM cone equivalence (UCLK01 ≡ wrp_clk_1 logically) but breaks DFT scan
+    # testability and clock-gating coverage. Reuses _neighbors() cache from
+    # Check 14.
+    if os.path.isdir(os.path.join(args.ref_dir, 'data', 'PostEco')):
+        for e in study.get('Synthesize', []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            if not e.get('confirmed', True):
+                continue
+            inst = e.get('instance_name', '?')
+            mod  = e.get('module_name')
+            if not mod:
+                continue
+            pcs_per_stage = e.get('port_connections_per_stage') or {}
+            # Detect the wrapper-clock domain by inspecting PrePlace neighbor CPs
+            # (RTL-level naming wrp_clk_* survives into PP; Route stage applies
+            # CTS-renaming so wrp_clk_1 might become FxCts_ZCTSNET_<N>).
+            pp_neigh = _neighbors('PrePlace', mod)
+            pp_neigh_cps = list(pp_neigh.get('CP', set()))
+            if not pp_neigh_cps:
+                continue
+            wrp_pp = [n for n in pp_neigh_cps if _re.search(r'wrp_clk', n, _re.IGNORECASE)]
+            if not wrp_pp:
+                continue  # no wrapper-clock present in this module
+            # PrePlace check — when wrapper clock exists in module AND new DFF uses
+            # raw UCLK (the Synth-stage clock), studier missed the wrapper swap.
+            pp_cp = (pcs_per_stage.get('PrePlace', {}) or {}).get('CP', '').strip()
+            if pp_cp and _re.match(r'UCLK\d?$', pp_cp, _re.IGNORECASE):
+                sample = sorted(set(wrp_pp))[:3]
+                issues.append(
+                    f"HIGH/25-WRAPPER-CLOCK-MISSED: ECO DFF {inst}.CP in PrePlace "
+                    f"= {pp_cp!r} but {len(wrp_pp)}/{len(pp_neigh_cps)} existing "
+                    f"DFFs in module {mod!r} use wrapper clock(s) {sample}. New "
+                    f"DFFs at this scope MUST swap CP per stage: Synth keeps the "
+                    f"raw clock (UCLK*), but PP MUST use wrp_clk_*. Otherwise the "
+                    f"DFF runs on a different clock domain from its siblings — "
+                    f"breaks clock-gating and DFT scan coverage. Update "
+                    f"port_connections_per_stage['PrePlace'].CP to one of the "
+                    f"wrp_clk_* nets above.")
+            # Route check — CP must be in Route's neighbor CP set (CTS-renamed
+            # wrapper). Reject UCLK01 (raw clock) AND non-CP-domain values.
+            rt_cp = (pcs_per_stage.get('Route', {}) or {}).get('CP', '').strip()
+            rt_neigh = _neighbors('Route', mod)
+            rt_neigh_cps = rt_neigh.get('CP', set())
+            if rt_cp and rt_neigh_cps:
+                # Route CP should NOT be the raw UCLK* (that's the Synth-stage clock)
+                # AND should be in the existing module DFF CP set.
+                if _re.match(r'UCLK\d', rt_cp, _re.IGNORECASE):
+                    sample = sorted(c for c in rt_neigh_cps if 'fxcts' in c.lower() or 'wrp_clk' in c.lower())[:3]
+                    issues.append(
+                        f"HIGH/25-WRAPPER-CLOCK-MISSED: ECO DFF {inst}.CP in Route "
+                        f"= {rt_cp!r} (raw clock) but module {mod!r} is wrapper-clock "
+                        f"dominated. Route CP must be a CTS-renamed wrapper clock "
+                        f"(e.g. {sample}); using the raw UCLK clock leaves the new "
+                        f"DFF on a different clock domain from siblings.")
 
     # ── 15. Every confirmed entry must have non-empty `reason`, `notes`, and
     # `source` — these populate the Step 3 RPT and serve as the audit trail for
