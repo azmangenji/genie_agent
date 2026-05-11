@@ -182,6 +182,35 @@ def _module_bounds(lines, line_no):
     return start, None
 
 
+def _is_wire_declared_in_module(body, name):
+    """Robust check: is `name` already declared as wire/tri/wand/wor/reg in any
+    decl form anywhere in the module body?
+
+    Handles:
+      - Single-name decls:    `wire X ;`
+      - Bus decls:            `wire [3:0] X ;` (matches X[N] queries to bus name)
+      - Multi-name decls:     `wire A, B, X, C ;`
+      - Bit-indexed names:    `wire X[1] ;`
+      - Whitespace variants
+
+    Conservative: returns True on ANY match — better to skip an extra decl than
+    to risk an FM-599 'Duplicate wire' ABORT (run 20260511083831 root cause).
+    """
+    if not name:
+        return False
+    base_name = re.sub(r'\[[^\]]+\]', '', name).strip()  # strip [N] for bus-name match
+    decl_re = re.compile(r'^\s*(wire|tri|wand|wor|reg)\s+(?:\[[^\]]+\]\s+)?([^;]+);')
+    for ln in body:
+        dm = decl_re.match(ln)
+        if not dm:
+            continue
+        for n in [x.strip() for x in dm.group(2).split(',')]:
+            n_base = re.sub(r'\[[^\]]+\]', '', n).strip()
+            if n.strip() == name or n_base == base_name:
+                return True
+    return False
+
+
 def _cleanup_orphan_wire_and_add_new_decl(lines, mod_start, mod_end, old_net, new_net):
     """GAP-2 cleanup: within (mod_start, mod_end] window:
        (a) remove `wire <old_net> ;` if old_net has zero remaining references in module
@@ -207,21 +236,23 @@ def _cleanup_orphan_wire_and_add_new_decl(lines, mod_start, mod_end, old_net, ne
         if decl_idx_in_body is not None and ref_count == 0:
             del body[decl_idx_in_body]
             removed_orphan = True
-    # Step (b): add wire decl for new_net if not already declared
+    # Step (b): add wire decl for new_net if not already declared.
+    # Uses _is_wire_declared_in_module() which handles bus decls, multi-name
+    # decls, and bit-indexed names — the previous narrow regex missed bus
+    # decls (e.g. `wire [3:0] REG_UmcCfgEco;` doesn't match new_net=
+    # `REG_UmcCfgEco[1]`) and could insert a duplicate that triggers FM-599
+    # ABORT (Duplicate wire/tri/wand/wor declaration) — see run 20260511083831.
     added_decl = False
-    if new_net:
-        new_decl_re = re.compile(rf'^\s*wire\s+(?:\[[^\]]+\]\s+)?{re.escape(new_net)}\s*;')
-        already_declared = any(new_decl_re.match(ln) for ln in body)
-        if not already_declared:
-            # Insert after the last `wire ... ;` decl in the body, before any non-decl content
-            last_wire_idx = -1
-            for i, ln in enumerate(body):
-                if re.match(r'^\s*wire\s+', ln):
-                    last_wire_idx = i
-            insert_at = last_wire_idx + 1 if last_wire_idx >= 0 else 1  # after `module` line as fallback
-            indent = '  '
-            body.insert(insert_at, f'{indent}wire {new_net} ;\n')
-            added_decl = True
+    if new_net and not _is_wire_declared_in_module(body, new_net):
+        # Insert after the last `wire ... ;` decl in the body, before any non-decl content
+        last_wire_idx = -1
+        for i, ln in enumerate(body):
+            if re.match(r'^\s*wire\s+', ln):
+                last_wire_idx = i
+        insert_at = last_wire_idx + 1 if last_wire_idx >= 0 else 1  # after `module` line as fallback
+        indent = '  '
+        body.insert(insert_at, f'{indent}wire {new_net} ;\n')
+        added_decl = True
     if removed_orphan or added_decl:
         lines[mod_start:mod_end + 1] = body
     return lines, removed_orphan, added_decl

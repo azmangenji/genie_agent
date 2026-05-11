@@ -36,7 +36,7 @@ Usage:
         --new-dff-instance NeedFreqAdj_reg \\
         --output         data/<TAG>_eco_bridge_plumbing_<DFF>.json
 """
-import argparse, json, sys
+import argparse, json, re, sys
 from pathlib import Path
 
 # Default buffer cell types — engineer 9868 used these specific cells. Override
@@ -59,15 +59,21 @@ def _ctx(reason, source):
 
 def emit(pick, jira, host_mod, sib_mod, parent_mod, host_inst, sib_inst, new_dff_inst,
          si_buffer_cell=DEFAULT_SI_BUFFER_CELL, se_buffer_cell=DEFAULT_SE_BUFFER_CELL):
-    si_in   = f"ECO_{jira}_SI_in"
-    se_in   = f"ECO_{jira}_SE_in"
-    q_out   = f"ECO_{jira}_Q_out"
-    si_out  = f"ECO_{jira}_SI_out"
-    se_out  = f"ECO_{jira}_SE_out"
-    q_in    = f"ECO_{jira}_Q_in"
-    w_si    = f"eco{jira}_si_bridge"
-    w_se    = f"eco{jira}_se_bridge"
-    w_q     = f"eco{jira}_q_bridge"
+    # Per-DFF prefix prevents collisions when a single ECO delivery has multiple
+    # bridge_port DFFs (engineer 9868 has TWO: NeedFreqAdj_reg → ECO_905_*,
+    # EcoUseSdpOutstRdCnt_reg → eco906_*). Without the DFF prefix, both would
+    # emit identical ECO_<jira>_SI_in port names → applier conflict + FM ABORT.
+    # Strip trailing _reg from the DFF name for cleaner port labels.
+    dff_label = re.sub(r'_reg$', '', new_dff_inst)
+    si_in   = f"{dff_label}_ECO{jira}_SI_in"
+    se_in   = f"{dff_label}_ECO{jira}_SE_in"
+    q_out   = f"{dff_label}_ECO{jira}_Q_out"
+    si_out  = f"{dff_label}_ECO{jira}_SI_out"
+    se_out  = f"{dff_label}_ECO{jira}_SE_out"
+    q_in    = f"{dff_label}_ECO{jira}_Q_in"
+    w_si    = f"{dff_label.lower()}_eco{jira}_si_bridge"
+    w_se    = f"{dff_label.lower()}_eco{jira}_se_bridge"
+    w_q     = f"{dff_label.lower()}_eco{jira}_q_bridge"
 
     # ── 1. Host module port declarations (SI/SE inputs, Q output) ──────────
     host_port_decls = [
