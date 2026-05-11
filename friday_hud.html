@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FRIDAY — EDA Intelligence System</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:        #0a0e1a;
+  --cyan:      #00d4ff;
+  --cyan-dim:  rgba(0,212,255,0.12);
+  --cyan-glow: rgba(0,212,255,0.35);
+  --blue:      #0088cc;
+  --green:     #00ff88;
+  --green-dim: rgba(0,255,136,0.12);
+  --amber:     #ffaa00;
+  --amber-dim: rgba(255,170,0,0.12);
+  --red:       #ff3355;
+  --red-dim:   rgba(255,51,85,0.12);
+  --purple:    #a855f7;
+  --purple-dim:rgba(168,85,247,0.15);
+  --text:      #c8e8ff;
+  --text-dim:  rgba(200,232,255,0.45);
+  --border:    rgba(0,212,255,0.18);
+  --border-hi: rgba(0,212,255,0.5);
+  --grid:      rgba(0,212,255,0.035);
+  --f-display: 'Orbitron', monospace;
+  --f-mono:    'Share Tech Mono', monospace;
+  --f-ui:      'Rajdhani', sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body {
+  background:var(--bg); color:var(--text); font-family:var(--f-mono);
+  height:100vh; overflow:hidden; position:relative; user-select:none;
+}
+body::before {
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size:44px 44px;
+}
+body::after {
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:900;
+  background:repeating-linear-gradient(
+    0deg, transparent, transparent 2px,
+    rgba(0,0,0,0.025) 2px, rgba(0,0,0,0.025) 4px
+  );
+}
+.app { position:relative; z-index:1; display:flex; flex-direction:column; height:100vh; padding:8px; gap:8px; }
+
+/* ── HEADER ── */
+.hdr {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 20px; height:56px; flex-shrink:0;
+  background:rgba(5,12,28,0.9); border:1px solid var(--border-hi); border-radius:3px;
+  box-shadow:0 0 24px rgba(0,212,255,0.08), inset 0 1px 0 rgba(0,212,255,0.18);
+}
+.logo { display:flex; align-items:center; gap:14px; }
+.logo-hex svg {
+  width:38px; height:38px;
+  filter:drop-shadow(0 0 6px var(--cyan)) drop-shadow(0 0 12px rgba(0,212,255,0.4));
+  animation:hexGlow 4s ease-in-out infinite;
+}
+@keyframes hexGlow {
+  0%,100%{filter:drop-shadow(0 0 6px var(--cyan)) drop-shadow(0 0 12px rgba(0,212,255,0.4));}
+  50%    {filter:drop-shadow(0 0 10px var(--cyan)) drop-shadow(0 0 22px rgba(0,212,255,0.65));}
+}
+.logo-name {
+  font-family:var(--f-display); font-size:22px; font-weight:900;
+  letter-spacing:10px; color:var(--cyan);
+  text-shadow:0 0 20px var(--cyan), 0 0 50px rgba(0,212,255,0.35);
+}
+.logo-sub { font-family:var(--f-ui); font-size:10px; letter-spacing:3px; color:var(--text-dim); font-weight:300; margin-top:1px; }
+.hdr-metrics { display:flex; align-items:center; gap:36px; }
+.metric { text-align:center; }
+.metric-val { font-family:var(--f-display); font-size:16px; color:var(--cyan); text-shadow:0 0 8px rgba(0,212,255,0.5); }
+.metric-lbl { font-family:var(--f-ui); font-size:9px; letter-spacing:2px; color:var(--text-dim); text-transform:uppercase; }
+.hdr-right { display:flex; align-items:center; gap:20px; }
+.online-badge { display:flex; align-items:center; gap:7px; font-family:var(--f-ui); font-size:11px; letter-spacing:3px; color:var(--green); text-transform:uppercase; }
+.pulse { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 8px var(--green); animation:pulseAnim 2s ease-in-out infinite; }
+@keyframes pulseAnim { 0%,100%{opacity:1;transform:scale(1);box-shadow:0 0 8px var(--green);} 50%{opacity:0.5;transform:scale(0.75);box-shadow:0 0 4px var(--green);} }
+.clock { font-family:var(--f-display); font-size:17px; font-weight:700; color:var(--cyan); letter-spacing:3px; text-shadow:0 0 10px rgba(0,212,255,0.7); }
+
+/* ── LISTENING BANNER ── */
+.listening-banner {
+  display:none; position:fixed; top:72px; left:50%; transform:translateX(-50%);
+  z-index:800; background:rgba(255,51,85,0.92); border:1px solid var(--red);
+  border-radius:3px; padding:6px 20px; font-family:var(--f-display);
+  font-size:11px; letter-spacing:4px; color:#fff;
+  box-shadow:0 0 20px rgba(255,51,85,0.5);
+  animation:bannerPulse 1s ease-in-out infinite;
+}
+.listening-banner.active { display:flex; align-items:center; gap:8px; }
+@keyframes bannerPulse { 0%,100%{opacity:1;} 50%{opacity:0.75;} }
+.mic-ring { width:10px; height:10px; border-radius:50%; background:#fff; animation:micRing 0.8s ease-in-out infinite; }
+@keyframes micRing { 0%,100%{transform:scale(1); opacity:1;} 50%{transform:scale(1.4); opacity:0.5;} }
+
+/* ── SPEAKING INDICATOR ── */
+.speaking-bar {
+  display:none; position:fixed; top:72px; right:12px; z-index:800;
+  background:rgba(0,255,136,0.1); border:1px solid rgba(0,255,136,0.4);
+  border-radius:3px; padding:5px 14px; align-items:center; gap:8px;
+  font-family:var(--f-ui); font-size:10px; letter-spacing:2px; color:var(--green);
+}
+.speaking-bar.active { display:flex; }
+.wave-bars { display:flex; gap:2px; align-items:flex-end; height:14px; }
+.wb { width:3px; background:var(--green); border-radius:1px; animation:waveBounce 0.6s ease-in-out infinite; }
+.wb:nth-child(2){animation-delay:0.1s;} .wb:nth-child(3){animation-delay:0.2s;}
+.wb:nth-child(4){animation-delay:0.3s;} .wb:nth-child(5){animation-delay:0.15s;}
+@keyframes waveBounce { 0%,100%{height:4px;} 50%{height:14px;} }
+
+/* ── MAIN ── */
+.main { display:grid; grid-template-columns:30% 1fr 30%; gap:8px; flex:1; min-height:0; }
+
+/* ── PANEL BASE ── */
+.panel {
+  background:rgba(8,14,28,0.88); border:1px solid var(--border); border-radius:3px;
+  display:flex; flex-direction:column; overflow:hidden; backdrop-filter:blur(6px); position:relative;
+}
+.panel::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:1px;
+  background:linear-gradient(90deg, transparent 0%, var(--cyan) 40%, var(--cyan) 60%, transparent 100%); opacity:0.5;
+}
+.panel .c { position:absolute; width:11px; height:11px; z-index:5; }
+.panel .c-tl{top:-1px;left:-1px;border-top:2px solid var(--cyan);border-left:2px solid var(--cyan);}
+.panel .c-tr{top:-1px;right:-1px;border-top:2px solid var(--cyan);border-right:2px solid var(--cyan);}
+.panel .c-bl{bottom:-1px;left:-1px;border-bottom:2px solid var(--cyan);border-left:2px solid var(--cyan);}
+.panel .c-br{bottom:-1px;right:-1px;border-bottom:2px solid var(--cyan);border-right:2px solid var(--cyan);}
+.panel-hdr {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:9px 14px; border-bottom:1px solid var(--border);
+  background:rgba(0,212,255,0.025); flex-shrink:0;
+}
+.panel-title { font-family:var(--f-display); font-size:10px; font-weight:700; letter-spacing:4px; color:var(--cyan); text-transform:uppercase; }
+.panel-tag { font-family:var(--f-ui); font-size:10px; letter-spacing:1px; color:var(--text-dim); background:rgba(0,212,255,0.06); border:1px solid var(--border); padding:2px 8px; border-radius:2px; }
+.scroll { overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+.scroll::-webkit-scrollbar{width:4px;} .scroll::-webkit-scrollbar-track{background:transparent;} .scroll::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+
+/* ══ CHAT PANEL ══ */
+.chat-body { flex:1; padding:12px; display:flex; flex-direction:column; gap:11px; }
+.msg { display:flex; flex-direction:column; gap:4px; }
+.msg-who { font-family:var(--f-ui); font-size:10px; letter-spacing:2px; text-transform:uppercase; }
+.msg-user .msg-who { color:var(--cyan); }
+.msg-ai   .msg-who { color:var(--green); }
+.msg-bubble { padding:8px 12px; border-radius:2px; font-size:12.5px; line-height:1.65; }
+.msg-user .msg-bubble { background:rgba(0,212,255,0.05); border-left:2px solid var(--cyan); color:var(--text); }
+.msg-ai   .msg-bubble { background:rgba(0,255,136,0.04); border-left:2px solid var(--green); color:var(--text); }
+.msg-bubble b   { color:var(--cyan); font-weight:normal; }
+.msg-bubble .tag { color:var(--amber); font-size:11px; }
+.msg-bubble .warn { color:var(--red); }
+.msg-bubble .ok   { color:var(--green); }
+
+.typing-cursor { display:inline-block; width:7px; height:13px; background:var(--green); margin-left:2px; animation:blink 0.75s step-end infinite; vertical-align:text-bottom; }
+@keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
+
+.chat-input-row {
+  padding:10px 12px; border-top:1px solid var(--border);
+  display:flex; gap:8px; align-items:center;
+  background:rgba(0,212,255,0.018); flex-shrink:0;
+}
+.chat-prompt { color:var(--cyan); font-size:14px; flex-shrink:0; }
+.chat-in { flex:1; background:transparent; border:none; outline:none; color:var(--text); font-family:var(--f-mono); font-size:13px; caret-color:var(--cyan); }
+.chat-in::placeholder { color:rgba(200,232,255,0.22); }
+
+/* Send button */
+.chat-send {
+  background:rgba(0,212,255,0.1); border:1px solid var(--border-hi);
+  color:var(--cyan); font-family:var(--f-display); font-size:9px;
+  letter-spacing:2px; padding:5px 12px; cursor:pointer;
+  border-radius:2px; transition:all 0.2s; text-transform:uppercase;
+}
+.chat-send:hover { background:rgba(0,212,255,0.2); box-shadow:0 0 12px rgba(0,212,255,0.3); }
+
+/* Mic button */
+.mic-btn {
+  width:32px; height:32px; border-radius:50%; border:1px solid var(--border);
+  background:transparent; cursor:pointer; display:flex; align-items:center;
+  justify-content:center; transition:all 0.2s; flex-shrink:0;
+  color:var(--text-dim);
+}
+.mic-btn:hover { border-color:var(--cyan); color:var(--cyan); box-shadow:0 0 10px rgba(0,212,255,0.2); }
+.mic-btn.listening {
+  border-color:var(--red); color:var(--red);
+  box-shadow:0 0 14px rgba(255,51,85,0.45);
+  animation:micBtnPulse 1s ease-in-out infinite;
+}
+@keyframes micBtnPulse { 0%,100%{box-shadow:0 0 14px rgba(255,51,85,0.45);} 50%{box-shadow:0 0 22px rgba(255,51,85,0.75);} }
+
+/* ══ JOB PANEL ══ */
+.jobs-body { flex:1; padding:10px; display:flex; flex-direction:column; gap:9px; }
+.job-card {
+  border:1px solid var(--border); border-radius:3px; padding:11px 13px;
+  background:rgba(4,10,22,0.7); position:relative; overflow:hidden; transition:border-color 0.3s;
+}
+.job-card:hover { border-color:var(--border-hi); }
+.job-card.running  { border-color:rgba(255,170,0,0.3); animation:cardGlow 3s ease-in-out infinite; }
+.job-card.complete { border-color:rgba(0,255,136,0.25); }
+.job-card.failed   { border-color:rgba(255,51,85,0.25); }
+@keyframes cardGlow { 0%,100%{box-shadow:0 0 0 rgba(255,170,0,0);} 50%{box-shadow:0 0 14px rgba(255,170,0,0.12);} }
+
+.job-row1 { display:flex; align-items:center; justify-content:space-between; margin-bottom:7px; }
+.job-left { display:flex; align-items:center; gap:9px; }
+.jtype { font-family:var(--f-display); font-size:9px; font-weight:700; letter-spacing:2px; padding:3px 8px; border-radius:2px; }
+.jt-cdc  { background:rgba(0,136,204,0.18); color:#3bb3ff; border:1px solid rgba(0,136,204,0.4); }
+.jt-lint { background:var(--purple-dim); color:var(--purple); border:1px solid rgba(168,85,247,0.4); }
+.jt-eco  { background:var(--cyan-dim); color:var(--cyan); border:1px solid rgba(0,212,255,0.35); }
+.jt-syn  { background:var(--amber-dim); color:var(--amber); border:1px solid rgba(255,170,0,0.35); }
+.jt-def  { background:rgba(100,100,100,0.15); color:var(--text-dim); border:1px solid rgba(100,100,100,0.3); }
+.jip { font-family:var(--f-ui); font-size:14px; font-weight:600; color:var(--text); letter-spacing:0.5px; }
+.jstatus { display:flex; align-items:center; gap:5px; font-family:var(--f-ui); font-size:10px; font-weight:600; letter-spacing:2px; padding:3px 10px; border-radius:2px; }
+.js-running  { background:var(--amber-dim); color:var(--amber); border:1px solid rgba(255,170,0,0.4); }
+.js-complete { background:var(--green-dim); color:var(--green); border:1px solid rgba(0,255,136,0.4); }
+.js-failed   { background:var(--red-dim);   color:var(--red);   border:1px solid rgba(255,51,85,0.4); }
+.sdot { width:5px; height:5px; border-radius:50%; background:currentColor; }
+.js-running .sdot { animation:pulseAnim 1.4s ease-in-out infinite; }
+.job-row2 { display:flex; justify-content:space-between; margin-bottom:7px; }
+.jtag  { font-size:10px; color:var(--amber); letter-spacing:0.5px; }
+.jtime { font-size:11px; color:var(--text-dim); }
+.prog-track { height:3px; background:rgba(255,255,255,0.07); border-radius:2px; overflow:hidden; margin-bottom:5px; }
+.prog-fill  { height:100%; border-radius:2px; transition:width 1.2s linear; position:relative; }
+.prog-fill.running  { background:linear-gradient(90deg, var(--amber), #ffdd66); box-shadow:0 0 8px rgba(255,170,0,0.5); }
+.prog-fill.running::after {
+  content:''; position:absolute; right:0; top:0; height:100%; width:28px;
+  background:linear-gradient(90deg, transparent, rgba(255,230,120,0.9));
+  animation:shimmer 1.6s ease-in-out infinite;
+}
+@keyframes shimmer { 0%{opacity:0;transform:translateX(-10px);} 50%{opacity:1;} 100%{opacity:0;transform:translateX(4px);} }
+.prog-fill.complete { background:linear-gradient(90deg, var(--green), #66ffbb); box-shadow:0 0 8px rgba(0,255,136,0.3); }
+.prog-fill.failed   { background:linear-gradient(90deg, var(--red), #ff7799);   box-shadow:0 0 8px rgba(255,51,85,0.3); }
+.prog-lbl { display:flex; justify-content:space-between; font-size:10px; color:var(--text-dim); margin-bottom:8px; }
+.job-btns { display:flex; gap:5px; }
+.jbtn { font-family:var(--f-ui); font-size:10px; letter-spacing:1px; padding:3px 10px; border-radius:2px; cursor:pointer; border:1px solid var(--border); background:transparent; color:var(--text-dim); transition:all 0.18s; text-transform:uppercase; }
+.jbtn:hover     { border-color:var(--cyan); color:var(--cyan); background:rgba(0,212,255,0.05); }
+.jbtn.red:hover { border-color:var(--red);  color:var(--red);  background:rgba(255,51,85,0.05); }
+
+/* Empty jobs state */
+.jobs-empty { flex:1; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:8px; opacity:0.3; }
+.jobs-empty-icon { font-size:32px; }
+.jobs-empty-text { font-family:var(--f-ui); font-size:12px; letter-spacing:2px; }
+
+/* Stats bar */
+.stats-bar { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; padding:9px 12px; border-top:1px solid var(--border); flex-shrink:0; }
+.stat { text-align:center; }
+.stat-n { font-family:var(--f-display); font-size:20px; font-weight:700; }
+.stat-l { font-family:var(--f-ui); font-size:9px; letter-spacing:2px; color:var(--text-dim); text-transform:uppercase; }
+.sn-run  { color:var(--amber); text-shadow:0 0 8px rgba(255,170,0,0.5); }
+.sn-ok   { color:var(--green); text-shadow:0 0 8px rgba(0,255,136,0.35); }
+.sn-fail { color:var(--red);   text-shadow:0 0 8px rgba(255,51,85,0.35); }
+
+/* ══ ACTIVITY LOG PANEL ══ */
+.log-body { flex:1; padding:6px 10px; display:flex; flex-direction:column; gap:1px; }
+.log-entry { display:grid; grid-template-columns:52px 1fr; gap:8px; padding:5px 7px; border-radius:2px; transition:background 0.18s; align-items:start; }
+.log-entry:hover { background:rgba(0,212,255,0.03); }
+.log-t   { font-size:10px; color:var(--text-dim); padding-top:2px; white-space:nowrap; }
+.log-c   { display:flex; flex-direction:column; gap:1px; }
+.log-ev  { font-size:12px; line-height:1.4; }
+.ev-ip   { color:var(--cyan); }
+.ev-ok   { color:var(--green); }
+.ev-fail { color:var(--red); }
+.ev-info { color:var(--text-dim); }
+.log-subtag { font-size:10px; color:rgba(200,232,255,0.25); }
+
+/* ── LOG MODAL ── */
+.modal-overlay {
+  display:none; position:fixed; inset:0; z-index:850;
+  background:rgba(0,5,15,0.85); backdrop-filter:blur(4px);
+  align-items:center; justify-content:center;
+}
+.modal-overlay.open { display:flex; }
+.modal {
+  width:70vw; max-height:70vh; background:rgba(8,14,28,0.98);
+  border:1px solid var(--border-hi); border-radius:4px;
+  display:flex; flex-direction:column; box-shadow:0 0 40px rgba(0,212,255,0.15);
+}
+.modal-hdr {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 16px; border-bottom:1px solid var(--border);
+  font-family:var(--f-display); font-size:10px; letter-spacing:3px; color:var(--cyan);
+}
+.modal-close { cursor:pointer; color:var(--text-dim); font-size:16px; transition:color 0.2s; }
+.modal-close:hover { color:var(--red); }
+.modal-body { flex:1; overflow-y:auto; padding:12px 16px; font-size:12px; line-height:1.7; white-space:pre-wrap; color:var(--text-dim); }
+.modal-body .log-ok   { color:var(--green); }
+.modal-body .log-err  { color:var(--red); }
+.modal-body .log-warn { color:var(--amber); }
+
+/* ── TOAST ── */
+.toast {
+  position:fixed; bottom:20px; right:20px; z-index:9999;
+  background:rgba(0,20,40,0.96); border:1px solid var(--cyan-glow);
+  color:var(--cyan); font-family:var(--f-mono); font-size:12px;
+  padding:10px 16px; border-radius:3px;
+  box-shadow:0 0 20px rgba(0,212,255,0.25);
+  animation:toastIn 0.2s ease;
+}
+@keyframes toastIn { from{opacity:0;transform:translateY(10px);} to{opacity:1;transform:translateY(0);} }
+
+/* ── LOADING SPINNER ── */
+.spinner {
+  display:inline-block; width:10px; height:10px; border-radius:50%;
+  border:1px solid rgba(0,212,255,0.3); border-top-color:var(--cyan);
+  animation:spin 0.7s linear infinite; vertical-align:middle; margin-right:6px;
+}
+@keyframes spin { to{transform:rotate(360deg);} }
+</style>
+</head>
+<body>
+
+<!-- LISTENING BANNER -->
+<div class="listening-banner" id="listeningBanner">
+  <div class="mic-ring"></div>
+  FRIDAY IS LISTENING…
+</div>
+
+<!-- SPEAKING INDICATOR -->
+<div class="speaking-bar" id="speakingBar">
+  <div class="wave-bars">
+    <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+    <div class="wb"></div><div class="wb"></div>
+  </div>
+  FRIDAY SPEAKING
+</div>
+
+<!-- LOG MODAL -->
+<div class="modal-overlay" id="logModal">
+  <div class="modal">
+    <div class="modal-hdr">
+      <span id="modalTitle">LOG VIEWER</span>
+      <span class="modal-close" onclick="closeModal()">✕</span>
+    </div>
+    <div class="modal-body scroll" id="modalBody"></div>
+  </div>
+</div>
+
+<div class="app">
+
+  <!-- HEADER -->
+  <header class="hdr">
+    <div class="logo">
+      <div class="logo-hex">
+        <svg viewBox="0 0 42 42" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="21,2 38,11.5 38,30.5 21,40 4,30.5 4,11.5" stroke="#00d4ff" stroke-width="1.5" fill="rgba(0,212,255,0.04)"/>
+          <polygon points="21,8 32,14.5 32,27.5 21,34 10,27.5 10,14.5" stroke="#00d4ff" stroke-width="0.7" fill="none" opacity="0.45"/>
+          <circle cx="21" cy="21" r="3.5" fill="#00d4ff" opacity="0.9"/>
+          <line x1="21" y1="8"  x2="21" y2="34" stroke="#00d4ff" stroke-width="0.4" opacity="0.3"/>
+          <line x1="10" y1="14.5" x2="32" y2="27.5" stroke="#00d4ff" stroke-width="0.4" opacity="0.3"/>
+          <line x1="32" y1="14.5" x2="10" y2="27.5" stroke="#00d4ff" stroke-width="0.4" opacity="0.3"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-name">FRIDAY</div>
+        <div class="logo-sub">EDA Intelligence System &nbsp;·&nbsp; v3.2.0</div>
+      </div>
+    </div>
+
+    <div class="hdr-metrics">
+      <div class="metric">
+        <div class="metric-val" id="hdrJobs">—</div>
+        <div class="metric-lbl">Active Jobs</div>
+      </div>
+      <div class="metric">
+        <div class="metric-val">normal</div>
+        <div class="metric-lbl">LSF Queue</div>
+      </div>
+      <div class="metric">
+        <div class="metric-val" id="hdrTotal">—</div>
+        <div class="metric-lbl">Today's Runs</div>
+      </div>
+      <div class="metric">
+        <div class="metric-val" id="hdrDate" style="font-size:11px;letter-spacing:1px;color:var(--text-dim);"></div>
+        <div class="metric-lbl">Date</div>
+      </div>
+    </div>
+
+    <div class="hdr-right">
+      <div class="online-badge"><div class="pulse"></div>ONLINE</div>
+      <div class="clock" id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <!-- MAIN PANELS -->
+  <div class="main">
+
+    <!-- LEFT: CHAT -->
+    <div class="panel">
+      <div class="c c-tl"></div><div class="c c-tr"></div>
+      <div class="c c-bl"></div><div class="c c-br"></div>
+      <div class="panel-hdr">
+        <div class="panel-title">Command Interface</div>
+        <div class="panel-tag" id="chatStatus">FRIDAY AI</div>
+      </div>
+      <div class="chat-body scroll" id="chatBody">
+        <!-- Messages appear here -->
+      </div>
+      <div class="chat-input-row">
+        <div class="chat-prompt">&gt;_</div>
+        <input class="chat-in" id="chatIn" type="text" placeholder="speak or type a command…" autocomplete="off"/>
+        <button class="mic-btn" id="micBtn" title="Voice input" onclick="toggleMic()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        </button>
+        <button class="chat-send" id="sendBtn">SEND</button>
+      </div>
+    </div>
+
+    <!-- CENTER: JOB MONITOR -->
+    <div class="panel">
+      <div class="c c-tl"></div><div class="c c-tr"></div>
+      <div class="c c-bl"></div><div class="c c-br"></div>
+      <div class="panel-hdr">
+        <div class="panel-title">Live Job Monitor</div>
+        <div class="panel-tag" id="syncTag">LOADING…</div>
+      </div>
+      <div class="jobs-body scroll" id="jobsBody">
+        <div class="jobs-empty">
+          <div class="jobs-empty-icon">⬡</div>
+          <div class="jobs-empty-text">LOADING JOBS…</div>
+        </div>
+      </div>
+      <div class="stats-bar">
+        <div class="stat"><div class="stat-n sn-run" id="sRun">—</div><div class="stat-l">Running</div></div>
+        <div class="stat"><div class="stat-n sn-ok"  id="sOk">—</div><div class="stat-l">Complete</div></div>
+        <div class="stat"><div class="stat-n sn-fail" id="sFail">—</div><div class="stat-l">Failed</div></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: ACTIVITY LOG -->
+    <div class="panel">
+      <div class="c c-tl"></div><div class="c c-tr"></div>
+      <div class="c c-bl"></div><div class="c c-br"></div>
+      <div class="panel-hdr">
+        <div class="panel-title">Activity Log</div>
+        <div class="panel-tag">TODAY</div>
+      </div>
+      <div class="log-body scroll" id="logBody"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════
+//  CLOCK
+// ══════════════════════════════════════════════════════════
+function tick() {
+  const n = new Date(), p = v => String(v).padStart(2,'0');
+  document.getElementById('clock').textContent = `${p(n.getHours())}:${p(n.getMinutes())}:${p(n.getSeconds())}`;
+  document.getElementById('hdrDate').textContent = n.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+}
+setInterval(tick, 1000); tick();
+
+// ══════════════════════════════════════════════════════════
+//  SPEECH — VOICE INPUT (SpeechRecognition)
+// ══════════════════════════════════════════════════════════
+const SpeechRecog = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition   = null;
+let isListening   = false;
+
+if (SpeechRecog) {
+  recognition = new SpeechRecog();
+  recognition.continuous    = false;
+  recognition.interimResults = true;
+  recognition.lang          = 'en-US';
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    isListening = true;
+    document.getElementById('micBtn').classList.add('listening');
+    document.getElementById('listeningBanner').classList.add('active');
+    document.getElementById('chatIn').placeholder = 'FRIDAY is listening…';
+  };
+
+  recognition.onresult = (e) => {
+    const transcript = Array.from(e.results).map(r => r[0].transcript).join('');
+    document.getElementById('chatIn').value = transcript;
+    if (e.results[e.results.length - 1].isFinal) {
+      stopListening();
+      sendMessage();
+    }
+  };
+
+  recognition.onerror = (e) => {
+    stopListening();
+    if (e.error !== 'no-speech') showToast(`Mic error: ${e.error}`);
+  };
+
+  recognition.onend = () => stopListening();
+}
+
+function toggleMic() {
+  if (!SpeechRecog) { showToast('Voice not supported — use Chrome/Edge'); return; }
+  if (isListening) stopListening();
+  else {
+    try { recognition.start(); }
+    catch(e) { showToast('Could not start microphone'); }
+  }
+}
+
+function stopListening() {
+  isListening = false;
+  if (recognition) { try { recognition.stop(); } catch(e){} }
+  document.getElementById('micBtn').classList.remove('listening');
+  document.getElementById('listeningBanner').classList.remove('active');
+  document.getElementById('chatIn').placeholder = 'speak or type a command…';
+}
+
+// ══════════════════════════════════════════════════════════
+//  SPEECH — VOICE OUTPUT (SpeechSynthesis)
+// ══════════════════════════════════════════════════════════
+let selectedVoice = null;
+
+function loadVoices() {
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return;
+  const preferred = ['Google UK English Female','Samantha','Karen','Victoria','Fiona','Microsoft Zira'];
+  for (const name of preferred) {
+    const v = voices.find(v => v.name.includes(name));
+    if (v) { selectedVoice = v; break; }
+  }
+  if (!selectedVoice) selectedVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
+}
+
+if (window.speechSynthesis) {
+  window.speechSynthesis.onvoiceschanged = loadVoices;
+  loadVoices();
+}
+
+function speak(html) {
+  if (!window.speechSynthesis) return;
+  // Strip HTML tags for clean TTS
+  const clean = html
+    .replace(/<br\s*\/?>/gi, '. ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&')
+    .replace(/·/g,'').replace(/\s+/g,' ').trim();
+
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(clean);
+  if (selectedVoice) u.voice = selectedVoice;
+  u.rate   = 0.9;
+  u.pitch  = 0.85;
+  u.volume = 1.0;
+
+  document.getElementById('speakingBar').classList.add('active');
+  u.onend = u.onerror = () => document.getElementById('speakingBar').classList.remove('active');
+  window.speechSynthesis.speak(u);
+}
+
+// ══════════════════════════════════════════════════════════
+//  ACTIVITY LOG
+// ══════════════════════════════════════════════════════════
+const activities = [];
+
+function nowTime() {
+  const n = new Date(), p = v => String(v).padStart(2,'0');
+  return `${p(n.getHours())}:${p(n.getMinutes())}`;
+}
+
+function pushActivity(ev, ip, tag, status) {
+  activities.unshift({ t: nowTime(), ev, ip: ip||'', tag: tag||'', s: status||'info' });
+  if (activities.length > 80) activities.pop();
+  renderLog();
+}
+
+function renderLog() {
+  const icons = { ok:'✓', fail:'✗', info:'·' };
+  const cls   = { ok:'ev-ok', fail:'ev-fail', info:'ev-info' };
+  document.getElementById('logBody').innerHTML = activities.map(a => `
+  <div class="log-entry">
+    <div class="log-t">${a.t}</div>
+    <div class="log-c">
+      <div class="log-ev">
+        <span class="${cls[a.s]}">${icons[a.s]}</span>
+        ${a.ev} <span class="ev-ip">${a.ip}</span>
+      </div>
+      ${a.tag ? `<div class="log-subtag">${a.tag}</div>` : ''}
+    </div>
+  </div>`).join('');
+}
+
+// ══════════════════════════════════════════════════════════
+//  JOB PANEL
+// ══════════════════════════════════════════════════════════
+let jobs = [];
+
+function typeClass(type) {
+  const t = (type||'').toLowerCase();
+  if (t.includes('cdc') || t.includes('rdc')) return 'jt-cdc';
+  if (t.includes('lint') || t.includes('spg')) return 'jt-lint';
+  if (t.includes('eco') || t.includes('form')) return 'jt-eco';
+  if (t.includes('syn')) return 'jt-syn';
+  return 'jt-def';
+}
+
+function fmtElapsed(s) {
+  if (s >= 3600) {
+    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+    return `${h}h ${String(m).padStart(2,'0')}m`;
+  }
+  return `${String(Math.floor(s/60)).padStart(2,'0')}m ${String(s%60).padStart(2,'0')}s`;
+}
+
+function renderJobs() {
+  const body = document.getElementById('jobsBody');
+  if (!jobs.length) {
+    body.innerHTML = '<div class="jobs-empty"><div class="jobs-empty-icon">⬡</div><div class="jobs-empty-text">NO JOBS TODAY</div></div>';
+    return;
+  }
+
+  body.innerHTML = jobs.map(j => {
+    const sl = j.status === 'running' ? 'RUNNING' : j.status === 'complete' ? 'COMPLETE' : 'FAILED';
+    const sc = `js-${j.status}`;
+    const tc = typeClass(j.type);
+    const dir = (j.ref_dir || '').split('/').slice(-2).join('/') || '—';
+    const btns = j.status === 'running'
+      ? `<button class="jbtn red" onclick="killJob('${j.tag}')">KILL</button>
+         <button class="jbtn" onclick="viewLog('${j.tag}')">LOG</button>
+         <button class="jbtn" onclick="checkStatus('${j.tag}')">STATUS</button>`
+      : `<button class="jbtn" onclick="viewLog('${j.tag}')">LOG</button>
+         <button class="jbtn" onclick="analyzeJob('${j.tag}', '${j.ip}')">ANALYZE</button>`;
+    return `
+    <div class="job-card ${j.status}">
+      <div class="job-row1">
+        <div class="job-left">
+          <span class="jtype ${tc}">${j.type}</span>
+          <span class="jip">${j.ip}</span>
+        </div>
+        <div class="jstatus ${sc}"><div class="sdot"></div>${sl}</div>
+      </div>
+      <div class="job-row2">
+        <span class="jtag">${j.tag}</span>
+        <span class="jtime">${fmtElapsed(j.elapsed)}</span>
+      </div>
+      <div class="prog-track"><div class="prog-fill ${j.status}" style="width:${j.pct}%"></div></div>
+      <div class="prog-lbl"><span>${dir}</span><span>${Math.round(j.pct)}%</span></div>
+      <div class="job-btns">${btns}</div>
+    </div>`;
+  }).join('');
+
+  const run  = jobs.filter(j=>j.status==='running').length;
+  const ok   = jobs.filter(j=>j.status==='complete').length;
+  const fail = jobs.filter(j=>j.status==='failed').length;
+  document.getElementById('sRun').textContent   = run;
+  document.getElementById('sOk').textContent    = ok;
+  document.getElementById('sFail').textContent  = fail;
+  document.getElementById('hdrJobs').textContent = run;
+  document.getElementById('hdrTotal').textContent = jobs.length;
+}
+
+// Tick elapsed seconds on running jobs client-side
+setInterval(() => {
+  jobs.forEach(j => { if (j.status === 'running') { j.elapsed++; j.pct = Math.min(99, j.pct + 0.008); } });
+  renderJobs();
+}, 1000);
+
+// Poll server for real job data every 8 seconds
+async function fetchJobs() {
+  try {
+    const r = await fetch('/api/jobs?limit=25');
+    const data = await r.json();
+    if (Array.isArray(data)) {
+      jobs = data;
+      renderJobs();
+      const n = new Date(), p = v => String(v).padStart(2,'0');
+      document.getElementById('syncTag').textContent = `SYNC ${p(n.getHours())}:${p(n.getMinutes())}:${p(n.getSeconds())}`;
+    }
+  } catch(e) {
+    document.getElementById('syncTag').textContent = 'OFFLINE';
+  }
+}
+fetchJobs();
+setInterval(fetchJobs, 8000);
+
+// ══════════════════════════════════════════════════════════
+//  CHAT
+// ══════════════════════════════════════════════════════════
+function addMsg(role, html) {
+  const body = document.getElementById('chatBody');
+  const div  = document.createElement('div');
+  div.className = `msg msg-${role}`;
+  div.innerHTML = `<div class="msg-who">${role === 'user' ? '▸ ENGINEER' : '◈ FRIDAY'}</div><div class="msg-bubble">${html}</div>`;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+  return div;
+}
+
+async function typeWriter(el, html, speed=10) {
+  return new Promise(res => {
+    let i = 0;
+    const iv = setInterval(() => { el.innerHTML = html.slice(0,i); i++; if (i>html.length){clearInterval(iv);res();} }, speed);
+  });
+}
+
+// Determine if instruction needs --execute
+function needsExecute(text) {
+  return /^(run|analyze|fix|submit|sync|add|update|kill|stop|launch|start)\b/i.test(text.trim());
+}
+
+// Local status queries (don't need to hit genie_cli)
+function localQuery(text) {
+  const t = text.toLowerCase();
+  if (/\bstatus\b|how many|what.*running/.test(t)) {
+    const run  = jobs.filter(j=>j.status==='running').length;
+    const done = jobs.filter(j=>j.status==='complete').length;
+    const fail = jobs.filter(j=>j.status==='failed').length;
+    return `Current status: <b>${run} running</b>, <b>${done} complete</b>, <b>${fail} failed</b> today.`;
+  }
+  if (/what.*fail|fail.*today|any fail/.test(t)) {
+    const failed = jobs.filter(j=>j.status==='failed');
+    if (!failed.length) return `<span class="ok">No failures today.</span> All jobs clean.`;
+    return `<span class="warn">${failed.length} failure(s) today:</span><br>` +
+      failed.map(j=>`· <span class="tag">${j.tag}</span> — ${j.type} <b>${j.ip}</b>`).join('<br>');
+  }
+  if (/help|what can you|commands/.test(t)) {
+    return `I can:<br>
+<b>run</b> cdc_rdc / lint / spg_dft / eco / full_static_check<br>
+<b>analyze</b> results at &lt;dir&gt; for &lt;ip&gt;<br>
+<b>kill</b> &lt;tag&gt; — terminate a job<br>
+<b>status</b> — active jobs summary<br>
+<b>what failed</b> — today's failures<br>
+<b>tasks today</b> — full task list`;
+  }
+  return null;
+}
+
+function generateFridayResponse(data) {
+  if (data.no_match && !data.matched) {
+    return `I didn't recognize that instruction. Try <b>help</b> to see available commands.`;
+  }
+  const matched = data.matched || 'your request';
+  const tag     = data.tag;
+  const ip      = (data.stdout||'').match(/ip:\s*(\S+)/i)?.[1] || '';
+
+  if (data.execute && tag && !data.dry_run) {
+    return `<b>${matched}</b> launched${ip ? ` for <b>${ip}</b>` : ''}.<br>` +
+           `Tag: <span class="tag">${tag}</span><br>` +
+           `Job running. I'll monitor and notify you on completion.`;
+  }
+  if (data.dry_run || !data.execute) {
+    return `I would execute: <b>${matched}</b>.<br>` +
+           `Command confirmed. Say <b>"run &lt;check&gt; at &lt;dir&gt; for &lt;ip&gt;"</b> to execute.`;
+  }
+  if (data.error) {
+    return `<span class="warn">Error:</span> ${data.error}`;
+  }
+  return `Processed: <b>${matched}</b>.`;
+}
+
+async function sendMessage() {
+  const inp  = document.getElementById('chatIn');
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = '';
+  stopListening();
+
+  addMsg('user', text.replace(/</g,'&lt;'));
+
+  // Check local queries first (no API call needed)
+  const local = localQuery(text);
+  if (local) {
+    await showFridayResponse(local);
+    return;
+  }
+
+  // Send to API
+  const execute = needsExecute(text);
+  document.getElementById('chatStatus').innerHTML = '<span class="spinner"></span>PROCESSING';
+
+  let resp;
+  try {
+    const r = await fetch('/api/chat', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ instruction: text, execute })
+    });
+    resp = await r.json();
+  } catch(e) {
+    await showFridayResponse(`<span class="warn">Cannot reach FRIDAY server.</span> Is friday_server.py running?`);
+    document.getElementById('chatStatus').textContent = 'FRIDAY AI';
+    return;
+  }
+
+  document.getElementById('chatStatus').textContent = 'FRIDAY AI';
+  const fridayMsg = generateFridayResponse(resp);
+  await showFridayResponse(fridayMsg);
+
+  // Update activity log
+  if (resp.tag && execute) {
+    pushActivity(`${resp.matched || text} launched`, resp.ip || '', resp.tag, 'info');
+    setTimeout(fetchJobs, 3000); // Refresh jobs shortly after launch
+  } else if (text) {
+    pushActivity(`CMD: "${text.slice(0,30)}${text.length>30?'…':''}"`, '', '', 'info');
+  }
+}
+
+async function showFridayResponse(html) {
+  const body = document.getElementById('chatBody');
+
+  const row = document.createElement('div');
+  row.className = 'msg msg-ai';
+  row.innerHTML = '<div class="msg-who">◈ FRIDAY</div><div class="msg-bubble"><span id="_typing"></span><span class="typing-cursor"></span></div>';
+  body.appendChild(row);
+  body.scrollTop = body.scrollHeight;
+
+  const typingEl = row.querySelector('#_typing');
+  await typeWriter(typingEl, html, 10);
+
+  // Replace typing cursor with final content
+  row.querySelector('.msg-bubble').innerHTML = html;
+  body.scrollTop = body.scrollHeight;
+
+  speak(html);
+}
+
+document.getElementById('sendBtn').addEventListener('click', sendMessage);
+document.getElementById('chatIn').addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+
+// ══════════════════════════════════════════════════════════
+//  JOB BUTTON ACTIONS
+// ══════════════════════════════════════════════════════════
+async function killJob(tag) {
+  const j = jobs.find(x => x.tag === tag);
+  if (!j || j.status !== 'running') return;
+  showToast(`Sending kill signal to ${tag}…`);
+  try {
+    await fetch(`/api/jobs/${tag}/kill`, { method:'POST' });
+    j.status = 'failed'; j.pct = Math.floor(j.pct);
+    renderJobs();
+    pushActivity('Job KILLED', j.ip, j.tag, 'fail');
+  } catch(e) { showToast('Kill failed — server unreachable'); }
+}
+
+async function viewLog(tag) {
+  document.getElementById('modalTitle').textContent = `LOG — ${tag}`;
+  document.getElementById('modalBody').textContent = 'Loading…';
+  document.getElementById('logModal').classList.add('open');
+  try {
+    const r = await fetch(`/api/jobs/${tag}/log?lines=80`);
+    const d = await r.json();
+    if (d.error) { document.getElementById('modalBody').textContent = d.error; return; }
+    document.getElementById('modalBody').innerHTML = d.lines.map(l => {
+      const cls = /error|fail/i.test(l) ? 'log-err' : /warning|warn/i.test(l) ? 'log-warn' : /success|done|complete/i.test(l) ? 'log-ok' : '';
+      return `<span class="${cls}">${l.replace(/</g,'&lt;')}</span>`;
+    }).join('\n');
+  } catch(e) { document.getElementById('modalBody').textContent = 'Could not load log.'; }
+}
+
+async function checkStatus(tag) {
+  showToast(`Checking status: ${tag}…`);
+  try {
+    const r = await fetch(`/api/jobs/${tag}/status`);
+    const d = await r.json();
+    await showFridayResponse(d.output.replace(/</g,'&lt;').replace(/\n/g,'<br>'));
+  } catch(e) { showToast('Status check failed'); }
+}
+
+function analyzeJob(tag, ip) {
+  pushActivity('Analyze started', ip, tag, 'info');
+  showToast(`Spawning analysis orchestrator for ${ip}…`);
+  const instruction = `analyze results for ${ip} tag ${tag}`;
+  document.getElementById('chatIn').value = instruction;
+  sendMessage();
+}
+
+function closeModal() { document.getElementById('logModal').classList.remove('open'); }
+document.getElementById('logModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+
+// ══════════════════════════════════════════════════════════
+//  UTILITIES
+// ══════════════════════════════════════════════════════════
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = `◈ FRIDAY  ·  ${msg}`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+// ══════════════════════════════════════════════════════════
+//  STARTUP GREETING
+// ══════════════════════════════════════════════════════════
+window.addEventListener('load', async () => {
+  // Load voices (Chrome loads them async)
+  if (window.speechSynthesis) {
+    await new Promise(r => setTimeout(r, 600));
+    loadVoices();
+  }
+
+  const greeting = !SpeechRecog
+    ? `Systems online. <span class="warn">Voice input unavailable</span> — use Chrome or Edge for voice.<br>How can I assist you, Engineer?`
+    : `Good morning, Engineer. All systems <span class="ok">operational</span>. Voice interface active.<br>Awaiting your orders.`;
+
+  await showFridayResponse(greeting);
+  pushActivity('FRIDAY initialized', 'v3.2.0', '', 'ok');
+});
+</script>
+</body>
+</html>
