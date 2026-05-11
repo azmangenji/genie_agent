@@ -892,6 +892,190 @@ def check_mode_s_stitching(study_path, ref_dir):
     return failures
 
 
+def check_duplicate_wire_decls(ref_dir):
+    """Check 19 — duplicate wire/tri/wand/wor/reg declarations in same module.
+
+    FM aborts elaboration with `Duplicate wire/tri/wand/wor declaration for 'X'`
+    + `read_verilog/read_sverilog command has been ignored due to errors (FM-599)`
+    when a module has TWO identical wire-class declarations. Pre-FM check should
+    catch this instead of wasting a full FM cycle (run 20260511083831 ABORT root
+    cause: applier inserted `wire UNCONNECTED_19090 ;` twice in
+    ddrss_umccmd_t_umcregcmd while processing a Mode-I rename).
+
+    Streams through each PostEco netlist; per-module body, builds a Counter of
+    declared net names from `wire/tri/wand/wor/reg <name>;` lines; reports any
+    name with count >1.
+    """
+    failures = []
+    # Match `wire NAME ;` or `wire [N:M] NAME ;` (single-name decls only — multi-
+    # name decls like `wire A, B, C;` get split below)
+    DECL_RE = re.compile(r'^\s*(wire|tri|wand|wor|reg)\s+(?:\[[^\]]+\]\s+)?([^;]+);', re.MULTILINE)
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        text = strip_verilog_comments(text)
+        # Walk module-by-module so we count decls per-module-body (a wire X in
+        # module A and wire X in module B is fine — different scopes).
+        i = 0
+        cur_mod = None
+        body_lines = []
+        from collections import Counter
+        for line_idx, line in enumerate(text.split('\n'), start=1):
+            m = re.match(r'^module\s+(\S+)', line)
+            if m:
+                cur_mod = m.group(1)
+                body_lines = []
+                continue
+            if re.match(r'^\s*endmodule', line):
+                if cur_mod:
+                    # Check decls for this module
+                    body = '\n'.join(body_lines)
+                    counts = Counter()
+                    for dm in DECL_RE.finditer(body):
+                        # Split multi-name decls (e.g. `wire A, B, C;`)
+                        names = [n.strip() for n in dm.group(2).split(',')]
+                        for n in names:
+                            # Strip vector range if present (rare in flat name list)
+                            n = re.sub(r'\[[^\]]+\]', '', n).strip()
+                            if n:
+                                counts[n] += 1
+                    for name, c in counts.items():
+                        if c > 1:
+                            failures.append(
+                                f'[DUP_WIRE_DECL] {stage}: module {cur_mod!r} declares '
+                                f'wire/reg {name!r} {c} times — FM elaboration WILL ABORT '
+                                f'with "Duplicate wire declaration for {name!r}" + FM-599. '
+                                f'Likely cause: applier inserted a wire decl for a net that '
+                                f'pre-existing in the netlist (Mode-I rename or new wire '
+                                f'insertion that didn\'t check for prior decl).')
+                cur_mod = None
+                body_lines = []
+                continue
+            if cur_mod is not None:
+                body_lines.append(line)
+    return failures
+
+
+def check_cross_module_bridge_connectivity(study_path, ref_dir):
+    """Check 20 — cross-module bridge port connectivity audit.
+
+    For every port_declaration with `bridge_port_role` (host_si/se/q or
+    sibling_si/se/q), verify in the PostEco netlist:
+      (a) a parent module instantiates the owning module
+      (b) the parent has a wire declaration for the bridge wire (eco<jira>_*)
+      (c) the parent's instance line has `.<PORT>(<wire>)` hookup
+      (d) for OUTPUT bridge ports: a driver exists inside the owning module
+          (buffer cell or assign producing the port net)
+
+    Catches the FM ABORT class where bridge ports exist on a module but the
+    parent never wires them up, leaving FM to find unresolved nets at
+    instantiation scope.
+    """
+    failures = []
+    study = load_json(study_path) or {}
+    if not isinstance(study, dict):
+        return failures
+    # Cache stage→module body text
+    body_cache = {}
+    def _module_body(stage, mod):
+        key = (stage, mod)
+        if key in body_cache:
+            return body_cache[key]
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            body_cache[key] = ''
+            return ''
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            body_cache[key] = ''
+            return ''
+        text = strip_verilog_comments(text)
+        m = re.search(rf'^module\s+{re.escape(mod)}\b.*?^endmodule', text, re.DOTALL | re.MULTILINE)
+        body_cache[key] = m.group(0) if m else ''
+        return body_cache[key]
+
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'port_declaration':
+                continue
+            role = e.get('bridge_port_role')
+            if not role:
+                continue
+            owning_mod = e.get('module_name')
+            port_name  = e.get('port_name')
+            port_dir   = e.get('port_direction', '')
+            if not (owning_mod and port_name):
+                continue
+            # (a) parent module — anything that instantiates owning_mod
+            # Search every module body for `<owning_mod> <inst> (`
+            # We only need to find ONE parent for the connectivity check.
+            parent_inst_pat = re.compile(rf'^\s*{re.escape(owning_mod)}\s+(\w+)\s*\(', re.MULTILINE)
+            full_text = ''
+            gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+            if os.path.exists(gz):
+                try:
+                    full_text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+                    full_text = strip_verilog_comments(full_text)
+                except Exception:
+                    full_text = ''
+            inst_match = parent_inst_pat.search(full_text)
+            if not inst_match:
+                failures.append(
+                    f'[BRIDGE_PARENT_MISSING] {stage}: bridge port {port_name!r} '
+                    f'declared on {owning_mod!r} but no parent module instantiates '
+                    f'{owning_mod} → parent-scope wireup impossible → FM ABORT.')
+                continue
+            # (c) instance hookup — find `.PORT(<wire>)` in the instance block
+            # Walk forward from the inst match until matching `)`; check for the port
+            inst_end = full_text.find(';', inst_match.end())
+            inst_block = full_text[inst_match.start():inst_end] if inst_end > 0 else ''
+            hookup_pat = re.compile(rf'\.\s*{re.escape(port_name)}\s*\(\s*([^\)]+?)\s*\)')
+            hm = hookup_pat.search(inst_block)
+            if not hm:
+                failures.append(
+                    f'[BRIDGE_INSTANCE_HOOKUP_MISSING] {stage}: bridge port '
+                    f'{port_name!r} on {owning_mod!r} has NO `.{port_name}(...)` '
+                    f'hookup in parent instance → FM ABORT (port unresolved at '
+                    f'instantiation scope).')
+                continue
+            wire_name = hm.group(1).strip()
+            # (b) parent module wire decl for the bridge wire
+            # Find which module contains the instance match
+            preceding = full_text[:inst_match.start()]
+            mod_start_re = re.compile(r'^module\s+(\S+)', re.MULTILINE)
+            mods = list(mod_start_re.finditer(preceding))
+            parent_mod = mods[-1].group(1) if mods else None
+            if parent_mod:
+                parent_body = _module_body(stage, parent_mod)
+                wire_decl_re = re.compile(rf'^\s*(wire|tri|wand|wor)\s+(?:\[[^\]]+\]\s+)?[^;]*\b{re.escape(wire_name.split("[")[0])}\b[^;]*;', re.MULTILINE)
+                # Skip wire declaration check for constants / 1'b0 / single-bit literal hookups
+                if not wire_name.startswith(("1'b", "0'b", "1'h", "0'h")) and \
+                   not wire_decl_re.search(parent_body):
+                    failures.append(
+                        f'[BRIDGE_PARENT_WIRE_MISSING] {stage}: bridge port {port_name!r} '
+                        f'on {owning_mod!r} hooked to wire {wire_name!r} in parent '
+                        f'{parent_mod!r} — but no `wire {wire_name};` declaration '
+                        f'found in {parent_mod} body → FM ABORT (undeclared net).')
+            # (d) driver check for OUTPUT ports
+            if port_dir == 'output':
+                owning_body = _module_body(stage, owning_mod)
+                # Driver = cell whose output pin connects to port_name, or assign port_name = ...
+                driver_re = re.compile(rf'(\.\s*(Z|ZN|Q|QN|O)\s*\(\s*{re.escape(port_name)}\s*\)|^\s*assign\s+{re.escape(port_name)}\s*=)', re.MULTILINE)
+                if not driver_re.search(owning_body):
+                    failures.append(
+                        f'[BRIDGE_OUTPUT_UNDRIVEN] {stage}: bridge OUTPUT port '
+                        f'{port_name!r} on {owning_mod!r} has NO driver inside the '
+                        f'module (no cell .Z/.ZN/.Q/.QN/.O nor assign produces it) '
+                        f'→ FM ABORT or undriven port warning escalating to error.')
+    return failures
+
+
 def check_eco_cell_counts(applied):
     """
     WARN (not FAIL) if ECO cell counts differ significantly across stages.
@@ -1066,6 +1250,24 @@ def main():
     # (NOT tied to 1'b0). Catches missing stitching that breaks Route FM.
     fails = check_mode_s_stitching(study_path, args.ref_dir)
     results['mode_s_stitching'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 19 — duplicate wire/reg declarations in same module (FM-599 ABORT).
+    # Run 20260511083831 ABORT root cause: applier inserted `wire UNCONNECTED_19090 ;`
+    # twice in ddrss_umccmd_t_umcregcmd. Catches that exact bug + any future
+    # duplicate-decl insertion before wasting a 30+ min FM cycle.
+    fails = check_duplicate_wire_decls(args.ref_dir)
+    results['duplicate_wire_decls'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 20 — cross-module bridge port connectivity audit.
+    # For every bridge_port_role port_declaration, verify the parent module
+    # actually instantiates the owning module AND has a wire decl for the
+    # bridge wire AND the instance line has the .PORT(WIRE) hookup AND output
+    # bridge ports have an internal driver. Catches the "studier emitted half
+    # a bridge" failure mode at Step 5 instead of FM ABORT.
+    fails = check_cross_module_bridge_connectivity(study_path, args.ref_dir)
+    results['cross_module_bridge_connectivity'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0

@@ -922,6 +922,135 @@ def main():
                             f"divergence guaranteed. Fix Step 1 mode_s_anchor.fm_scope and "
                             f"re-run Step 2 before retrying Step 3.")
 
+    # ── 24. BRIDGE-ARTIFACT-SET-COMPLETE: when any new DFF uses bridge_port
+    # strategy in PP or Route, the study MUST contain the COMPLETE set of ~17
+    # artifact types per bridge. The previous failure mode (run 20260511083831):
+    # Studier emitted bridge port_declarations on the host module but skipped
+    # parent wire_declarations, parent instance_hookups, sibling buffer cells,
+    # sibling consolidation, and Q-closure → FM elaboration ABORTED on every
+    # target because parent scope referenced undeclared bridge wires. Step 5
+    # didn't catch it (only validates per-module syntax), Step 6 wasted FM
+    # runtime to discover it.
+    #
+    # Required artifact types per bridge (run eco_emit_bridge_plumbing.py to
+    # generate them deterministically):
+    #   1. port_declaration × 6 (host SI/SE/Q + sibling SI/SE/Q)
+    #   2. wire_declaration × 3 (parent-scope bridge wires)
+    #   3. port_connection × 6 (parent-scope instance hookups: host + sibling)
+    #   4. sibling_pin_consolidation × ≥1 (SE pin, ≥10 DFF cluster)
+    #   5. si_consumer_replace × 1 (Q-closure)
+    #   6. new_logic × 2 (Route only: SI buffer + SE buffer)
+    REQUIRED_ROLES_ALL_STAGES = {
+        # role → (change_type, count, description)
+        ('host_si',     'port_declaration'): 'host SI bridge input port',
+        ('host_se',     'port_declaration'): 'host SE bridge input port',
+        ('host_q',      'port_declaration'): 'host Q bridge output port',
+        ('sibling_si',  'port_declaration'): 'sibling SI bridge output port',
+        ('sibling_se',  'port_declaration'): 'sibling SE bridge output port',
+        ('sibling_q',   'port_declaration'): 'sibling Q bridge input port',
+        ('parent_wire', 'wire_declaration'): 'parent-scope bridge wires (need ≥3)',
+        ('host_si',     'port_connection'):  'parent hookup: host instance .SI_in(bridge)',
+        ('host_se',     'port_connection'):  'parent hookup: host instance .SE_in(bridge)',
+        ('host_q',      'port_connection'):  'parent hookup: host instance .Q_out(bridge)',
+        ('sibling_si',  'port_connection'):  'parent hookup: sibling instance .SI_out(bridge)',
+        ('sibling_se',  'port_connection'):  'parent hookup: sibling instance .SE_out(bridge)',
+        ('sibling_q',   'port_connection'):  'parent hookup: sibling instance .Q_in(bridge)',
+    }
+    REQUIRED_ROLES_PP_ROUTE = {
+        ('sibling_se', 'sibling_pin_consolidation'): 'sibling SE-pin consolidation (≥10 DFFs)',
+        ('sibling_q',  'si_consumer_replace'):       'Q-closure: rewire sibling DFF.SI to Q_in',
+    }
+    REQUIRED_ROLES_ROUTE_ONLY = {
+        ('sibling_si_driver', 'new_logic'): 'Route: SI bridge buffer cell',
+        ('sibling_se_driver', 'new_logic'): 'Route: SE bridge buffer cell',
+    }
+    # Collect (for_dff, mode_S_strategy_per_stage) for every DFF that picked bridge_port
+    bridge_dffs = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            strat = e.get('mode_S_strategy_per_stage') or {}
+            stages_using_bridge = [s for s in ('PrePlace', 'Route') if strat.get(s) == 'bridge_port']
+            if stages_using_bridge:
+                bridge_dffs.append({
+                    'inst':   e.get('instance_name') or e.get('dff_instance_name', '?'),
+                    'stages': stages_using_bridge,
+                })
+    # Dedupe (same DFF appears in all 3 stage entries)
+    seen = set(); uniq_bridge_dffs = []
+    for b in bridge_dffs:
+        if b['inst'] in seen: continue
+        seen.add(b['inst']); uniq_bridge_dffs.append(b)
+    for bd in uniq_bridge_dffs:
+        inst = bd['inst']
+        # Build per-stage role-set for this DFF
+        for stage in ('Synthesize', 'PrePlace', 'Route'):
+            if stage not in ('PrePlace', 'Route') and stage not in bd['stages']:
+                # Synth requires the all-stage subset only when ANY P&R stage is bridge_port
+                pass
+            present = set()
+            wire_count = 0
+            for e in study.get(stage, []):
+                # Match entries tagged for THIS DFF (if for_dff field present) or
+                # any bridge artifact (if studier didn't tag — be lenient on legacy).
+                if e.get('for_dff') and e.get('for_dff') != inst:
+                    continue
+                role = e.get('bridge_port_role')
+                ct = e.get('change_type')
+                if not role or not ct:
+                    continue
+                present.add((role, ct))
+                if (role, ct) == ('parent_wire', 'wire_declaration'):
+                    wire_count += 1
+            # Always-required roles
+            for key, desc in REQUIRED_ROLES_ALL_STAGES.items():
+                if key not in present:
+                    issues.append(
+                        f"HIGH/24-BRIDGE-ARTIFACT-MISSING: ECO DFF {inst} stage={stage} "
+                        f"missing {key[1]} with bridge_port_role={key[0]!r} ({desc}). "
+                        f"Run eco_emit_bridge_plumbing.py and splice its {stage} list "
+                        f"into the study; do NOT hand-derive bridge artifacts.")
+            # PP/Route-required roles
+            if stage in ('PrePlace', 'Route'):
+                for key, desc in REQUIRED_ROLES_PP_ROUTE.items():
+                    if key not in present:
+                        issues.append(
+                            f"HIGH/24-BRIDGE-ARTIFACT-MISSING: ECO DFF {inst} stage={stage} "
+                            f"missing {key[1]} with bridge_port_role={key[0]!r} ({desc}). "
+                            f"Bridge_port without consolidation/Q-closure leaves sibling "
+                            f"output ports undriven → FM ABORT on elaboration.")
+            # Route-only roles (buffers)
+            if stage == 'Route':
+                for key, desc in REQUIRED_ROLES_ROUTE_ONLY.items():
+                    if key not in present:
+                        issues.append(
+                            f"HIGH/24-BRIDGE-ARTIFACT-MISSING: ECO DFF {inst} stage=Route "
+                            f"missing {key[1]} with bridge_port_role={key[0]!r} ({desc}). "
+                            f"Without buffer cells the sibling output port has no driver "
+                            f"→ FM ABORT.")
+            # Wire count: parent_wire role must appear ≥3 times (si/se/q bridges)
+            if wire_count < 3 and ('parent_wire', 'wire_declaration') in present:
+                issues.append(
+                    f"HIGH/24-BRIDGE-WIRE-COUNT: ECO DFF {inst} stage={stage} has only "
+                    f"{wire_count} parent_wire wire_declaration(s); need ≥3 (si/se/q "
+                    f"bridges). eco_emit_bridge_plumbing.py emits all 3 — partial "
+                    f"emission means studier hand-edited the output.")
+            # Consolidation cluster size sanity (separate from Check 20 which
+            # checks per-entry; this checks per-DFF-bridge presence)
+            for e in study.get(stage, []):
+                if e.get('change_type') != 'sibling_pin_consolidation':
+                    continue
+                if e.get('for_dff') and e.get('for_dff') != inst:
+                    continue
+                cluster = e.get('consolidation_target_dffs') or []
+                if len(cluster) < 10:
+                    issues.append(
+                        f"HIGH/24-CONSOLIDATION-TOO-SMALL: ECO DFF {inst} stage={stage} "
+                        f"sibling_pin_consolidation cluster has {len(cluster)} DFFs "
+                        f"(<10). Bridge_port requires ≥10-DFF cluster (per studier MD §374) "
+                        f"or fall back to neighbor_dff strategy.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

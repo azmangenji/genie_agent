@@ -359,6 +359,15 @@ python3 script/eco_scripts/eco_pick_bridge_dffs.py \
 ```
 Output JSON populates the entries below directly: `consolidation_target_dffs`, `consumer_dff_inst`, candidate bridge source wires (cross-check with fenets rename map for stage-stability before assigning).
 
+**Deterministic plumbing emitter (MANDATORY when `bridge_port` chosen).** After running the picker, MUST invoke `eco_emit_bridge_plumbing.py` and SPLICE its per-stage output (`Synthesize`/`PrePlace`/`Route` lists) verbatim into the corresponding sections of `eco_preeco_study.json`. Manual derivation of bridge port_declarations / wire_declarations / port_connections / sibling_pin_consolidation / si_consumer_replace / buffer cells is FORBIDDEN — Step 3 Check 24 (BRIDGE-ARTIFACT-SET-COMPLETE) fails the round if any of the ~17 required artifacts is missing. Invocation:
+```bash
+python3 script/eco_scripts/eco_emit_bridge_plumbing.py \
+    --bridge-pick    data/<TAG>_eco_bridge_pick_<dff>.json \
+    --jira <jira> --host-module <host> --sibling-module <sib> \
+    --parent-module <parent> --host-inst <inst> --sibling-inst <inst> \
+    --new-dff-instance <DFF> --output data/<TAG>_eco_bridge_plumbing_<dff>.json
+```
+
 **Sibling SE-pin consolidation.** When `bridge_port` strategy is chosen for any stage, also emit ONE `change_type: "sibling_pin_consolidation"` entry per pin (SE and SI as needed):
 ```json
 {
