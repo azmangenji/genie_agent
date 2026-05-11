@@ -296,7 +296,7 @@ A new DFF inserted in a clock domain that reaches the scan chain (anything reach
 
 **`neighbor_dff` is the default. `bridge_port` is the fallback when no neighbor exists.** Engineer's NeedFreqAdj uses `neighbor_dff` in PP and `bridge_port` in Route; EcoUseSdpOutstRdCnt uses `bridge_port` in both because there's no neighbor at top scope.
 
-**MANDATORY — CTS/OPT-touched scan wires force `bridge_port`.** If the candidate `neighbor_dff` SE or SI for any P&R stage matches `FxOptCts_*`, `FxCts_*`, `FxPrePlace_HFSNET_*`, `*_CLKBUF_*`, or `*_CTSBUF_*`, the wire lives on the post-CTS scan tree — FM cone walks through CTS infrastructure absent in PreEco and diverges. Switch that stage to `bridge_port`. Step 3 validator Check 22 fails the run otherwise.
+**MANDATORY — CTS-touched Route scan wires force `bridge_port` for Route.** If the candidate `neighbor_dff` SE or SI **for the Route stage** matches `FxOptCts_*`, `FxCts_*`, `*_CLKBUF_*`, or `*_CTSBUF_*`, the wire lives on the CTS-rebalanced scan tree — PreEco and PostEco CTS topology differ when a new DFF changes loading, so FM cones diverge. Switch Route to `bridge_port`. PrePlace HFSNET (`FxPrePlace_HFSNET_*`) is NOT in this list: HFS is deterministic so PP=`neighbor_dff` with HFSNET is FM-safe. Step 3 validator Check 22 fails the run otherwise.
 
 **Required field on every new_logic_dff entry:**
 

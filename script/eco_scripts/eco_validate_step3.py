@@ -829,17 +829,17 @@ def main():
                     f"{e.get('mode_S_applied')!r}. Set mode_S_applied: true so downstream "
                     f"recognizes the DFF as Mode-S handled.")
 
-    # ── 22. CTS/OPT-touched scan wire forces bridge_port. When neighbor_dff is
-    # picked for P&R and the chosen SE/SI is on a post-CTS or post-OPT-CTS wire,
-    # the FM cone walks through CTS infrastructure that doesn't exist in PreEco
-    # → cone divergence → Failing Compare Points. The safe alternative is
-    # bridge_port: route SI/SE through fresh parent-level ports + sibling
-    # consolidation so the ECO DFF stays OFF the CTS-touched scan tree.
-    # Pattern matches buffer-tree artifacts inserted post-Place (HFSNET = high
-    # fanout split during synthesis/placement; FxCts_/FxOptCts_ = CTS / OPT-CTS
-    # rebalanced wires; *_CLKBUF_/*_CTSBUF_ = CTS-inserted buffer instances).
-    CTS_TOUCHED = _re.compile(r'(FxOptCts_|FxCts_|FxPrePlace_HFSNET_|_CLKBUF_|_CTSBUF_)', _re.IGNORECASE)
-    for stage in ('PrePlace', 'Route'):
+    # ── 22. CTS-touched Route scan wire forces bridge_port. When neighbor_dff is
+    # picked for Route and the chosen SE/SI is on a post-CTS or post-OPT-CTS
+    # wire, FM cone walks through CTS infrastructure that DIFFERS between PreEco
+    # and PostEco (CTS rebalances when a new DFF changes fanout/loading) → cone
+    # divergence → Failing Compare Points. Safe fix: bridge_port routes SI/SE
+    # through fresh parent-level ports so the ECO DFF stays off the CTS tree.
+    # PrePlace HFSNET wires are NOT flagged — HFS is deterministic w.r.t. fanout
+    # so PreEco-PP and PostEco-PP HFSNET topology matches; PP=neighbor_dff with
+    # HFSNET is engineer's actual pattern and FM-safe.
+    CTS_TOUCHED = _re.compile(r'(FxOptCts_|FxCts_|_CLKBUF_|_CTSBUF_)', _re.IGNORECASE)
+    for stage in ('Route',):
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
