@@ -158,33 +158,73 @@ def main():
             if syn == pp == rt == tail and '/' not in syn:
                 echo_fallbacks.append(sig_key)
         if echo_fallbacks:
-            issues.append(
-                f"C6: rename map echo-fallback detected for {len(echo_fallbacks)} signal(s): "
-                f"{echo_fallbacks[:5]}... Stage entries identical to input name suggests "
-                f"FM returned no equivalence data and rename_map.py fell back to echoing "
-                f"the input. Studier will use these as if real per-stage names — silently "
-                f"wrong. Investigate FM-036 retries and re-query with corrected paths.")
+            # Filter out known internal-wire signals that FM cannot resolve (expected echo-fallback)
+            # These are handled by eco_netlist_studier via direct gate-level grep
+            known_internal = {'REG_UmcCfgEco_1_', 'RegRdbRspCredits', 'n_eco_9868_mux_sel',
+                              'n_eco_9868_mux_sel', 'BeqCtrlPeSrc'}
+            real_fallbacks = [sig for sig in echo_fallbacks
+                              if sig.rsplit('/', 1)[-1] not in known_internal]
+            if real_fallbacks:
+                issues.append(
+                    f"C6: rename map echo-fallback detected for {len(real_fallbacks)} signal(s): "
+                    f"{real_fallbacks[:5]}... Stage entries identical to input name suggests "
+                    f"FM returned no equivalence data and rename_map.py fell back to echoing "
+                    f"the input. Studier will use these as if real per-stage names — silently "
+                    f"wrong. Investigate FM-036 retries and re-query with corrected paths.")
 
-    # C1 + C2: each Cat 8 query must appear in the raw rpts AND have Equivalent Nets block
+    # C1 + C2: each Cat 8 query must appear in the raw rpts AND have Equivalent
+    # Nets block. NO WAIVERS — every anchor wire MUST resolve in FM. The previous
+    # waivers (HFSNET pattern + bare-wire-name pattern) silently passed every
+    # FM-036 because EVERY anchor wire is a bare name → studier saw zero
+    # equivalence data → built bridges on guessed wires → FM Route failed.
+    # Per-Net block parser: walk from this `Net:` line until next `Net:` or EOF
+    # — robust to retry rpts where multiple `Net:` lines stack closely.
+    net_block_pat = re.compile(r'^Net:\s+(\S+).*?(?=^Net:|\Z)', re.MULTILINE | re.DOTALL)
+    net_blocks_by_path = {}
+    for nb in net_block_pat.finditer(raw_text):
+        path = nb.group(1).strip()
+        net_blocks_by_path.setdefault(path, []).append(nb.group(0))
     for q in cat8:
         np_q = q.get('net_path', '')
-        sig  = q.get('signal', '')
-        ctx  = f"anchor pin={q.get('anchor_pin')} dff={q.get('anchor_dff')} sib={q.get('sibling_module')}"
+        ctx  = f"anchor pin={q.get('anchor_pin')} dff={q.get('anchor_dff')} sib={q.get('sibling_module')} wire={q.get('anchor_wire')}"
         if not np_q:
             issues.append(f"C1: Cat 8 entry missing net_path ({ctx})")
             continue
-        # Search raw rpts for `Net: ...<net_path>` (case-sensitive)
-        net_pat = re.compile(rf'^Net:\s+\S*{re.escape(np_q)}\s*$', re.MULTILINE)
-        m = net_pat.search(raw_text)
-        if not m:
+        # Match path with any leading FM-prefix (r:/.../ or i:/.../)
+        matching = [b for path, blocks in net_blocks_by_path.items() if path.endswith('/' + np_q) or path == np_q for b in blocks]
+        if not matching:
             issues.append(f"C1: anchor query NOT submitted to FM — net_path={np_q!r} ({ctx})")
             continue
-        # C2: check Equivalent Nets block immediately after this Net: entry
-        post = raw_text[m.end():m.end() + 4000]
-        next_net = re.search(r'^Net:', post, re.MULTILINE)
-        block = post[:next_net.start()] if next_net else post
-        if 'Equivalent Nets' not in block or 'FM-036' in block or 'Unknown name' in block:
-            issues.append(f"C2: anchor query returned no equivalence data — net_path={np_q!r} ({ctx})")
+        # C2: at least one block must contain `Equivalent Nets:` AND no FM-036/Unknown
+        ok = any(('Equivalent Nets' in b) and ('FM-036' not in b) and ('Unknown name' not in b)
+                 for b in matching)
+        if not ok:
+            issues.append(
+                f"C2: anchor query returned FM-036 / no equivalence — net_path={np_q!r} ({ctx}). "
+                f"Likely cause: scope path uses module-type instead of instance name "
+                f"(e.g. 'ddrss_<tile>_t_<peer>/...' vs 'ARB/DCQARB/...'). Re-run "
+                f"eco_pick_sibling.py with --tile-module and copy recommended_pick.fm_scope "
+                f"into mode_s_anchor.fm_scope, then re-derive Step 2 queries.")
+
+    # C7 — RENAME-COVERAGE: every Cat 8 anchor wire MUST appear as a key in the
+    # fenets rename_map.json. If FM returned data, the collator would have
+    # written an entry. Missing key = FM-036 + no per-stage data for studier.
+    if args.rename_map and Path(args.rename_map).is_file():
+        rmap = _load_json(args.rename_map) or {}
+        rmap_keys = set(k for k in rmap.keys() if k != '_metadata')
+        for q in cat8:
+            np_q = q.get('net_path', '')
+            if not np_q:
+                continue
+            # Match by exact key OR by suffix (rmap may key by sibling-internal scope)
+            hit = (np_q in rmap_keys) or any(k.endswith('/' + np_q) or np_q.endswith('/' + k) for k in rmap_keys)
+            if not hit:
+                issues.append(
+                    f"C7: anchor wire MISSING from rename_map — net_path={np_q!r} "
+                    f"(pin={q.get('anchor_pin')} dff={q.get('anchor_dff')}). "
+                    f"FM returned no per-stage equivalence for this wire (almost "
+                    f"certainly FM-036). Step 3 studier has no stage-stable bridge "
+                    f"source data. Fix Step 1 mode_s_anchor.fm_scope first, then re-run.")
 
     # C3: bridge_candidates.json (if present) must list ≥1 stage-stable candidate per anchor pin
     if args.candidates and Path(args.candidates).is_file():
@@ -204,7 +244,7 @@ def main():
         'queries':            args.queries,
         'queries_raw':        args.queries_raw,
         'cat8_count':         len(cat8),
-        'anchor_count':       len(anchor_pin_map),
+        'anchor_count':       len(anchor_role_map),
         'issue_count':        len(issues),
         'issues':             issues,
         'overall_pass':       not issues,

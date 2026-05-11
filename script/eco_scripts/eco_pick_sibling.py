@@ -108,6 +108,57 @@ def _list_instantiations(parent_body_lines):
     return insts
 
 
+def find_instance_path_to_module(all_lines, target_module, tile_module=None):
+    """Walk the netlist and return the FM-resolvable instance hierarchy from
+    tile-down to target_module type — e.g. for sibling=ddrss_umccmd_t_umcdcqarb_0
+    instantiated as DCQARB inside ddrss_umccmd_t_umcarb (which is instantiated as
+    ARB inside the tile), returns 'ARB/DCQARB'.
+
+    FM session is rooted at the tile module's internal scope; its instance path is
+    therefore tile-relative. Returns the empty string when target_module is the
+    tile itself (top-level — no prefix needed).
+
+    Algorithm: walk modules; for each, scan body for `<target_module> <inst> (`.
+    On hit, record (parent_mod, inst_name) and recurse with parent_mod as the new
+    target. Stop when target_module == tile_module OR no parent is found.
+    """
+    if not target_module:
+        return ''
+    chain = []  # list of inst names from outer→inner
+    cur = target_module
+    visited = set()
+    while True:
+        if tile_module and cur == tile_module:
+            break
+        if cur in visited:
+            break  # cycle guard
+        visited.add(cur)
+        # Find which module instantiates `cur`
+        parent_mod = None
+        parent_inst = None
+        cur_mod = None
+        cur_start = None
+        inst_pat = re.compile(rf'^\s*{re.escape(cur)}\s+([A-Za-z_]\w*)\s*\(')
+        for i, line in enumerate(all_lines):
+            m = MOD_DEF_RE.match(line)
+            if m:
+                cur_mod = m.group(1); cur_start = i; continue
+            if MOD_END_RE.match(line):
+                cur_mod = None; cur_start = None; continue
+            if cur_mod and cur_mod != cur:
+                im = inst_pat.match(line)
+                if im:
+                    # Skip lines that are decls (input/output/wire/...)
+                    parent_mod = cur_mod
+                    parent_inst = im.group(1)
+                    break
+        if parent_mod is None:
+            break  # cur is top — no parent
+        chain.insert(0, parent_inst)
+        cur = parent_mod
+    return '/'.join(chain)
+
+
 def find_module_body(lines, mod_name):
     """Find a module's body lines (start to endmodule). Tries exact, _0, _1,
     and tile-prefixed variants. Returns list of body lines."""
@@ -192,6 +243,10 @@ def main():
                    help='report top N candidates (default 5)')
     p.add_argument('--min-dffs', type=int, default=10,
                    help='minimum SE-cluster size for a peer to be considered viable (default 10)')
+    p.add_argument('--tile-module', default='',
+                   help='Tile module (e.g. ddrss_umccmd_t_umccmd or umccmd). Used to compute '
+                        'fm_scope (FM-resolvable instance path from tile-internal root down to '
+                        'sibling). Without it, fm_scope walks all the way to top.')
     args = p.parse_args()
 
     with _open_text(args.netlist) as f:
@@ -233,8 +288,13 @@ def main():
             })
             continue
         dff_count, dom_size, dom_pfx, anchor, si_w, se_w, q_w = analyze_module(body)
+        # Compute FM-resolvable instance hierarchy from tile-internal root down
+        # to this sibling. FM queries MUST use instance names, not module types,
+        # or every find_equivalent_nets returns FM-036 (Unknown name).
+        fm_scope = find_instance_path_to_module(all_lines, mod_type, args.tile_module)
         candidates.append({
             'module': mod_type, 'inst': inst_name,
+            'fm_scope': fm_scope,
             'dff_count': dff_count,
             'dominant_se_cluster_size': dom_size,
             'dominant_se_prefix': dom_pfx,
@@ -267,7 +327,7 @@ def main():
     print(f'  peers found:      {len(peer_modules)} ({out["peer_count_viable"]} viable)')
     if out['recommended_pick']:
         rec = out['recommended_pick']
-        print(f'  RECOMMENDED:      {rec["module"]} (inst={rec["inst"]}, dff_count={rec["dff_count"]}, se_cluster_size={rec["dominant_se_cluster_size"]}, anchor_dff={rec["anchor_dff"]})')
+        print(f'  RECOMMENDED:      {rec["module"]} (inst={rec["inst"]}, fm_scope={rec.get("fm_scope","?")}, dff_count={rec["dff_count"]}, se_cluster_size={rec["dominant_se_cluster_size"]}, anchor_dff={rec["anchor_dff"]})')
     else:
         print(f'  RECOMMENDED:      <NONE viable> — increase --min-dffs threshold or pick different parent scope')
     print()

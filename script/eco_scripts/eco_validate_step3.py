@@ -868,6 +868,60 @@ def main():
                     f"parent-level ports + sibling consolidation (see eco_pick_bridge_dffs.py output). "
                     f"Bridge_port keeps the new DFF OFF the CTS-touched scan tree.")
 
+    # ── 23. BRIDGE-SOURCE-IN-MAP: when bridge_port strategy is chosen for any
+    # P&R stage, the anchor wire driving that bridge MUST appear as a key in
+    # eco_fenets_rename_map.json. Missing key = FM-036 silent failure upstream
+    # → studier has no per-stage equivalence data → bridges built on guessed
+    # wires → FM Route divergence. Force a hard failure here so the orchestrator
+    # restarts Step 1+2 with corrected mode_s_anchor.fm_scope.
+    rename_map_path = args.study.replace('_eco_preeco_study.json', '_eco_fenets_rename_map.json')
+    if os.path.isfile(rename_map_path):
+        try:
+            rmap = json.loads(Path(rename_map_path).read_text())
+        except Exception:
+            rmap = {}
+        rmap_keys = set(k for k in rmap.keys() if k != '_metadata')
+        for stage in ('Synthesize', 'PrePlace', 'Route'):
+            for e in study.get(stage, []):
+                if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                    continue
+                strat = e.get('mode_S_strategy_per_stage') or {}
+                inst = e.get('instance_name') or e.get('dff_instance_name', '?')
+                # Surface the explicit BLOCKED marker as a hard fail
+                for s in ('PrePlace', 'Route'):
+                    if strat.get(s) == 'BLOCKED_NO_RENAME_MAP':
+                        issues.append(
+                            f"HIGH: ECO DFF {inst} stage={s} mode_S_strategy="
+                            f"'BLOCKED_NO_RENAME_MAP' — studier could not find rename_map "
+                            f"entry for the chosen anchor wire. Re-run Step 1 with "
+                            f"corrected mode_s_anchor.fm_scope (instance hierarchy, NOT "
+                            f"module-type names), then re-run Step 2.")
+                # If bridge_port chosen but anchor wires aren't in rename_map → fail
+                bridges_used = [s for s in ('PrePlace', 'Route') if strat.get(s) == 'bridge_port']
+                if not bridges_used:
+                    continue
+                # Pull anchor wires from the ECO DFF's source rtl_diff change
+                ci = e.get('change_index')
+                src_change = next((c for c in (rtl_diff.get('changes') or []) if c.get('change_index') == ci), None)
+                if not src_change:
+                    continue
+                anc = src_change.get('mode_s_anchor') or {}
+                for role, field in (('SI', 'anchor_si_wire'), ('SE', 'anchor_se_wire')):
+                    wire = anc.get(field)
+                    if not wire:
+                        continue
+                    # Match wire against rename_map keys (suffix or exact)
+                    hit = (wire in rmap_keys) or any(k.endswith('/' + wire) for k in rmap_keys)
+                    if not hit:
+                        issues.append(
+                            f"HIGH/23-BRIDGE-SOURCE-IN-MAP: ECO DFF {inst} uses bridge_port "
+                            f"strategy in {bridges_used} but anchor {role} wire {wire!r} has "
+                            f"NO entry in {os.path.basename(rename_map_path)} — FM did not "
+                            f"return per-stage equivalence (likely FM-036). Bridge would be "
+                            f"built on a wire studier never validated across PP/Route → FM "
+                            f"divergence guaranteed. Fix Step 1 mode_s_anchor.fm_scope and "
+                            f"re-run Step 2 before retrying Step 3.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

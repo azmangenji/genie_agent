@@ -328,6 +328,8 @@ This makes per-stage decisions explicit and traceable.
 ```
 Step 3 validator FAILs handoff if either is missing/false.
 
+**HARD RULE — no rename_map fallback.** If the candidate anchor wire has NO entry in `eco_fenets_rename_map.json`, that means FM returned no per-stage equivalence (almost certainly FM-036). DO NOT fall back to direct PP/Route netlist scan to "guess" the per-stage name — that bypasses FM and produces silently wrong stage hookups. Instead, set `mode_S_strategy_per_stage[<stage>]: "BLOCKED_NO_RENAME_MAP"` and let Step 3 validator Check 23 fail the round; orchestrator must re-run Step 1 to fix `mode_s_anchor.fm_scope` and re-run Step 2.
+
 **Bridge Q closure.** When `bridge_port` strategy is chosen, the `ECO_<jira>_Q_in` port must be consumed at the sibling module's scan chain. Emit ONE `change_type: "si_consumer_replace"` entry:
 ```json
 {

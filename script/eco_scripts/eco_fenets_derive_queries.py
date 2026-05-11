@@ -170,7 +170,17 @@ def derive(rtl_diff, tile=''):
         sib   = anchor.get('sibling_module', '')
         adff  = anchor.get('anchor_dff', '')
         if sib and adff:
-            anchor_scope = anchor.get('anchor_scope') or sib
+            # Path priority (instance-name aware):
+            #   1. fm_scope (computed by eco_pick_sibling.py — instance hierarchy
+            #      from tile-internal root to sibling, e.g. "ARB/DCQARB"). FM
+            #      resolves only via INSTANCE names; module-type fall-backs
+            #      always return FM-036 and silently break Cat 8 queries.
+            #   2. anchor_scope (legacy hand-written field).
+            #   3. sibling_module (module TYPE — last-resort fallback; will
+            #      almost certainly FM-036 → Step 2 C7 catches it).
+            anchor_scope = (anchor.get('fm_scope')
+                            or anchor.get('anchor_scope')
+                            or sib)
             for role, wire_field in (('SI', 'anchor_si_wire'),
                                      ('SE', 'anchor_se_wire'),
                                      ('Q',  'anchor_q_wire')):

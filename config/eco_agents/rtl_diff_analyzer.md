@@ -671,13 +671,14 @@ The flag is MANDATORY (Step 1 validator rejects entries that omit it). To opt ou
 python3 script/eco_scripts/eco_pick_sibling.py \
     --netlist     <REF_DIR>/data/PreEco/PrePlace.v.gz \
     --host-module <module_name from this entry> \
+    --tile-module <tile_top_module from rtl_diff>     \
     --output      data/<TAG>_eco_sibling_pick_<dff>.json
 ```
 Read the output JSON and use `recommended_pick` directly:
 - `mode_s_anchor.sibling_module` ← `recommended_pick.module`
 - `mode_s_anchor.anchor_dff` ← `recommended_pick.anchor_dff`
-- `mode_s_anchor.anchor_scope` ← `<parent_module>/<recommended_pick.inst>` (parent_module from picker output)
-- `mode_s_anchor.anchor_si_wire` ← `recommended_pick.anchor_si_wire` (wire driving anchor's SI; FM Cat 8 queries this — pin paths return FM-036)
+- `mode_s_anchor.fm_scope` ← `recommended_pick.fm_scope` ← **MANDATORY**. Tile-relative INSTANCE hierarchy (e.g. `ARB/DCQARB`). FM resolves only via instance names; emitting module-type names (e.g. `ddrss_umccmd_t_umcarb/DCQARB`) returns FM-036 on every Cat 8 anchor query.
+- `mode_s_anchor.anchor_si_wire` ← `recommended_pick.anchor_si_wire`
 - `mode_s_anchor.anchor_se_wire` ← `recommended_pick.anchor_se_wire`
 - `mode_s_anchor.anchor_q_wire`  ← `recommended_pick.anchor_q_wire`
 
@@ -692,7 +693,7 @@ Emit:
   "mode_s_anchor": {
     "sibling_module":  "<recommended_pick.module>",
     "anchor_dff":      "<recommended_pick.anchor_dff>",
-    "anchor_scope":    "<parent_module>/<recommended_pick.inst>",
+    "fm_scope":        "<recommended_pick.fm_scope>",
     "anchor_si_wire":  "<recommended_pick.anchor_si_wire>",
     "anchor_se_wire":  "<recommended_pick.anchor_se_wire>",
     "anchor_q_wire":   "<recommended_pick.anchor_q_wire>"

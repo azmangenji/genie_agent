@@ -369,14 +369,30 @@ def main():
                 f"(e.g. 'wrapper-only clock {c.get('dff_clock')!r} never carries scan_enable')")
         elif rss is True:
             anchor = c.get('mode_s_anchor') or {}
-            missing_anchor = [k for k in ('sibling_module', 'anchor_dff', 'anchor_scope')
+            missing_anchor = [k for k in ('sibling_module', 'anchor_dff', 'fm_scope')
                               if not anchor.get(k)]
             if missing_anchor:
                 new_logic_field_issues.append(
-                    f"changes[{idx}] target={tgt}: requires_scan_stitching=true but "
-                    f"`mode_s_anchor` MISSING fields {missing_anchor}. Step 2 Cat 8 "
-                    f"anchor query depends on this — without it studier has no equivalence "
-                    f"data to pick stage-stable bridge source/consumer wires.")
+                    f"changes[{idx}] target={tgt} [FAIL/13-FM-SCOPE-MISSING]: "
+                    f"requires_scan_stitching=true but `mode_s_anchor` missing fields "
+                    f"{missing_anchor}. fm_scope (instance hierarchy from tile-internal "
+                    f"root to sibling, e.g. 'ARB/DCQARB') MUST come from "
+                    f"eco_pick_sibling.py recommended_pick.fm_scope. Without it Step 2 "
+                    f"Cat 8 queries use module-type names and FM returns Unknown name "
+                    f"(FM-036) on every anchor — Step 3 then has no bridge data.")
+            elif '/' in (anchor.get('fm_scope') or ''):
+                # Sanity: fm_scope must look like instance/instance, not contain
+                # any module-type token (e.g. ddrss_<tile>_t_<peer>). Module-type
+                # tokens always start with the tile prefix.
+                fms = anchor['fm_scope']
+                bad = [tok for tok in fms.split('/') if tok.startswith('ddrss_')]
+                if bad:
+                    new_logic_field_issues.append(
+                        f"changes[{idx}] target={tgt} [FAIL/13-FM-SCOPE-MODULE-TYPE]: "
+                        f"mode_s_anchor.fm_scope={fms!r} contains module-type token(s) "
+                        f"{bad} — must be INSTANCE names only (e.g. 'ARB/DCQARB'). "
+                        f"Re-run eco_pick_sibling.py with --tile-module set, then copy "
+                        f"recommended_pick.fm_scope verbatim.")
             else:
                 # Check 12 — SIBLING-IS-SELF: sibling_module MUST be a peer module
                 # different from the host. Picking the host module as its own sibling
