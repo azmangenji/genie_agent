@@ -663,12 +663,17 @@ def main():
                 if net is None or (isinstance(net, str) and not net.strip()):
                     issues.append(f"CRITICAL: chain-injection schema — new_logic_gate {inst}.{pin} in {stage} = {net!r} (empty/null)")
 
-    # ── 17. Strategy/Entry mutual exclusion: when ANY stage uses neighbor_dff,
-    #        the study must NOT contain sibling_pin_consolidation or
-    #        si_consumer_replace entries (those are bridge_port-only artifacts).
-    #        Mixing produces inconsistent applier behavior.
+    # ── 17. Strategy/Entry mutual exclusion: bridge plumbing entries
+    #        (sibling_pin_consolidation, si_consumer_replace, port_declaration /
+    #        port_connection with bridge_port_role or is_mode_s_stitch) are valid
+    #        ONLY when the corresponding DFF's PP/Route port_connections_per_stage
+    #        actually consume those bridge port names. Mixing — bridge plumbing
+    #        emitted but DFF SI/SE wired to neighbor wires — leaves the bridge
+    #        ports declared on host with no parent wireup → Step 5 catches it as
+    #        MODE_S_BRIDGE_NOT_WIRED. Catch it here at Step 3 instead.
     has_neighbor_dff = False
     has_bridge_port  = False
+    dff_pcs_wires = set()  # all SI/SE values used by new DFFs in PP/Route
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
@@ -680,15 +685,41 @@ def main():
                     has_neighbor_dff = True
                 elif v == 'bridge_port':
                     has_bridge_port = True
-    if has_neighbor_dff and not has_bridge_port:
-        # neighbor_dff for all PP/Route stages but bridge artifacts present?
-        for stage in ('Synthesize', 'PrePlace', 'Route'):
-            for e in study.get(stage, []):
-                if e.get('change_type') in ('sibling_pin_consolidation', 'si_consumer_replace'):
+                pcs = (e.get('port_connections_per_stage') or {}).get(s) or {}
+                for pin in ('SI', 'SE'):
+                    w = pcs.get(pin)
+                    if isinstance(w, str) and w.strip() not in ("1'b0", "1'b1", ''):
+                        dff_pcs_wires.add(w.strip())
+    BRIDGE_TYPES = ('sibling_pin_consolidation', 'si_consumer_replace')
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            ct = e.get('change_type')
+            is_bridge_artifact = (
+                ct in BRIDGE_TYPES
+                or e.get('bridge_port_role')
+                or (ct in ('port_declaration', 'port_connection') and e.get('is_mode_s_stitch'))
+            )
+            if not is_bridge_artifact:
+                continue
+            # Strategy explicitly declared neighbor_dff → forbidden
+            if has_neighbor_dff and not has_bridge_port:
+                issues.append(
+                    f"HIGH: Strategy/Entry contradiction — bridge artifact {ct!r} "
+                    f"({e.get('port_name') or e.get('change_index') or e.get('sibling_module','?')!r}) "
+                    f"in {stage} but no DFF uses bridge_port strategy. "
+                    f"Either switch the DFF's mode_S_strategy_per_stage to bridge_port "
+                    f"(and wire SI/SE to the bridge port names), or drop this bridge entry.")
+                continue
+            # No explicit strategy, but bridge port name not actually consumed by any DFF SI/SE
+            if ct == 'port_declaration' and e.get('is_mode_s_stitch'):
+                pn = e.get('port_name', '')
+                if pn and pn not in dff_pcs_wires:
                     issues.append(
-                        f"HIGH: Strategy/Entry contradiction — {e.get('change_type')!r} entry in {stage} "
-                        f"sibling={e.get('sibling_module','?')!r} but no DFF uses bridge_port strategy. "
-                        f"sibling_pin_consolidation and si_consumer_replace belong to bridge_port only.")
+                        f"HIGH: Bridge port {pn!r} declared in {stage} on module "
+                        f"{e.get('module_name','?')!r} but no new DFF's SI/SE consumes it "
+                        f"in port_connections_per_stage — Step 5 will fail with "
+                        f"MODE_S_BRIDGE_NOT_WIRED. Either wire DFF SI/SE to {pn!r}, "
+                        f"or drop this port_declaration (strategy is neighbor_dff).")
 
     # ── 18. Q-closure consumer must structurally exist in the named sibling.
     #        si_consumer_replace.consumer_dff_inst MUST appear in sibling_module's
@@ -797,6 +828,45 @@ def main():
                     f"has real Mode-S strategy in PP/Route ({strat}) but mode_S_applied="
                     f"{e.get('mode_S_applied')!r}. Set mode_S_applied: true so downstream "
                     f"recognizes the DFF as Mode-S handled.")
+
+    # ── 22. CTS/OPT-touched scan wire forces bridge_port. When neighbor_dff is
+    # picked for P&R and the chosen SE/SI is on a post-CTS or post-OPT-CTS wire,
+    # the FM cone walks through CTS infrastructure that doesn't exist in PreEco
+    # → cone divergence → Failing Compare Points. The safe alternative is
+    # bridge_port: route SI/SE through fresh parent-level ports + sibling
+    # consolidation so the ECO DFF stays OFF the CTS-touched scan tree.
+    # Pattern matches buffer-tree artifacts inserted post-Place (HFSNET = high
+    # fanout split during synthesis/placement; FxCts_/FxOptCts_ = CTS / OPT-CTS
+    # rebalanced wires; *_CLKBUF_/*_CTSBUF_ = CTS-inserted buffer instances).
+    CTS_TOUCHED = _re.compile(r'(FxOptCts_|FxCts_|FxPrePlace_HFSNET_|_CLKBUF_|_CTSBUF_)', _re.IGNORECASE)
+    for stage in ('PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            if not e.get('requires_scan_stitching'):
+                continue
+            if not e.get('confirmed', True):
+                continue
+            inst = e.get('instance_name') or e.get('dff_instance_name', '?')
+            pcs  = (e.get('port_connections_per_stage') or {}).get(stage) or {}
+            strat = (e.get('mode_S_strategy_per_stage') or {}).get(stage) or 'neighbor_dff'
+            for pin in ('SE', 'SI'):
+                v = pcs.get(pin, '')
+                if not isinstance(v, str) or v.strip() in ("1'b0", "1'b1"):
+                    continue
+                if not CTS_TOUCHED.search(v):
+                    continue
+                # Allow bridge_port to use any wire (it's a parent-level port
+                # name, not a direct CTS net hookup).
+                if strat == 'bridge_port':
+                    continue
+                issues.append(
+                    f"HIGH: ECO DFF {inst}.{pin} in {stage} = {v!r} is on a CTS/OPT-touched scan wire — "
+                    f"strategy={strat!r} hooks the new DFF directly into the post-CTS scan cone, which "
+                    f"FM walks through CTS infrastructure that does not exist in PreEco → cone divergence "
+                    f"→ Failing Compare Points. MUST switch to bridge_port: route SI/SE through fresh "
+                    f"parent-level ports + sibling consolidation (see eco_pick_bridge_dffs.py output). "
+                    f"Bridge_port keeps the new DFF OFF the CTS-touched scan tree.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

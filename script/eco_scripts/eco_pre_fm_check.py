@@ -819,10 +819,11 @@ def check_mode_s_stitching(study_path, ref_dir):
                 failures.append(f'[MODE_S_MODULE_MISSING] {stage}: host module {host!r} not found for {inst}')
                 continue
             body = mod_m.group(0)
-            # Look for the 3 stitching port declarations (any ECO_*_SI_in / SE_in / Q_out)
-            si = re.search(r'^\s*input\s+(ECO_\w*_SI_in|eco\w*_si_bridge_in)\s*;', body, re.MULTILINE)
-            se = re.search(r'^\s*input\s+(ECO_\w*_SE_in|eco\w*_se_bridge_in)\s*;', body, re.MULTILINE)
-            qo = re.search(r'^\s*output\s+(ECO_\w*_Q_out|eco\w*_q_bridge_out)\s*;', body, re.MULTILINE)
+            # Look for the 3 stitching port declarations (any ECO_*_SI_in / SE_in / Q_out
+            # OR <target_reg>_reg_SI_in naming convention)
+            si = re.search(r'^\s*input\s+(ECO_\w*_SI_in|eco\w*_si_bridge_in|\w+_reg_SI_in)\s*;', body, re.MULTILINE)
+            se = re.search(r'^\s*input\s+(ECO_\w*_SE_in|eco\w*_se_bridge_in|\w+_reg_SE_in)\s*;', body, re.MULTILINE)
+            qo = re.search(r'^\s*output\s+(ECO_\w*_Q_out|eco\w*_q_bridge_out|\w+_reg_Q_out)\s*;', body, re.MULTILINE)
             missing_ports = [p for p, m in (('SI_in', si), ('SE_in', se), ('Q_out', qo)) if not m]
             if missing_ports:
                 failures.append(f'[MODE_S_PORT_MISSING] {stage}: {inst} requires Mode S but host {host!r} missing port(s) {missing_ports}')
