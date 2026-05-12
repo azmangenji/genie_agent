@@ -380,27 +380,38 @@ end
 
 echo "#table end#" >> $out
 
-# AUTO-INVOKE FM ABORT CLASSIFIER (deterministic — removes orchestrator-context-pressure
-# failure mode where ABORT verdicts get silently dropped). Runs unconditionally after
-# every FM submission; classifier itself is a no-op when status != ABORT. The classifier
-# enriches round_handoff.json with primary_abort_type + remediation_hints + loop_verdict
-# so the next ROUND_ORCHESTRATOR can recover automatically without re-deriving the cause.
-# Run 20260511201004 + 20260511083831 root cause: orchestrator wrote round_handoff but
-# didn't run classifier or spawn next round → flow stopped on ABORT. This script-side
-# auto-invoke removes the agent dependency.
+# AUTO-INVOKE post-FM handler (classify + auto-fix + resubmit). Replaces the
+# old "classifier-only" pattern. The handler:
+#   - status PASS  → write handoff CONVERGED, exit 0 (FINAL_ORCHESTRATOR next)
+#   - status FAIL  → write handoff ADVANCE_NEXT_ROUND, exit 0 (ROUND_ORCHESTRATOR Mode A-H)
+#   - status ABORT with auto-fixable pattern → patch netlist + resubmit FM (in-process loop, max 3)
+#   - status ABORT with non-fixable pattern OR attempts exhausted → escalate
+# Removes orchestrator-context-pressure dependency AND the wasteful
+# "spawn ROUND_ORCHESTRATOR for ABORT recovery" overhead (saved 5-15 min
+# spawn cost per ABORT cycle). Run 20260511201004 root cause: applier
+# emitted duplicate `wire n_eco_9868_mux_sel ;` (FM-599 SVR-9 ABORT) — this
+# handler patches the duplicate inline and resubmits without round increment.
 set fm_verify_path = "$source_dir/data/${tag}_eco_fm_verify.json"
 set handoff_path   = "$source_dir/data/${tag}_round_handoff.json"
 set logs_dir       = "$refdir_name/logs"
-set abort_class    = "$source_dir/data/${tag}_eco_fm_abort_classification.json"
+# Extract JIRA from refdir path (format: ddrss_<tile>_t_DEUMCIPRTL-<JIRA>_AI_*)
+set jira_raw = `echo $refdir_name | grep -oE 'DEUMCIPRTL-[0-9]+' | head -1`
+set jira_num = `echo $jira_raw | sed 's/DEUMCIPRTL-//'`
+if ("$jira_num" == "") set jira_num = "0"
 if (-f "$fm_verify_path" && -d "$logs_dir") then
     echo "" >> $out
-    echo "=== Auto-invoking eco_extract_fm_abort_cause.py ===" >> $out
-    set classifier_args = "--fm-verify $fm_verify_path --logs-dir $logs_dir --tag $tag --round 1 --output $abort_class"
-    if (-f "$handoff_path") then
-        set classifier_args = "$classifier_args --update-round-handoff $handoff_path"
-    endif
-    python3 $source_dir/script/eco_scripts/eco_extract_fm_abort_cause.py $classifier_args >> $out 2>&1
-    echo "Classifier output: $abort_class" >> $out
+    echo "=== Auto-invoking eco_post_fm_handler.py (classify + auto-fix + resubmit) ===" >> $out
+    python3 $source_dir/script/eco_scripts/eco_post_fm_handler.py \
+        --fm-verify  $fm_verify_path \
+        --logs-dir   $logs_dir \
+        --tag        $tag \
+        --round      1 \
+        --base-dir   $source_dir \
+        --ref-dir    $refdir_name \
+        --tile       $tile_name \
+        --jira       $jira_num \
+        --handoff    $handoff_path \
+        --max-attempts 3 >> $out 2>&1
 endif
 
 cd $source_dir
