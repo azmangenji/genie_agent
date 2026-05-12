@@ -418,17 +418,52 @@ def main():
                         f"that produces no real cross-module bridging. Pick a different "
                         f"peer module under the host's parent that contains scan-chain DFFs.")
         # Heuristic: clocks that are NOT wrapper-only (wrp_clk_*) propagate scan
-        # enable and so require Mode S. Force the flag to true unless the agent
-        # documented an exception.
+        # enable and so require Mode S. The agent may opt out by claiming the
+        # picker returned null — but that claim MUST be backed by an actual
+        # sibling_pick JSON on disk with `recommended_pick: null` (proof of
+        # execution). Without the proof file, the agent fabricated the reason
+        # to satisfy the validator escape hatch.
         clk = (c.get('dff_clock') or '')
         is_wrapper_clk = clk.startswith('wrp_clk_') or '/wrp_clk_' in clk
-        if rss is False and not is_wrapper_clk:
+        skip_reason = c.get('scan_stitching_skipped_reason') or ''
+        eco_pick_sibling_null_claimed = 'eco_pick_sibling returned null' in skip_reason
+        # Verify the claim — sibling_pick file must exist AND recommended_pick must be null.
+        eco_pick_sibling_null_proven = False
+        if eco_pick_sibling_null_claimed and tgt:
+            import os as _os, glob as _glob, json as _json
+            data_dir = _os.path.dirname(_os.path.abspath(args.rtl_diff))
+            tag_match = re.match(r'(\d{14})', _os.path.basename(args.rtl_diff))
+            if tag_match:
+                tag = tag_match.group(1)
+                # Try multiple naming variants the agent may use
+                candidates = (_glob.glob(_os.path.join(data_dir, f'{tag}_eco_sibling_pick_{tgt}*.json'))
+                              + _glob.glob(_os.path.join(data_dir, f'{tag}_eco_sibling_pick_{tgt[:20]}*.json')))
+                for sp_path in candidates:
+                    try:
+                        sp = _json.loads(open(sp_path).read())
+                        if sp.get('recommended_pick') is None:
+                            eco_pick_sibling_null_proven = True
+                            break
+                    except Exception:
+                        pass
+        if eco_pick_sibling_null_claimed and not eco_pick_sibling_null_proven:
+            new_logic_field_issues.append(
+                f"changes[{idx}] target={tgt}: scan_stitching_skipped_reason claims "
+                f"'eco_pick_sibling returned null' but NO sibling_pick JSON file exists "
+                f"on disk with recommended_pick: null. Agent must actually invoke "
+                f"`python3 script/eco_scripts/eco_pick_sibling.py --host-module {c.get('module_name','?')!r} "
+                f"--tile-module <tile> --output data/<TAG>_eco_sibling_pick_{tgt}.json` "
+                f"and only after that file is on disk with recommended_pick=null may "
+                f"this opt-out reason be claimed. Fabricating the reason to bypass "
+                f"Mode-S enforcement is FORBIDDEN.")
+        if rss is False and not is_wrapper_clk and not eco_pick_sibling_null_proven:
             new_logic_field_issues.append(
                 f"changes[{idx}] target={tgt}: requires_scan_stitching=false but "
                 f"dff_clock={clk!r} is NOT a wrapper-only clock (wrp_clk_*) — "
                 f"non-wrapper clocks propagate scan_enable; Mode S is required. "
-                f"If this is a documented exception, override the heuristic by "
-                f"naming the clock with the wrp_clk_ prefix or extend this check.")
+                f"Valid opt-outs: (a) wrp_clk_* clock, (b) sibling_pick JSON on disk "
+                f"with recommended_pick=null. If this is a documented exception, "
+                f"override the heuristic by naming the clock with the wrp_clk_ prefix.")
         needs_chain = c.get('has_sync_reset') or c.get('requires_scan_stitching')
         chain = c.get('d_input_gate_chain') or []
         d_in_net = c.get('d_input_net') or ''
