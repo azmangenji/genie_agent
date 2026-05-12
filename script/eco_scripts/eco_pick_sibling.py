@@ -102,6 +102,15 @@ def _list_instantiations(parent_body_lines):
         if re.match(r'^[A-Z][A-Z0-9_]*\d', mod_type) and len(mod_type) > 4:
             # Looks like a library cell (e.g. INVD1BWP...), skip
             continue
+        # Skip synthesizer-emitted wrapper modules: <prefix>_wrap_<UPPERCASE_CELL>
+        # (e.g. ddrss_umccmd_t_ipu_mmac_t_wrap_SDFQD1AMDBWP136P5M273H3P48CPDLVT).
+        # These are thin wrappers around a single library cell, not real RTL
+        # submodules — they always have 1-4 DFFs and never pass the viability
+        # gate. On 9868 EcoUseSdpOutstRdCnt this filter drops 477 false peers
+        # to ~10 real RTL submodules (cosmetic — picker already returned the
+        # right verdict before, just with noisy output).
+        if re.search(r'_wrap_[A-Z][A-Z0-9_]*\d', mod_type):
+            continue
         if (mod_type, inst_name) not in seen_inst_lines:
             seen_inst_lines.add((mod_type, inst_name))
             insts.append((mod_type, inst_name))
