@@ -72,6 +72,30 @@ ABORT_PATTERNS = [
      "FE-LINK-7 elaboration failure. Usually missing port_declaration or "
      "wrong cell pin name. Check Step 5 Check 16 (missing_output_port_decls) "
      "and Check 15 (eco_output_pin_names) outputs."),
+    (re.compile(r"Cannot link cell ['\"]?([^'\"]+?)['\"]? to its reference design ['\"]?([^'\"]+?)['\"]?\.\s*\(FE-LINK-2\)"),
+     'ABORT_LINK',
+     'cell_type_not_in_library',
+     "FE-LINK-2: cell {match!r} cannot be linked to its reference design — "
+     "the cell type does NOT exist in the technology library FM is loading. "
+     "Almost always caused by studier emitting a LOGICAL function name (NOR3, "
+     "AND2, NAND2) instead of the TSMC short form (NR3, AN2, ND2). Check Step "
+     "5 Check 21 (eco_cell_type_in_library) output for the suggested correction. "
+     "Re-study with corrected cell_type that matches what's already in the PreEco "
+     "netlist for that module."),
+    (re.compile(r"Unresolved references detected during link\.\s*\(FM-234\)"),
+     'ABORT_LINK',
+     'unresolved_references',
+     "FM-234: One or more cell instances reference designs/types not found in "
+     "the loaded library. Almost always co-occurs with FE-LINK-2 — see those "
+     "messages for the exact cell type(s) missing. Action: fix the cell_type "
+     "names in eco_preeco_study.json (use TSMC short forms NR/AN/ND, not "
+     "logical NOR/AND/NAND)."),
+    (re.compile(r"Failed to set top design to ['\"]?([^'\"]+?)['\"]?\.?\s*\(FM-156\)"),
+     'ABORT_LINK',
+     'top_design_link_failure',
+     "FM-156: cannot set top design {match!r} — usually a downstream symptom "
+     "of FE-LINK-2 / FM-234 above. Fix the upstream link errors first; this "
+     "will resolve automatically."),
     (re.compile(r"Unknown name: ['\"]([^'\"]+)['\"].*\(FM-036\)"),
      'ABORT_LINK',
      'unknown_net',
