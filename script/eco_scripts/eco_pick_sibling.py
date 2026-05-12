@@ -161,7 +161,12 @@ def find_instance_path_to_module(all_lines, target_module, tile_module=None):
 
 def find_module_body(lines, mod_name):
     """Find a module's body lines (start to endmodule). Tries exact, _0, _1,
-    and tile-prefixed variants. Returns list of body lines."""
+    and tile-prefixed variants. Returns list of body lines.
+
+    Linear-scan fallback. For high-fan-out parents (e.g. EcoUseSdpOutstRdCnt
+    with 20+ peer candidates), prefer find_module_body_cached() with a prebuilt
+    module index — single linear scan per netlist instead of one per candidate.
+    """
     candidates = [
         re.compile(rf'^module\s+{re.escape(mod_name)}\s*\('),
         re.compile(rf'^module\s+{re.escape(mod_name)}_0\s*\('),
@@ -181,7 +186,81 @@ def find_module_body(lines, mod_name):
     return []
 
 
-def _route_dff_pin_map(route_lines, sib_module):
+def _build_module_index(lines):
+    """Single-pass scan: return {module_name: (start_idx, end_idx)} for every
+    module declaration in the netlist. Used to turn per-candidate O(N) module
+    body lookups into O(1) dict reads — the dominant speedup for high-fan-out
+    parents like EcoUseSdpOutstRdCnt where the picker evaluates 20+ peers and
+    each peer used to re-scan the full Route netlist (~30-60 s decompressed)."""
+    index = {}
+    stack = []
+    for i, line in enumerate(lines):
+        m = MOD_DEF_RE.match(line)
+        if m:
+            stack.append((m.group(1), i))
+            continue
+        if MOD_END_RE.match(line) and stack:
+            name, start = stack.pop()
+            index[name] = (start, i)
+    return index
+
+
+def _build_inverse_inst_index(lines, mod_index):
+    """For each module type, list every (parent_module, inst_name) where it is
+    instantiated. Replaces the linear all-lines scan inside
+    find_instance_path_to_module() with a depth-bounded dict walk."""
+    inverse = {}
+    for parent_mod, (start, end) in mod_index.items():
+        body = lines[start:end + 1]
+        for child_mod, inst_name in _list_instantiations(body):
+            inverse.setdefault(child_mod, []).append((parent_mod, inst_name))
+    return inverse
+
+
+def find_module_body_cached(lines, mod_index, mod_name):
+    """O(1) variant of find_module_body — uses a prebuilt module index.
+
+    Honours the same fallback order as the linear scanner: exact name first,
+    then _0/_1 variants, then tile-prefixed (_<mod>) variants. Returns an
+    empty list when no candidate is in the index."""
+    if mod_name in mod_index:
+        s, e = mod_index[mod_name]
+        return lines[s:e + 1]
+    for variant in (f'{mod_name}_0', f'{mod_name}_1'):
+        if variant in mod_index:
+            s, e = mod_index[variant]
+            return lines[s:e + 1]
+    suffix = '_' + mod_name
+    for k, (s, e) in mod_index.items():
+        if k.endswith(suffix):
+            return lines[s:e + 1]
+    return []
+
+
+def find_instance_path_to_module_cached(inv_index, target_module, tile_module=None):
+    """O(depth) variant of find_instance_path_to_module — uses a prebuilt
+    inverse instantiation index. Returns the tile-relative instance path."""
+    if not target_module:
+        return ''
+    chain = []
+    cur = target_module
+    visited = set()
+    while True:
+        if tile_module and cur == tile_module:
+            break
+        if cur in visited:
+            break
+        visited.add(cur)
+        parents = inv_index.get(cur, [])
+        if not parents:
+            break
+        parent_mod, parent_inst = parents[0]
+        chain.insert(0, parent_inst)
+        cur = parent_mod
+    return '/'.join(chain)
+
+
+def _route_dff_pin_map(route_lines, sib_module, route_mod_index=None):
     """Walk Route-stage netlist body of sib_module and return:
        - dead: set of DFF instance names whose .SE is constant-tied (scan-dead)
        - alive: set of DFF instance names that are scan-alive in Route
@@ -189,11 +268,18 @@ def _route_dff_pin_map(route_lines, sib_module):
          The Route-stage wire NAMES for each DFF (CTS-renamed in Route — they
          differ from PP-stage names). Studier needs these for Route bridge
          source selection; querying PP-stage names in Route returns FM-036.
+
+    When route_mod_index is provided (recommended), the module body lookup is
+    O(1). Without it, falls back to a linear scan — keep the fallback so the
+    function stays callable from non-main contexts.
     """
     pin_map = {}
     if not route_lines or not sib_module:
         return set(), set(), pin_map
-    body = find_module_body(route_lines, sib_module)
+    if route_mod_index is not None:
+        body = find_module_body_cached(route_lines, route_mod_index, sib_module)
+    else:
+        body = find_module_body(route_lines, sib_module)
     if not body:
         return set(), set(), pin_map
     dead = set(); alive = set()
@@ -232,7 +318,8 @@ def _route_dff_pin_map(route_lines, sib_module):
     return dead, alive, pin_map
 
 
-def analyze_module(body_lines, prefix_chars=20, route_lines=None, sib_module=None):
+def analyze_module(body_lines, prefix_chars=20, route_lines=None, sib_module=None,
+                   route_mod_index=None):
     """Return (dff_count, dominant_se_cluster_size, dominant_se_prefix,
                anchor_dff, anchor_si_wire, anchor_se_wire, anchor_q_wire,
                route_alive_count).
@@ -251,7 +338,8 @@ def analyze_module(body_lines, prefix_chars=20, route_lines=None, sib_module=Non
     # bridge source picks can be Route-validated, not just PP-validated.
     route_dead, route_alive, route_pin_map = (set(), set(), {})
     if route_lines and sib_module:
-        route_dead, route_alive, route_pin_map = _route_dff_pin_map(route_lines, sib_module)
+        route_dead, route_alive, route_pin_map = _route_dff_pin_map(
+            route_lines, sib_module, route_mod_index=route_mod_index)
 
     se_nets = []
     # net_prefix → list of (DFF instance, si_wire, se_wire, q_wire) — preserve
@@ -332,15 +420,26 @@ def main():
 
     with _open_text(args.netlist) as f:
         all_lines = f.readlines()
+    # Build module-body and inverse-instantiation indexes ONCE per netlist.
+    # Without these, every peer candidate triggered a fresh full-file scan
+    # (find_module_body + find_instance_path_to_module). For high-fan-out
+    # parents like EcoUseSdpOutstRdCnt (~20 peers), that turned a 10-20 min
+    # picker run into seconds.
+    pre_mod_index = _build_module_index(all_lines)
+    pre_inv_index = _build_inverse_inst_index(all_lines, pre_mod_index)
+
     route_lines = None
+    route_mod_index = None
     if args.route_netlist:
         try:
             with _open_text(args.route_netlist) as f:
                 route_lines = f.readlines()
+            route_mod_index = _build_module_index(route_lines)
         except Exception as e:
             print(f'WARN: cannot read --route-netlist {args.route_netlist!r}: {e}',
                   file=sys.stderr)
             route_lines = None
+            route_mod_index = None
 
     parent_mod, parent_start, parent_end, instantiations = \
         find_module_instantiations_in_parent(all_lines, args.host_module)
@@ -367,7 +466,7 @@ def main():
     # Analyze each peer
     candidates = []
     for mod_type, inst_name in peer_modules:
-        body = find_module_body(all_lines, mod_type)
+        body = find_module_body_cached(all_lines, pre_mod_index, mod_type)
         if not body:
             candidates.append({
                 'module': mod_type, 'inst': inst_name,
@@ -379,11 +478,12 @@ def main():
             })
             continue
         dff_count, dom_size, dom_pfx, anchor, si_w, se_w, q_w, route_alive_n, route_pins = \
-            analyze_module(body, route_lines=route_lines, sib_module=mod_type)
+            analyze_module(body, route_lines=route_lines, sib_module=mod_type,
+                           route_mod_index=route_mod_index)
         # Compute FM-resolvable instance hierarchy from tile-internal root down
         # to this sibling. FM queries MUST use instance names, not module types,
         # or every find_equivalent_nets returns FM-036 (Unknown name).
-        fm_scope = find_instance_path_to_module(all_lines, mod_type, args.tile_module)
+        fm_scope = find_instance_path_to_module_cached(pre_inv_index, mod_type, args.tile_module)
         candidates.append({
             'module': mod_type, 'inst': inst_name,
             'fm_scope': fm_scope,
