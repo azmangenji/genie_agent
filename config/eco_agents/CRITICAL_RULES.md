@@ -5,6 +5,28 @@ These rules exist because each one addresses a known failure mode that caused a 
 
 ---
 
+## MUST KNOW — Top 10 (read these first; never violate)
+
+If context pressure forces you to skip the rest of this file, these 10 are non-negotiable. Each maps to a real run that failed.
+
+1. **Read `config/eco_agents/` ONLY** — never `config/analyze_agents/` (different flow). [Rule 0]
+2. **Every TAG is fresh** — never reuse files from `AI_ECO_FLOW_<OLDER_TAG>/`. Step 2 always submits fresh. [Rule 1]
+3. **Spawn then HARD STOP** — after Step 6, write `round_handoff.json`, spawn next agent, EXIT. Never run Steps 7-8 yourself. [Rule 2]
+4. **Write `round_handoff.json` BEFORE spawning** — verify `ls -la` shows it on disk. No file → no spawn. [Rule 3]
+5. **Never skip a step** — context/token pressure is NOT a valid reason. Each step writes its file → checkpoint → only then next step. [Rule 4]
+6. **Instance names, not module names** — all paths use instance hierarchy (e.g. `ARB/DCQARB`), never module-type (`ddrss_<tile>_t_<peer>`). Wrong → FM-036 on every Cat 8 query. [Rule 7]
+7. **DFF naming convention** — instance = `<target_register>_reg`, Q output net = `<target_register>`. FM auto-matches by name; any other naming breaks `FmEqvEcoSynthesizeVsSynRtl`. [Rule 10b]
+8. **All 3 stages must change** — verify md5 of each PostEco stage differs from `.bak_<TAG>_round<N>`. Only-Synth = partial ECO = FM fail. [Rule 12]
+9. **Sub-agents write JSON only; orchestrator writes RPTs** — sub-agent context pressure must not block the RPT being created. [Rule 14]
+10. **FM ABORT → next ROUND_ORCHESTRATOR, never self-fix** — write `eco_fm_verify.json` with `status: "ABORT"` → EXIT. Don't re-submit FM, don't patch netlist inline, don't loop. [Rule 26]
+
+**Forbidden actions (NEVER, in any rule, under any pressure):**
+- NEVER Modify `EcoChange.svf` — AI flow is permanently prohibited from SVF updates. [Rule 27]
+- NEVER Set `manual_only` — abolished. Always prescribe a progressive action across 10 rounds. [Rule 35]
+- NEVER Skip backup before PostEco edit — `cp .v.gz .v.gz.bak_<TAG>_round<N>`. [Rule 6]
+
+---
+
 ## RULE 0 — Scope Restriction
 
 Only read guidance files from `config/eco_agents/`. Do NOT read from `config/analyze_agents/` — those files govern static check analysis (CDC/RDC, Lint, SpgDFT) and contain rules that are wrong for ECO gate-level netlist editing. `config/analyze_agents/shared/CRITICAL_RULES.md` does NOT apply to this flow.
