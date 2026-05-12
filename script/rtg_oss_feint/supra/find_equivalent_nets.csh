@@ -36,10 +36,19 @@ set net_count = `echo $net_raw | tr ',' '\n' | wc -l`
 set tile_name = `echo $tile | sed 's/:/ /g' | awk '{$1="";print $0}'`
 
 # Build space-separated list for TCL foreach
-# Always prepend tile_name/ — nets with '/' are relative to tile, not to top
+# Prepend tile_name/ only when the net does NOT already start with it. Run
+# 20260511201004 root cause: agents under context pressure pass net paths
+# already prefixed with the tile (e.g. "umccmd/ARB/CTRLSW/...") and the
+# unconditional prepend produced "umccmd/umccmd/ARB/CTRLSW/..." → FM-036 on
+# every query. Idempotent prepend is safe for both shapes.
 set net_full_list = ""
 foreach _net (`echo $net_raw | sed 's/,/ /g'`)
-    set net_full_list = "$net_full_list $tile_name/$_net"
+    set _has_tile_prefix = `echo "$_net" | awk -v t="$tile_name/" 'BEGIN{n=length(t)} {print (substr($0,1,n)==t)?1:0}'`
+    if ($_has_tile_prefix == 1) then
+        set net_full_list = "$net_full_list $_net"
+    else
+        set net_full_list = "$net_full_list $tile_name/$_net"
+    endif
 end
 set net_full_list = `echo $net_full_list`
 
