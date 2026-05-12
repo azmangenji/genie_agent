@@ -27,6 +27,52 @@ If context pressure forces you to skip the rest of this file, these 10 are non-n
 
 ---
 
+## Rules Index (39 rules — jump-table for cross-references)
+
+| #     | Title                                                                                  |
+|-------|----------------------------------------------------------------------------------------|
+| 0     | Scope Restriction (`config/eco_agents/` only)                                          |
+| 1     | Every Run is From Scratch (no reuse of older AI_ECO_FLOW_*)                            |
+| 2     | Spawn Then Hard Stop (ORCHESTRATOR / ROUND_ORCHESTRATOR)                               |
+| 3     | Write `round_handoff.json` FIRST, Verify on Disk                                       |
+| 4     | Never Skip a Step (context pressure not a valid reason)                                |
+| 5     | Read All Inputs From Disk (no memory/summary-based state)                              |
+| 6     | Backup Before Every PostEco Edit                                                       |
+| 7     | Instance Names, Not Module Names (FM-036 root cause)                                   |
+| 8     | Email is Mandatory at Every Stage                                                      |
+| 9     | Single-Occurrence Rule for PostEco Edits (skip AMBIGUOUS)                              |
+| 10    | Step 2 Retries Mandatory; Strategy Depends on Failure Type                             |
+| 10b   | ECO Instance Naming Convention (DFF: `<target>_reg`, Q net: `<target>`)                |
+| 11    | SVF: No Cell-Insertion Entries for ECO-Inserted Cells                                  |
+| 12    | All 3 Stages Must Be Modified (verify md5 differs from backup)                         |
+| 13    | Poll with 5-Minute Bash Tool Calls for Long Waits                                      |
+| 14    | Orchestrator Generates RPTs, Sub-Agents Write JSON Only                                |
+| 15    | Detect Netlist Type (hierarchical vs flat) Before Applying Port Entries                |
+| 16    | Use Per-Stage Port Connections for DFF Insertions                                      |
+| 17    | Include All DFF Pins; Derive Auxiliary Pin Values From a Neighbour DFF                 |
+| 18    | MUX Select Pin Polarity Must Be Derived From the Netlist, Not the RTL Condition       |
+| 19    | Port Promotion Must Be Scoped to the Exact Module Boundary                             |
+| 20    | Port Connection Insertion Must Use Parenthesis Depth Tracking                          |
+| 21    | `d_input_decompose_failed` — Try Intermediate Net (Mode F1) Before MANUAL_ONLY        |
+| 22    | Structural Stage-to-Stage Mismatches: Fix Netlist First (Mode G last resort)          |
+| 23    | New Condition Signals May Be New Ports From the Same ECO                               |
+| 24    | Port List Depth Tracking Must Search Full Module Scope (long P&R port lists)          |
+| 25    | Run Pre-FM Integrity Checks Before Every FM Submission                                 |
+| 25b   | eco_applier Must Self-Validate Verilog Before Recompressing                            |
+| 26    | FM ABORT (N/A) Goes to ROUND_ORCHESTRATOR — Never Self-Fix                             |
+| 27    | Netlist Fix Priority: Never Use Tune Files or SVF as Shortcuts                         |
+| 28    | eco_applier: Four-Pass Processing Order is Mandatory                                   |
+| 29    | eco_netlist_studier: Phase 0 Before Phase 1                                            |
+| 30    | eco_fm_analyzer: Check F (Unresolved Condition Inputs) Runs First                      |
+| 31    | eco_pre_fm_checker: Four Checks Are FM-Abort Preventers                                |
+| 32    | Always Use Real RTL-Named Net, Not HFS Alias, When Both Exist                          |
+| 33    | Wire Declaration: Three Categories, No Exceptions                                      |
+| 34    | FM Failure Mode Reference Table (Modes A through H + special codes)                    |
+| 35    | MAX_ROUNDS is the ONLY exit (`manual_only` abolished)                                  |
+| 36    | `round_handoff.json` Required Fields                                                   |
+
+---
+
 ## RULE 0 — Scope Restriction
 
 Only read guidance files from `config/eco_agents/`. Do NOT read from `config/analyze_agents/` — those files govern static check analysis (CDC/RDC, Lint, SpgDFT) and contain rules that are wrong for ECO gate-level netlist editing. `config/analyze_agents/shared/CRITICAL_RULES.md` does NOT apply to this flow.
