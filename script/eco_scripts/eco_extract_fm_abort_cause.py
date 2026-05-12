@@ -210,24 +210,43 @@ def main():
     args = p.parse_args()
 
     fm_verify = json.loads(Path(args.fm_verify).read_text())
-    if fm_verify.get('status') != 'ABORT':
+    # Accept both schema variants: top-level `status` (legacy) OR `overall_status`
+    # (current eco_fm_runner output). Also accept ABORT detected via per-target
+    # status fields when neither top-level field is present.
+    top_status = fm_verify.get('status') or fm_verify.get('overall_status') or ''
+    if not top_status:
+        # Look at per-target nested dicts — if ANY says ABORT, treat as ABORT
+        for k, v in fm_verify.items():
+            if isinstance(v, dict) and v.get('status') == 'ABORT':
+                top_status = 'ABORT'
+                break
+    if top_status != 'ABORT':
         out = {
             'tag':                args.tag,
             'round':              args.round,
-            'status':             fm_verify.get('status'),
+            'status':             top_status,
             'note':               'No ABORT detected — classification skipped.',
         }
         Path(args.output).write_text(json.dumps(out, indent=2))
-        print(f'eco_extract_fm_abort_cause.py: status={fm_verify.get("status")} '
+        print(f'eco_extract_fm_abort_cause.py: status={top_status!r} '
               f'(no ABORT) — wrote {args.output}')
         return 0
 
     # Find the per-target log file. Convention: <REF_DIR>/logs/<TARGET>.log.gz
+    # Per-target value can be EITHER a string ("ABORT") in legacy schema OR a
+    # dict {"status": "ABORT", "abort_reason": "...", ...} in current schema.
     targets_status = {k: v for k, v in fm_verify.items()
                       if k.startswith(('FmEqv', 'fm_'))}
     classifications = []
-    for target, status in targets_status.items():
-        if not target.startswith('FmEqv') or status != 'ABORT':
+    for target, value in targets_status.items():
+        if not target.startswith('FmEqv'):
+            continue
+        # Normalize value to status string
+        if isinstance(value, dict):
+            status_str = value.get('status', '')
+        else:
+            status_str = str(value)
+        if status_str != 'ABORT':
             continue
         log_path = os.path.join(args.logs_dir, f'{target}.log.gz')
         if not os.path.exists(log_path):
