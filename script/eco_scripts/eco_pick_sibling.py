@@ -181,14 +181,81 @@ def find_module_body(lines, mod_name):
     return []
 
 
-def analyze_module(body_lines, prefix_chars=20):
+def _route_dff_pin_map(route_lines, sib_module):
+    """Walk Route-stage netlist body of sib_module and return:
+       - dead: set of DFF instance names whose .SE is constant-tied (scan-dead)
+       - alive: set of DFF instance names that are scan-alive in Route
+       - pin_map: { inst_name: {'SI': route_si, 'SE': route_se, 'Q': route_q} }
+         The Route-stage wire NAMES for each DFF (CTS-renamed in Route — they
+         differ from PP-stage names). Studier needs these for Route bridge
+         source selection; querying PP-stage names in Route returns FM-036.
+    """
+    pin_map = {}
+    if not route_lines or not sib_module:
+        return set(), set(), pin_map
+    body = find_module_body(route_lines, sib_module)
+    if not body:
+        return set(), set(), pin_map
+    dead = set(); alive = set()
+    for i, line in enumerate(body):
+        m = DFF_CELL_RE.match(line)
+        if not m:
+            continue
+        inst = m.group(2)
+        # Walk forward to find pins
+        block = ''
+        depth = 0
+        for j in range(i, min(i + 30, len(body))):
+            block += body[j]
+            for ch in body[j].split('//')[0]:
+                if ch == '(': depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+            if depth == 0 and j > i:
+                break
+        sm = SE_PIN_RE.search(block)
+        si_m = SI_PIN_RE.search(block)
+        q_m  = Q_PIN_RE.search(block)
+        if sm:
+            se = sm.group(1).strip()
+            if se in ("1'b0", "1'b1", "0", "1"):
+                dead.add(inst)
+            else:
+                alive.add(inst)
+                pin_map[inst] = {
+                    'SI': si_m.group(1) if si_m else None,
+                    'SE': se,
+                    'Q':  q_m.group(1) if q_m else None,
+                }
+    return dead, alive, pin_map
+
+
+def analyze_module(body_lines, prefix_chars=20, route_lines=None, sib_module=None):
     """Return (dff_count, dominant_se_cluster_size, dominant_se_prefix,
-               anchor_dff, anchor_si_wire, anchor_se_wire, anchor_q_wire).
+               anchor_dff, anchor_si_wire, anchor_se_wire, anchor_q_wire,
+               route_alive_count).
+
     For the chosen anchor (first DFF in dominant SE cluster), also extract its
     .SI / .SE / .Q wire names — these are what FM Cat 8 will query (FM accepts
-    wires/output-pin nets, not arbitrary input pin paths)."""
+    wires/output-pin nets, not arbitrary input pin paths).
+
+    When route_lines is provided, pre-filters out any DFF whose .SE in Route is
+    a constant (scan-dead). Anchor selection then prefers Route-alive DFFs
+    within the dominant SE cluster — produces a bridge source wire that
+    survives CTS optimization.
+    """
+    # Phase 1: identify Route-dead DFFs + collect Route-stage pin map (if route
+    # data provided). Route pin map gives studier the CTS-renamed wire names so
+    # bridge source picks can be Route-validated, not just PP-validated.
+    route_dead, route_alive, route_pin_map = (set(), set(), {})
+    if route_lines and sib_module:
+        route_dead, route_alive, route_pin_map = _route_dff_pin_map(route_lines, sib_module)
+
     se_nets = []
-    # net_prefix → (first DFF instance, its si_wire, se_wire, q_wire)
+    # net_prefix → list of (DFF instance, si_wire, se_wire, q_wire) — preserve
+    # order so we can prefer Route-alive instances when picking anchor.
     dff_info_for_dom_se = {}
     for i, line in enumerate(body_lines):
         m = DFF_CELL_RE.match(line)
@@ -211,27 +278,34 @@ def analyze_module(body_lines, prefix_chars=20):
         sm = SE_PIN_RE.search(block)
         if sm:
             net = sm.group(1)
+            # When Route data available, exclude DFFs that are scan-dead at
+            # Route — their SE wire vanished, making them unusable as bridge
+            # anchors. Cluster size and anchor selection both skip them so the
+            # surviving cluster reflects bridge-viable DFFs only.
+            if route_lines and inst in route_dead:
+                continue
             se_nets.append(net)
             pfx = net[:prefix_chars]
-            if pfx not in dff_info_for_dom_se:
-                si_m = SI_PIN_RE.search(block)
-                q_m  = Q_PIN_RE.search(block)
-                dff_info_for_dom_se[pfx] = (
-                    inst,
-                    si_m.group(1) if si_m else None,
-                    net,                                 # SE wire
-                    q_m.group(1) if q_m else None,
-                )
+            si_m = SI_PIN_RE.search(block)
+            q_m  = Q_PIN_RE.search(block)
+            entry = (inst, si_m.group(1) if si_m else None, net, q_m.group(1) if q_m else None)
+            dff_info_for_dom_se.setdefault(pfx, []).append(entry)
     if not se_nets:
-        return len(se_nets), 0, None, None, None, None, None
+        return len(se_nets), 0, None, None, None, None, None, len(route_alive), {}
     cluster = Counter(n[:prefix_chars] for n in se_nets)
     dom_pfx, dom_size = cluster.most_common(1)[0]
-    info = dff_info_for_dom_se.get(dom_pfx)
-    if info:
-        anchor, si_w, se_w, q_w = info
-    else:
-        anchor, si_w, se_w, q_w = None, None, None, None
-    return len(se_nets), dom_size, dom_pfx, anchor, si_w, se_w, q_w
+    # Anchor = first Route-alive DFF in the dominant SE cluster.
+    # When no route data, dff_info_for_dom_se[pfx][0] is just the first DFF.
+    candidates = dff_info_for_dom_se.get(dom_pfx, [])
+    anchor, si_w, se_w, q_w = None, None, None, None
+    anchor_route_pins = {}  # SI/SE/Q wire NAMES at Route stage for the anchor
+    for inst, sib_si, sib_se, sib_q in candidates:
+        # Already filtered above: if route_lines provided, only Route-alive
+        # instances entered the list. So just take the first.
+        anchor, si_w, se_w, q_w = inst, sib_si, sib_se, sib_q
+        anchor_route_pins = route_pin_map.get(inst, {})
+        break
+    return len(se_nets), dom_size, dom_pfx, anchor, si_w, se_w, q_w, len(route_alive), anchor_route_pins
 
 
 def main():
@@ -247,10 +321,26 @@ def main():
                    help='Tile module (e.g. ddrss_umccmd_t_umccmd or umccmd). Used to compute '
                         'fm_scope (FM-resolvable instance path from tile-internal root down to '
                         'sibling). Without it, fm_scope walks all the way to top.')
+    p.add_argument('--route-netlist', default='',
+                   help='OPTIONAL Route-stage PreEco netlist (e.g. <REF_DIR>/data/PreEco/'
+                        'Route.v.gz). When provided, picker excludes DFFs whose .SE pin is '
+                        'tied to 1\'b0 / 1\'b1 in Route — those DFFs are scan-dead (CTS '
+                        'optimized away their scan_enable path) and unusable as bridge anchors. '
+                        'Without this flag, picker may select a DFF whose bridge SE wire '
+                        'vanishes in Route → FM-036 / cone divergence.')
     args = p.parse_args()
 
     with _open_text(args.netlist) as f:
         all_lines = f.readlines()
+    route_lines = None
+    if args.route_netlist:
+        try:
+            with _open_text(args.route_netlist) as f:
+                route_lines = f.readlines()
+        except Exception as e:
+            print(f'WARN: cannot read --route-netlist {args.route_netlist!r}: {e}',
+                  file=sys.stderr)
+            route_lines = None
 
     parent_mod, parent_start, parent_end, instantiations = \
         find_module_instantiations_in_parent(all_lines, args.host_module)
@@ -284,10 +374,12 @@ def main():
                 'dff_count': 0, 'dominant_se_cluster_size': 0,
                 'dominant_se_prefix': None, 'anchor_dff': None,
                 'anchor_si_wire': None, 'anchor_se_wire': None, 'anchor_q_wire': None,
+                'route_alive_dff_count': 0,
                 'viable': False, 'note': 'module body not found',
             })
             continue
-        dff_count, dom_size, dom_pfx, anchor, si_w, se_w, q_w = analyze_module(body)
+        dff_count, dom_size, dom_pfx, anchor, si_w, se_w, q_w, route_alive_n, route_pins = \
+            analyze_module(body, route_lines=route_lines, sib_module=mod_type)
         # Compute FM-resolvable instance hierarchy from tile-internal root down
         # to this sibling. FM queries MUST use instance names, not module types,
         # or every find_equivalent_nets returns FM-036 (Unknown name).
@@ -295,13 +387,24 @@ def main():
         candidates.append({
             'module': mod_type, 'inst': inst_name,
             'fm_scope': fm_scope,
+            'route_alive_dff_count': route_alive_n,
             'dff_count': dff_count,
             'dominant_se_cluster_size': dom_size,
             'dominant_se_prefix': dom_pfx,
             'anchor_dff': anchor,
+            # PP-stage anchor wire names (default — used when --route-netlist not given)
             'anchor_si_wire': si_w,
             'anchor_se_wire': se_w,
             'anchor_q_wire':  q_w,
+            # Route-stage anchor wire names (CTS-renamed; only present when
+            # --route-netlist provided AND anchor DFF found in Route body).
+            # Studier MUST use these for Route-stage bridge source wires —
+            # querying PP names in Route returns FM-036 because CTS renamed
+            # them (run 20260511201004 root cause: PP HFSNET_99954 → Route
+            # HFSNET_47864; querying PP name returned 1'b0 from FM).
+            'anchor_si_wire_route': route_pins.get('SI'),
+            'anchor_se_wire_route': route_pins.get('SE'),
+            'anchor_q_wire_route':  route_pins.get('Q'),
             'viable': dom_size >= args.min_dffs,
         })
 
