@@ -669,18 +669,24 @@ The flag is MANDATORY (Step 1 validator rejects entries that omit it). To opt ou
 **MANDATORY: invoke the deterministic picker — DO NOT guess.** For each new_logic_dff with `requires_scan_stitching: true`, run:
 ```bash
 python3 script/eco_scripts/eco_pick_sibling.py \
-    --netlist     <REF_DIR>/data/PreEco/PrePlace.v.gz \
-    --host-module <module_name from this entry> \
-    --tile-module <tile_top_module from rtl_diff>     \
-    --output      data/<TAG>_eco_sibling_pick_<dff>.json
+    --netlist       <REF_DIR>/data/PreEco/PrePlace.v.gz \
+    --route-netlist <REF_DIR>/data/PreEco/Route.v.gz   \
+    --host-module   <module_name from this entry> \
+    --tile-module   <tile_top_module from rtl_diff>     \
+    --output        data/<TAG>_eco_sibling_pick_<dff>.json
 ```
+`--route-netlist` is **MANDATORY** — without it, picker may select a DFF whose anchor SE wire is CTS-tied to `1'b0` in Route (scan-dead), AND won't emit Route-stage wire names (CTS-renamed). Step 2 then queries PP-stage names in Route → FM-036 / `1'b0` echo → bridge unbuildable (run 20260511201004 root cause).
+
 Read the output JSON and use `recommended_pick` directly:
 - `mode_s_anchor.sibling_module` ← `recommended_pick.module`
 - `mode_s_anchor.anchor_dff` ← `recommended_pick.anchor_dff`
 - `mode_s_anchor.fm_scope` ← `recommended_pick.fm_scope` ← **MANDATORY**. Tile-relative INSTANCE hierarchy (e.g. `ARB/DCQARB`). FM resolves only via instance names; emitting module-type names (e.g. `ddrss_umccmd_t_umcarb/DCQARB`) returns FM-036 on every Cat 8 anchor query.
-- `mode_s_anchor.anchor_si_wire` ← `recommended_pick.anchor_si_wire`
-- `mode_s_anchor.anchor_se_wire` ← `recommended_pick.anchor_se_wire`
-- `mode_s_anchor.anchor_q_wire`  ← `recommended_pick.anchor_q_wire`
+- `mode_s_anchor.anchor_si_wire` ← `recommended_pick.anchor_si_wire` (PP stage)
+- `mode_s_anchor.anchor_se_wire` ← `recommended_pick.anchor_se_wire` (PP stage)
+- `mode_s_anchor.anchor_q_wire`  ← `recommended_pick.anchor_q_wire` (PP stage)
+- `mode_s_anchor.anchor_si_wire_route` ← `recommended_pick.anchor_si_wire_route` (Route stage; CTS-renamed — Step 2 Cat 8 queries this for Route bridge source)
+- `mode_s_anchor.anchor_se_wire_route` ← `recommended_pick.anchor_se_wire_route`
+- `mode_s_anchor.anchor_q_wire_route`  ← `recommended_pick.anchor_q_wire_route`
 
 The picker enforces all selection constraints automatically: peer-module-only (excludes host), ≥10 DFFs in scan-en cluster, ranks by cluster size descending. Manual selection is FORBIDDEN — Check 12 will FAIL any entry where `sibling_module` matches the host.
 
@@ -691,12 +697,15 @@ Emit:
 {
   "requires_scan_stitching": true,
   "mode_s_anchor": {
-    "sibling_module":  "<recommended_pick.module>",
-    "anchor_dff":      "<recommended_pick.anchor_dff>",
-    "fm_scope":        "<recommended_pick.fm_scope>",
-    "anchor_si_wire":  "<recommended_pick.anchor_si_wire>",
-    "anchor_se_wire":  "<recommended_pick.anchor_se_wire>",
-    "anchor_q_wire":   "<recommended_pick.anchor_q_wire>"
+    "sibling_module":        "<recommended_pick.module>",
+    "anchor_dff":            "<recommended_pick.anchor_dff>",
+    "fm_scope":              "<recommended_pick.fm_scope>",
+    "anchor_si_wire":        "<recommended_pick.anchor_si_wire>",
+    "anchor_se_wire":        "<recommended_pick.anchor_se_wire>",
+    "anchor_q_wire":         "<recommended_pick.anchor_q_wire>",
+    "anchor_si_wire_route":  "<recommended_pick.anchor_si_wire_route>",
+    "anchor_se_wire_route":  "<recommended_pick.anchor_se_wire_route>",
+    "anchor_q_wire_route":   "<recommended_pick.anchor_q_wire_route>"
   }
 }
 ```
