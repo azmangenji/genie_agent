@@ -936,6 +936,7 @@ def check_duplicate_wire_decls(ref_dir):
                     # Check decls for this module
                     body = '\n'.join(body_lines)
                     counts = Counter()
+                    decl_names = set()  # set of explicitly-declared wire names
                     for dm in DECL_RE.finditer(body):
                         # Split multi-name decls (e.g. `wire A, B, C;`)
                         names = [n.strip() for n in dm.group(2).split(',')]
@@ -944,6 +945,7 @@ def check_duplicate_wire_decls(ref_dir):
                             n = re.sub(r'\[[^\]]+\]', '', n).strip()
                             if n:
                                 counts[n] += 1
+                                decl_names.add(n)
                     for name, c in counts.items():
                         if c > 1:
                             failures.append(
@@ -953,6 +955,48 @@ def check_duplicate_wire_decls(ref_dir):
                                 f'Likely cause: applier inserted a wire decl for a net that '
                                 f'pre-existing in the netlist (Mode-I rename or new wire '
                                 f'insertion that didn\'t check for prior decl).')
+                    # IMPLICIT-WIRE conflict: an explicit `wire X;` decl AND the same
+                    # name X used as `.PORT(X)` port-connection net AT AN EARLIER LINE
+                    # in the same module — FM treats the port connection as the first
+                    # implicit declaration; the explicit decl that comes later is a
+                    # duplicate. ORDER MATTERS: a `wire X;` followed by `.PORT(X)` is
+                    # FINE (explicit comes first, port consumes it). It's only
+                    # `.PORT(X)` followed by `wire X;` that triggers FM-599.
+                    # Run 20260511201004 root cause: applier inserted ECO gate +
+                    # `wire n_eco_9868_mux_sel ;` near endmodule (line 4423901),
+                    # but ctmi_523004 had `.S(n_eco_9868_mux_sel)` at line 4235025
+                    # (much earlier — implicit wire was already created).
+                    PORT_CONN_RE = re.compile(r'\.\s*\w+\s*\(\s*([A-Za-z_][A-Za-z_0-9]*)\s*\)')
+                    DECL_LINE_RE = re.compile(r'^\s*(wire|tri|wand|wor|reg)\s+(?:\[[^\]]+\]\s+)?([^;]+);')
+                    # Build per-name FIRST line: port-connection use, OR wire decl
+                    first_use_line = {}      # name -> line index of first port-connection use
+                    first_decl_line = {}     # name -> line index of explicit wire decl
+                    body_split = body.split('\n')
+                    for ln_idx, ln in enumerate(body_split):
+                        for pm in PORT_CONN_RE.finditer(ln):
+                            n = pm.group(1).strip()
+                            if n not in first_use_line:
+                                first_use_line[n] = ln_idx
+                        dm = DECL_LINE_RE.match(ln)
+                        if dm:
+                            for n in [x.strip() for x in dm.group(2).split(',')]:
+                                n = re.sub(r'\[[^\]]+\]', '', n).strip()
+                                if n and n not in first_decl_line:
+                                    first_decl_line[n] = ln_idx
+                    # Order-aware flag: port-use BEFORE explicit decl
+                    for name, decl_ln in first_decl_line.items():
+                        use_ln = first_use_line.get(name, -1)
+                        if use_ln >= 0 and use_ln < decl_ln:
+                            failures.append(
+                                f'[IMPLICIT_WIRE_CONFLICT] {stage}: module {cur_mod!r} — '
+                                f'`.PORT({name})` port-connection at body line {use_ln+1} '
+                                f'comes BEFORE explicit `wire {name} ;` at body line '
+                                f'{decl_ln+1}. Verilog auto-created the wire from the '
+                                f'port connection; explicit decl is a duplicate → FM-599 '
+                                f'"Duplicate wire declaration" ABORT. Applier should skip '
+                                f'wire decl when net is referenced earlier as a port '
+                                f'connection. Either delete the `wire {name} ;` decl OR '
+                                f'fix eco_perl_spec.py rewire_new_nets dedup.')
                 cur_mod = None
                 body_lines = []
                 continue

@@ -351,19 +351,50 @@ def main():
             queued_instances.add(inst)
 
             # wire_decls: output net only, NOT if already in PostEco or referenced by rewire (RISK 1.3)
+            # Multi-layer defensive dedup against FM-599 'Duplicate wire declaration':
+            #   1. rewire_new_nets — Pass 4 will create the wire implicitly via .PORT(net) hookup
+            #   2. PreEco existing — net already exists in pre-applied netlist
+            #   3. PostEco existing — net already exists in post-applied netlist (round 2+)
+            #   4. Already queued in this batch
+            # Run 20260511201004 root cause: dedup #1 didn't fire (reason TBD), wire decl
+            # added on top of Pass 4 rewire's implicit wire → FM-599 ABORT. Layers
+            # below catch the same condition through orthogonal evidence.
             out_net = pcs.get(out_pin, '') if out_pin else ''
             if e.get('needs_explicit_wire_decl') and out_net:
+                # Layer 1: rewire-new-nets (Pass 4 will create implicit wire)
                 if out_net in rewire_new_nets:
                     statuses.append({'name': inst, 'status':'INFO',
                                      'reason': f'wire_decl SKIPPED for {out_net}: referenced by Pass 4 rewire → implicit decl (SVR-9 prevention)'})
                 else:
-                    existing = zgrep_count(out_net, posteco)
+                    # Layer 2: existing reference in PostEco (any role)
+                    existing_post = zgrep_count(out_net, posteco)
+                    # Layer 3: existing reference in PreEco (race conditions where the
+                    # entry might be ALREADY_APPLIED before this round but its rewire
+                    # entry was deferred and now the dedup fires after-the-fact)
+                    existing_pre  = zgrep_count(out_net, preeco)
+                    # Layer 4: already queued in this batch (intra-batch dedup)
                     already_queued = out_net in changes[mod]['wire_decls']
-                    if existing == 0 and not already_queued:
+                    # Layer 5: NEW — also scan PostEco for `.PORT(<out_net>)` port
+                    # connections. If found, the net already has implicit-wire
+                    # creation and an explicit wire decl is a duplicate.
+                    has_port_use_in_post = False
+                    try:
+                        import subprocess as _sp
+                        _grep = _sp.run(['zgrep', '-c', f'\\.[A-Za-z0-9_]\\+ *( *{out_net} *)', posteco],
+                                        capture_output=True, text=True, timeout=60)
+                        has_port_use_in_post = int((_grep.stdout or '0').strip() or '0') > 0
+                    except Exception:
+                        pass
+                    if existing_post == 0 and existing_pre == 0 and not already_queued and not has_port_use_in_post:
                         changes[mod]['wire_decls'].append(out_net)
                     else:
+                        why = []
+                        if existing_post > 0: why.append(f'PostEco refs={existing_post}')
+                        if existing_pre  > 0: why.append(f'PreEco refs={existing_pre}')
+                        if already_queued:    why.append('already queued in batch')
+                        if has_port_use_in_post: why.append('used as .PORT(net) in PostEco')
                         statuses.append({'name': inst, 'status':'INFO',
-                                         'reason': f'wire_decl SKIPPED for {out_net}: already referenced ({existing}x) — SVR-9 prevention'})
+                                         'reason': f'wire_decl SKIPPED for {out_net}: ' + ', '.join(why) + ' — SVR-9 prevention'})
 
             # Build gate line — cell_type must not be empty (SVR-4: missing cell type = invalid Verilog)
             cell_type = e.get('cell_type','')

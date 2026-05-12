@@ -380,6 +380,29 @@ end
 
 echo "#table end#" >> $out
 
+# AUTO-INVOKE FM ABORT CLASSIFIER (deterministic — removes orchestrator-context-pressure
+# failure mode where ABORT verdicts get silently dropped). Runs unconditionally after
+# every FM submission; classifier itself is a no-op when status != ABORT. The classifier
+# enriches round_handoff.json with primary_abort_type + remediation_hints + loop_verdict
+# so the next ROUND_ORCHESTRATOR can recover automatically without re-deriving the cause.
+# Run 20260511201004 + 20260511083831 root cause: orchestrator wrote round_handoff but
+# didn't run classifier or spawn next round → flow stopped on ABORT. This script-side
+# auto-invoke removes the agent dependency.
+set fm_verify_path = "$source_dir/data/${tag}_eco_fm_verify.json"
+set handoff_path   = "$source_dir/data/${tag}_round_handoff.json"
+set logs_dir       = "$refdir_name/logs"
+set abort_class    = "$source_dir/data/${tag}_eco_fm_abort_classification.json"
+if (-f "$fm_verify_path" && -d "$logs_dir") then
+    echo "" >> $out
+    echo "=== Auto-invoking eco_extract_fm_abort_cause.py ===" >> $out
+    set classifier_args = "--fm-verify $fm_verify_path --logs-dir $logs_dir --tag $tag --round 1 --output $abort_class"
+    if (-f "$handoff_path") then
+        set classifier_args = "$classifier_args --update-round-handoff $handoff_path"
+    endif
+    python3 $source_dir/script/eco_scripts/eco_extract_fm_abort_cause.py $classifier_args >> $out 2>&1
+    echo "Classifier output: $abort_class" >> $out
+endif
+
 cd $source_dir
 set run_status = "finished"
 source csh/env.csh
