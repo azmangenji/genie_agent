@@ -25,7 +25,19 @@ paths:
 | `--kill` | `-k` | Kill a running task by tag |
 | `--analyze` | `-a` | Claude monitors and analyzes results (static checks) |
 | `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
+| `--analyze-fixer` | | Analyze + auto-apply fixes + rerun loop (max 5 rounds) |
+| `--analyze-fixer-only TAG` | | Skip running check — run analyze-fixer on existing results for TAG |
 | `--setup-user` | | Setup user directory for multi-user environment |
+
+## Trigger Phrases by Mode
+
+| Mode | Trigger Phrase | Spawns |
+|------|----------------|--------|
+| **Static Check** | `"run cdc_rdc at <dir> for <ip>"`, `"run lint ..."`, `"run spg_dft ..."` | (no agent unless `--analyze`) |
+| **Analyze** | `"analyze cdc_rdc at <dir>"` (or `--analyze` flag) | `config/analyze_agents/ORCHESTRATOR.md` |
+| **Analyze-Fixer** | `--analyze-fixer` flag, or `"fix cdc_rdc at <dir> for <ip>"` | `config/analyze_agents/ORCHESTRATOR.md` (fixer mode) |
+| **ECO Analyze** | `"analyze eco at <dir> for <tile>"`, `"run eco analysis at <dir> for <tile>"` | `config/eco_agents/STUDY_ORCHESTRATOR.md` → `APPLY_ORCHESTRATOR.md` |
+| **TileBuilder** | `"run supra regression ..."`, `"monitor supra run ..."`, `"report timing and area ..."` | (no agent) |
 
 ## Execution Modes
 
@@ -58,6 +70,18 @@ python3 genie_cli.py -i "run cdc_rdc at /proj/xxx for umc9_3" --execute --analyz
 - Spawns analysis agents
 - Generates HTML report: `data/<tag>_analysis.html`
 - Emails full analysis
+
+### 5. ECO Analyze Mode (AI Auto-ECO)
+```bash
+python3 genie_cli.py -i "analyze eco at /proj/xxx/tree_dir for umccmd" --execute --email
+python3 genie_cli.py -i "run eco analysis at /proj/xxx/tree_dir for umcdat" --execute --email
+```
+- Triggers `ECO_ANALYZE_MODE_ENABLED` signal
+- Claude spawns `STUDY_ORCHESTRATOR` (Steps 1-3: rtl_diff, fenets, netlist study)
+- After Step 3, `APPLY_PHASE_READY` signal triggers `APPLY_ORCHESTRATOR` (Steps 4-6: apply, pre-FM check, FM verify)
+- ABORT recovery handled inline by `abort_recovery_agent` (whitelisted patterns: cell_type_not_in_library, duplicate_wire_decl, implicit_wire_conflict)
+- FM PASS → `FINAL_ORCHESTRATOR`; FM FAIL → `ROUND_ORCHESTRATOR` (re-study + retry)
+- See `.claude/rules/eco_mode.md` and `config/eco_agents/STUDY_ORCHESTRATOR.md` for details
 
 ## Configuration Files
 
