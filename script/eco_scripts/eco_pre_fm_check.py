@@ -1120,6 +1120,105 @@ def check_cross_module_bridge_connectivity(study_path, ref_dir):
     return failures
 
 
+def check_eco_cell_type_in_library(study_path, ref_dir):
+    """Check 21 — every NEW ECO cell's cell_type must exist in the technology
+    library (proxy: it must appear at least once in the corresponding PreEco
+    netlist stage). FM uses the technology .lib/.db at link time; cell types
+    that the netlist references but the library doesn't define cause
+    `FE-LINK-2 Cannot link cell` + `FM-234 Unresolved references` →
+    `FM-156 Failed to set top design` ABORT.
+
+    Run 20260511201004 (round 2 attempt) ABORT root cause: studier emitted
+    invented cell types using LOGICAL function names instead of TSMC library
+    short forms:
+        AI emitted: NOR3D1BWP136P5M156H3P48CPDLVT  (NOR3 — not in library)
+        TSMC has:   NR3D1BWP136P5M156H3P48CPDLVT   (NR3 short form)
+        AI emitted: AND2D1BWP136P5M156H3P48CPDLVT  (AND2 — not in library)
+        TSMC has:   AN2D1BWP136P5M156H3P48CPDLVT   (AN2 short form)
+    Both invalid types passed all earlier checks (cell instance is in PostEco
+    netlist) but failed at FM link.
+
+    Strategy: for each new_logic_dff / new_logic_gate entry, grep the same-
+    stage PreEco netlist for the cell_type string. If 0 matches, the cell type
+    almost certainly isn't in the library (the netlist is built from the same
+    library FM links against). One-off zero-counts can happen if the cell type
+    is novel-but-valid; treat as MEDIUM warning unless the count is 0 in ALL
+    3 stages — then HIGH.
+
+    TSMC short-form aliases agent commonly mistypes:
+        NR2/NR3/NR4 ≠ NOR2/NOR3/NOR4
+        AN2/AN3/AN4 ≠ AND2/AND3/AND4
+        ND2/ND3/ND4 ≠ NAND2/NAND3/NAND4
+        IV/INV     ≠ INVERT
+    When the bad type matches one of these patterns, suggest the corrected
+    name in the failure message.
+    """
+    failures = []
+    if not os.path.exists(study_path):
+        return failures
+    try:
+        study = json.loads(Path(study_path).read_text())
+    except Exception:
+        return failures
+    # Collect (inst, cell_type) pairs — dedupe across stages (same inst in all 3)
+    seen_inst = set()
+    cells = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic_gate', 'new_logic'):
+                continue
+            inst = e.get('instance_name') or e.get('dff_instance_name', '')
+            if inst in seen_inst:
+                continue
+            seen_inst.add(inst)
+            ct = e.get('cell_type', '')
+            if ct:
+                cells.append((inst, ct))
+    if not cells:
+        return failures
+
+    # Common TSMC mis-naming corrections — used to suggest fixes
+    NAMING_CORRECTIONS = [
+        (re.compile(r'^NOR(\d)'),  r'NR\1'),    # NOR3* → NR3*
+        (re.compile(r'^AND(\d)'),  r'AN\1'),    # AND2* → AN2*
+        (re.compile(r'^NAND(\d)'), r'ND\1'),    # NAND2* → ND2*
+        (re.compile(r'^XNOR(\d)'), r'XNR\1'),   # XNOR2* → XNR2*
+        (re.compile(r'^INV(?!R)'), 'IV'),       # INV* → IV* (but not INVR)
+    ]
+    def suggest_correction(ct):
+        for pat, repl in NAMING_CORRECTIONS:
+            new = pat.sub(repl, ct)
+            if new != ct:
+                return new
+        return None
+
+    # For each cell type, count occurrences in each PreEco stage netlist
+    for inst, ct in cells:
+        zero_stages = []
+        for stage in ('Synthesize', 'PrePlace', 'Route'):
+            gz = os.path.join(ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+            if not os.path.exists(gz):
+                continue
+            try:
+                cnt = int(subprocess.run(['zgrep', '-c', ct, gz],
+                                         capture_output=True, text=True, timeout=120).stdout.strip() or '0')
+            except Exception:
+                cnt = 0
+            if cnt == 0:
+                zero_stages.append(stage)
+        if zero_stages:
+            sug = suggest_correction(ct)
+            sug_text = f'  Suggested TSMC short-form: {sug!r}' if sug else ''
+            sev = 'HIGH' if len(zero_stages) == 3 else 'MEDIUM'
+            failures.append(
+                f'[{sev}/CELL_TYPE_NOT_IN_LIB] {inst}: cell_type {ct!r} has 0 '
+                f'occurrences in PreEco {zero_stages} netlist(s) — likely missing '
+                f'from technology library, FM will fail with FE-LINK-2 + FM-234 + '
+                f'FM-156 ABORT.{sug_text}  TSMC short-form convention: NR2/NR3 (not '
+                f'NOR2/NOR3), AN2/AN3 (not AND2/AND3), ND2/ND3 (not NAND2/NAND3).')
+    return failures
+
+
 def check_eco_cell_counts(applied):
     """
     WARN (not FAIL) if ECO cell counts differ significantly across stages.
@@ -1312,6 +1411,14 @@ def main():
     # a bridge" failure mode at Step 5 instead of FM ABORT.
     fails = check_cross_module_bridge_connectivity(study_path, args.ref_dir)
     results['cross_module_bridge_connectivity'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 21 — every NEW ECO cell's cell_type must exist in PreEco netlist
+    # (proxy for "exists in the technology library FM links against"). Catches
+    # invented cell type names (e.g. NOR3D1... when TSMC short-form is NR3D1...)
+    # before FM ABORTs with FE-LINK-2 + FM-234 + FM-156.
+    fails = check_eco_cell_type_in_library(study_path, args.ref_dir)
+    results['eco_cell_type_in_library'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0
