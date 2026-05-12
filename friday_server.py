@@ -8,8 +8,10 @@ Then open: http://localhost:5100
 
 import json
 import os
+import re
 import subprocess
 import glob
+import requests as http_requests
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, send_file
@@ -261,6 +263,136 @@ def list_tasks():
     period = request.args.get('period', 'today')
     stdout, _, rc = run_cli(['--tasks', period], timeout=10)
     return jsonify({'output': stdout, 'returncode': rc})
+
+
+# ── CLAUDE AI ENDPOINT ───────────────────────────────────────────────────────
+CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages'
+CLAUDE_MODEL   = 'claude-haiku-4-5'
+
+FRIDAY_SYSTEM = """You are FRIDAY, an AI assistant for chip design engineers at AMD. \
+You help run EDA checks: CDC/RDC, Lint, SPG_DFT, ECO, and full static checks via Genie CLI. \
+Rules: (1) Keep every response under 2 sentences — it is spoken aloud via text-to-speech. \
+(2) Be concise, confident, and slightly robotic like the Iron Man AI. \
+(3) Never use markdown, bullet points, or special characters. \
+(4) For action requests, confirm what you are doing, not what you could do."""
+
+ACTION_RE = re.compile(
+    r'\b(run|launch|start|kill|stop|analyze|submit)\b', re.IGNORECASE
+)
+
+def build_job_context():
+    jobs = scan_jobs(limit=10)
+    if not jobs:
+        return 'No jobs recorded today.'
+    running = [j for j in jobs if j['status'] == 'running']
+    failed  = [j for j in jobs if j['status'] == 'failed']
+    lines   = []
+    if running:
+        lines.append('Running: ' + ', '.join(f"{j['type']} {j['ip']}" for j in running))
+    if failed:
+        lines.append('Failed:  ' + ', '.join(f"{j['type']} {j['ip']}" for j in failed))
+    done = len([j for j in jobs if j['status'] == 'complete'])
+    lines.append(f'Complete today: {done}')
+    return ' | '.join(lines)
+
+
+def call_claude(user_text, job_ctx):
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not api_key:
+        return None, 'ANTHROPIC_API_KEY not set'
+
+    system_with_ctx = f"{FRIDAY_SYSTEM}\n\nCurrent job status: {job_ctx}"
+
+    payload = {
+        'model':      CLAUDE_MODEL,
+        'max_tokens': 256,
+        'system': [
+            {
+                'type': 'text',
+                'text': system_with_ctx,
+                'cache_control': {'type': 'ephemeral'},
+            }
+        ],
+        'messages': [{'role': 'user', 'content': user_text}],
+    }
+
+    headers = {
+        'x-api-key':         api_key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta':    'prompt-caching-2024-07-31',
+        'content-type':      'application/json',
+    }
+
+    try:
+        resp = http_requests.post(
+            CLAUDE_API_URL, json=payload, headers=headers, timeout=15
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data['content'][0]['text'].strip()
+        return text, None
+    except http_requests.exceptions.Timeout:
+        return None, 'Claude API timed out'
+    except Exception as e:
+        return None, str(e)
+
+
+def genie_fallback(text):
+    """Fall back to Genie CLI when no API key is set."""
+    execute = bool(ACTION_RE.search(text))
+    args = ['-i', text]
+    if execute:
+        args.append('--execute')
+
+    stdout, stderr, rc = run_cli(args, timeout=15)
+    parsed = parse_cli_output(stdout)
+
+    tag     = parsed.get('tag')
+    matched = parsed.get('matched', '')
+
+    if parsed.get('no_match') or (not matched and not tag):
+        return 'I did not recognize that command. Try saying run followed by the check type and IP name.', None
+
+    if tag and execute:
+        return f'Launching {matched.replace("could you ", "")}. Tag {tag[-6:]}. Job running.', tag
+
+    return f'Confirmed. {matched.replace("could you ", "")}.', None
+
+
+@app.route('/api/ai', methods=['POST'])
+def ai_chat():
+    body = request.json or {}
+    text = body.get('text', '').strip()
+    if not text:
+        return jsonify({'error': 'empty text'}), 400
+
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+
+    # ── No API key → fall back to Genie CLI ──────────────────────────────────
+    if not api_key:
+        reply, tag = genie_fallback(text)
+        return jsonify({'reply': reply, 'tag': tag, 'mode': 'genie'})
+
+    # ── Claude AI path ────────────────────────────────────────────────────────
+    job_ctx = build_job_context()
+    reply, err = call_claude(text, job_ctx)
+
+    if err:
+        # Claude failed — fall back to Genie CLI silently
+        reply, tag = genie_fallback(text)
+        return jsonify({'reply': reply, 'tag': tag, 'mode': 'genie'})
+
+    # If action implied, also fire genie_cli --execute
+    action_tag = None
+    if ACTION_RE.search(text):
+        if any(w in text.lower() for w in ['run', 'launch', 'start', 'kill', 'stop']):
+            stdout, _, rc = run_cli(['-i', text, '--execute'], timeout=15)
+            parsed = parse_cli_output(stdout)
+            action_tag = parsed.get('tag')
+            if action_tag:
+                reply += f' Tag {action_tag[-6:]}.'
+
+    return jsonify({'reply': reply, 'tag': action_tag, 'mode': 'claude'})
 
 
 # ── MAIN ─────────────────────────────────────────────────────────────────────

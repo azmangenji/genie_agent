@@ -22,9 +22,15 @@ python3 -c "import flask" 2>/dev/null || {
 lsof -ti:$PORT 2>/dev/null | xargs kill -9 2>/dev/null
 sleep 0.5
 
+# Check for API key
+if [ -z "$ANTHROPIC_API_KEY" ]; then
+  echo "  WARNING: ANTHROPIC_API_KEY not set — AI responses disabled."
+  echo "  Run: export ANTHROPIC_API_KEY=your-key-here"
+fi
+
 # Start server in background
 cd "$SCRIPT_DIR"
-python3 friday_server.py &
+ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" python3 friday_server.py &
 SERVER_PID=$!
 echo "  Server PID: $SERVER_PID"
 
