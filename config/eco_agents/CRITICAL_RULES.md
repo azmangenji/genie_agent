@@ -27,13 +27,27 @@ If context pressure forces you to skip the rest of this file, these 10 are non-n
 
 ---
 
+## Orchestrator MD map (after STUDY/APPLY split)
+
+| Phase | MD file | Steps | When spawned |
+|-------|---------|-------|--------------|
+| A — STUDY | `STUDY_ORCHESTRATOR.md` | Steps 1-3 (RTL diff → fenets → netlist study) | On `ECO_ANALYZE_MODE_ENABLED` signal (CLAUDE.md) |
+| B — APPLY | `APPLY_ORCHESTRATOR.md` | Steps 4-6 (applier → pre-FM → FM + ABORT inline recovery) | On `APPLY_PHASE_READY` signal (emitted by STUDY after Step 3) |
+| Recovery loop | `abort_recovery_agent.md` | Single-purpose ABORT patcher | Spawned by APPLY_ORCHESTRATOR when classifier identifies whitelisted ABORT (cell_type_not_in_library, duplicate_wire_decl, implicit_wire_conflict, verilog_parse_error) |
+| Round retry | `ROUND_ORCHESTRATOR.md` | Step 6d analyzer + revised_changes pipeline | Spawned by APPLY_ORCHESTRATOR on FM FAIL (logical mismatch) or non-whitelisted ABORT |
+| Final | `FINAL_ORCHESTRATOR.md` | Steps 7-8 (output + email) | Spawned by APPLY_ORCHESTRATOR on FM PASS, or by ROUND_ORCHESTRATOR after CONVERGED / MAX_ROUNDS |
+
+The old monolithic `ORCHESTRATOR.md` (1078 lines) was split into STUDY (Steps 1-3) + APPLY (Steps 4-6) so each agent's context stays well below the limit. Round retry + finalization MDs are unchanged.
+
+---
+
 ## Rules Index (39 rules — jump-table for cross-references)
 
 | #     | Title                                                                                  |
 |-------|----------------------------------------------------------------------------------------|
 | 0     | Scope Restriction (`config/eco_agents/` only)                                          |
 | 1     | Every Run is From Scratch (no reuse of older AI_ECO_FLOW_*)                            |
-| 2     | Spawn Then Hard Stop (ORCHESTRATOR / ROUND_ORCHESTRATOR)                               |
+| 2     | Spawn Then Hard Stop (STUDY_ORCHESTRATOR / APPLY_ORCHESTRATOR / ROUND_ORCHESTRATOR)     |
 | 3     | Write `round_handoff.json` FIRST, Verify on Disk                                       |
 | 4     | Never Skip a Step (context pressure not a valid reason)                                |
 | 5     | Read All Inputs From Disk (no memory/summary-based state)                              |

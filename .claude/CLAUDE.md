@@ -351,22 +351,22 @@ FIXER_ROUND=<N>
 
 ---
 
-## ECO Analyze Mode
+## ECO Analyze Mode (Phase A — STUDY orchestrator)
 
 When `ECO_ANALYZE_MODE_ENABLED` is detected in output:
 
-1. **Spawn ONE orchestrator agent** (general-purpose) — do NOT do the ECO analysis yourself:
+1. **Spawn ONE STUDY orchestrator agent** (general-purpose) — runs Steps 1-3 (RTL diff → fenets → netlist study) and exits:
    ```
    Agent(
-     description="ECO analyze <tile> at <ref_dir>",
+     description="ECO STUDY (Steps 1-3) <tile> at <ref_dir>",
      subagent_type="general-purpose",
      prompt="""
-     *** ECO GATE-LEVEL NETLIST FLOW — NOT static check analyze flow ***
+     *** ECO GATE-LEVEL NETLIST FLOW — Phase A (STUDY, Steps 1-3) ***
      MANDATORY: Your ONLY guidance files are under config/eco_agents/ — do NOT read anything from config/analyze_agents/.
-     MANDATORY FIRST ACTION: Read config/eco_agents/CRITICAL_RULES.md before anything else.
-     MANDATORY SECOND ACTION: Read config/eco_agents/ORCHESTRATOR.md and execute Steps 1-5.
-     After Step 5, write ROUND_HANDOFF.json and spawn either ROUND_ORCHESTRATOR (if FM fails)
-     or FINAL_ORCHESTRATOR (if FM passes), then EXIT. Do NOT run Steps 6-8 yourself.
+     MANDATORY FIRST ACTION: Read config/eco_agents/CRITICAL_RULES.md Top-10 before anything else.
+     MANDATORY SECOND ACTION: Read config/eco_agents/STUDY_ORCHESTRATOR.md and execute Steps 1-3.
+     After Step 3, write <TAG>_phase_a_handoff.json + emit APPLY_PHASE_READY signal block to SPEC_FILE,
+     then EXIT. Do NOT run Steps 4-6 yourself — APPLY_ORCHESTRATOR handles those (Phase B).
 
      TAG=<tag>
      REF_DIR=<ref_dir>
@@ -375,11 +375,11 @@ When `ECO_ANALYZE_MODE_ENABLED` is detected in output:
      LOG_FILE=<log_file>
      SPEC_FILE=<spec_file>
      BASE_DIR=<parent of the 'runs/' folder in LOG_FILE>
-     ROUND_HANDOFF_PATH=<BASE_DIR>/data/<tag>_round_handoff.json
+     AI_ECO_FLOW_DIR=<REF_DIR>/AI_ECO_FLOW_<TAG>
      """
    )
    ```
-2. When the agent completes, say only: `"ECO analysis complete. Email sent."`
+2. When the STUDY agent completes, say only: `"STUDY phase complete. Waiting for APPLY_PHASE_READY signal."`
 
 **Signal format:**
 ```
@@ -393,6 +393,59 @@ SPEC_FILE=<spec_file>
 ```
 
 **Trigger:** `"analyze eco at <refdir> for <tile>"` or `"run eco analysis at <refdir> for <tile>"`
+
+---
+
+## ECO Apply Mode (Phase B — APPLY orchestrator)
+
+When `APPLY_PHASE_READY` is detected in output (emitted by STUDY_ORCHESTRATOR after Step 3):
+
+1. **Spawn ONE APPLY orchestrator agent** (general-purpose) — runs Steps 4-6 (applier → pre-FM check → FM verification + ABORT recovery loop) in fresh context:
+   ```
+   Agent(
+     description="ECO APPLY (Steps 4-6) <tile> at <ref_dir>",
+     subagent_type="general-purpose",
+     prompt="""
+     *** ECO GATE-LEVEL NETLIST FLOW — Phase B (APPLY, Steps 4-6) ***
+     MANDATORY: Your ONLY guidance files are under config/eco_agents/ — NOT config/analyze_agents/.
+     MANDATORY FIRST ACTION: Read config/eco_agents/CRITICAL_RULES.md Top-10 before anything else.
+     MANDATORY SECOND ACTION: Read config/eco_agents/APPLY_ORCHESTRATOR.md and execute Steps 4-6.
+     The PRE-FLIGHT step MUST verify HANDOFF_PATH exists and Phase A artifacts are on disk before Step 4.
+     After Step 6, write <TAG>_round_handoff.json and spawn either ROUND_ORCHESTRATOR (FM FAIL/non-fixable ABORT)
+     or FINAL_ORCHESTRATOR (FM PASS), then EXIT. Do NOT run Steps 7-8 yourself.
+
+     For Step 6 ABORT with auto-fixable pattern (cell_type_not_in_library, duplicate_wire_decl,
+     verilog_parse_error, implicit_wire_conflict): use the inline abort_recovery_agent loop
+     (max 10 iterations) to patch + resubmit FM in same round. See APPLY_ORCHESTRATOR.md
+     "Step 6 ABORT inline recovery loop" section.
+
+     TAG=<tag>
+     REF_DIR=<ref_dir>
+     TILE=<tile>
+     JIRA=<jira>
+     LOG_FILE=<log_file>
+     SPEC_FILE=<spec_file>
+     BASE_DIR=<base_dir>
+     AI_ECO_FLOW_DIR=<ai_eco_flow_dir>
+     HANDOFF_PATH=<base_dir>/data/<tag>_phase_a_handoff.json
+     """
+   )
+   ```
+2. When the APPLY agent completes, say only: `"ECO analysis complete. Email sent."`
+
+**Signal format (emitted by STUDY_ORCHESTRATOR):**
+```
+APPLY_PHASE_READY
+TAG=<tag>
+REF_DIR=<ref_dir>
+TILE=<tile>
+JIRA=<jira>
+BASE_DIR=<base_dir>
+AI_ECO_FLOW_DIR=<ai_eco_flow_dir>
+LOG_FILE=<log_file>
+SPEC_FILE=<spec_file>
+HANDOFF_PATH=<base_dir>/data/<tag>_phase_a_handoff.json
+```
 
 ---
 
