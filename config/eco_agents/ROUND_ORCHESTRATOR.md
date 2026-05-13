@@ -669,9 +669,14 @@ If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre
 
 Wait for the sub-agent to complete. **Do NOT spawn another eco_fm_runner if results are not what you expected — read them as-is and hand off.**
 
-> **CRITICAL: When eco_fm_runner returns — ABORT is NOT the same as FAIL. eco_fm_runner STEP F already attempted inline fixes for all 4 abort types (ABORT_NETLIST, ABORT_LINK, ABORT_SVF, ABORT_OTHER) before returning ABORT to you. If ABORT reaches ROUND_ORCHESTRATOR, STEP F fix was exhausted — eco_fm_analyzer diagnoses and re_studier fixes the root cause in this round before next FM submission.**
+> **CRITICAL: When eco_fm_runner returns — ABORT is NOT the same as FAIL. eco_fm_runner does NOT patch on ABORT (STEP F was deleted in the consolidation that put all recovery in `abort_recovery_agent`). On ABORT, APPLY_ORCHESTRATOR's Step 6 inline-loop runs the recovery agent (whitelisted patterns dispatched via YAML `recovery.action`) up to 10×. If ABORT reaches ROUND_ORCHESTRATOR, that loop was exhausted (10 attempts) OR the pattern wasn't whitelisted — eco_fm_analyzer now diagnoses and re_studier fixes the root cause in this round.**
 
-> **MANDATORY on ABORT — invoke deterministic classifier BEFORE spawning analyzer.** Run `eco_extract_fm_abort_cause.py --fm-verify <fm_verify.json> --logs-dir <REF_DIR>/logs --tag <TAG> --round <N> --output data/<TAG>_eco_fm_abort_classification.json --update-round-handoff data/<TAG>_round_handoff.json`. This removes the agent context-pressure failure mode where ABORT verdicts get silently dropped (orchestrator runs after 3+h FM wait near context limit). The script greps FM logs for known patterns (FM-599, Duplicate wire, FE-LINK-7, FM-036, CMD-005), classifies abort_type, and writes remediation_hints into round_handoff.json so downstream agents have ground-truth diagnosis.
+> **ABORT classification is already done.** `post_eco_formality.csh` invoked `eco_fm_status_collector.py` after FM completed; the classifier (`eco_extract_fm_abort_cause.py`) was called as a library and its results are embedded in `data/<TAG>_eco_fm_verify.json`:
+> - Top-level `verdict` field — `PASS / FAIL / ABORT_NETLIST / ABORT_LINK / ABORT_SVF / ABORT_OTHER / NOT_RUN / PARTIAL`
+> - Per-target `per_target[<t>].abort_pattern` — pattern_kind from `eco_fm_abort_patterns.yaml` (e.g. `invalid_wire_decl_bracket`)
+> - Per-target `per_target[<t>].abort_evidence` — log excerpts with file + pattern_kind for each hit
+>
+> **Read `eco_fm_verify.json` directly. Do NOT re-invoke the classifier CLI** — the data is already there, and re-running it would just re-parse the same logs. To extend pattern coverage for an unseen abort, add a new entry to `eco_fm_abort_patterns.yaml` (single source of truth) — it'll take effect on the next FM submission automatically.
 
 **CHECKPOINT:** Verify ALL of the following:
 ```bash

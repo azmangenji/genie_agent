@@ -32,119 +32,170 @@ Usage:
 import argparse, gzip, json, os, re, sys
 from pathlib import Path
 
+import yaml  # PyYAML — REQUIRED. eco_fm_abort_patterns.yaml is the single source
+             # of truth for ABORT pattern definitions. No hardcoded fallback.
 
-# Abort pattern library — pattern → (abort_type, severity, suggested_action)
-ABORT_PATTERNS = [
-    # ABORT_NETLIST — Verilog parse / wire decl errors
-    (re.compile(r"Duplicate wire/tri/wand/wor declaration for ['\"]([^'\"]+)['\"]"),
-     'ABORT_NETLIST',
-     'duplicate_wire_decl',
-     "Duplicate wire declaration in PostEco netlist for net {match}. Likely "
-     "applier inserted a wire decl for a net that already exists in the "
-     "netlist. Action: locate the duplicate (Step 5 Check 19 fires on this) "
-     "and delete one occurrence; OR fix the applier pass that emitted the "
-     "extra decl."),
-    (re.compile(r"FM-599"),
-     'ABORT_NETLIST',
-     'verilog_parse_error',
-     "FM-599 generic Verilog parse error. Look for accompanying error message "
-     "(often `Duplicate wire`, `Syntax error`, or `Module redefinition`)."),
-    (re.compile(r"FM-001"),
-     'ABORT_NETLIST',
-     'verilog_read_failed',
-     "FM-001 Verilog read failure. The read_verilog/read_sverilog command "
-     "ignored the file due to errors — check for syntax issues earlier in "
-     "the log."),
-    (re.compile(r"Module redefinition"),
-     'ABORT_NETLIST',
-     'module_redefinition',
-     "Module redefined — applier likely inserted a duplicate module body. "
-     "Revert the duplicate and re-apply."),
-    (re.compile(r"^Error:.*[Ss]yntax error", re.MULTILINE),
-     'ABORT_NETLIST',
-     'verilog_syntax_error',
-     "Verilog syntax error from applier output. Check the line referenced in "
-     "the FM error message."),
-    # ABORT_LINK — Elaboration / port matching failures
-    (re.compile(r"FE-LINK-7"),
-     'ABORT_LINK',
-     'link_failure',
-     "FE-LINK-7 elaboration failure. Usually missing port_declaration or "
-     "wrong cell pin name. Check Step 5 Check 16 (missing_output_port_decls) "
-     "and Check 15 (eco_output_pin_names) outputs."),
-    (re.compile(r"Cannot link cell ['\"]?([^'\"]+?)['\"]? to its reference design ['\"]?([^'\"]+?)['\"]?\.\s*\(FE-LINK-2\)"),
-     'ABORT_LINK',
-     'cell_type_not_in_library',
-     "FE-LINK-2: cell {match!r} cannot be linked to its reference design — "
-     "the cell type does NOT exist in the technology library FM is loading. "
-     "Almost always caused by studier emitting a LOGICAL function name (NOR3, "
-     "AND2, NAND2) instead of the TSMC short form (NR3, AN2, ND2). Check Step "
-     "5 Check 21 (eco_cell_type_in_library) output for the suggested correction. "
-     "Re-study with corrected cell_type that matches what's already in the PreEco "
-     "netlist for that module."),
-    (re.compile(r"Unresolved references detected during link\.\s*\(FM-234\)"),
-     'ABORT_LINK',
-     'unresolved_references',
-     "FM-234: One or more cell instances reference designs/types not found in "
-     "the loaded library. Almost always co-occurs with FE-LINK-2 — see those "
-     "messages for the exact cell type(s) missing. Action: fix the cell_type "
-     "names in eco_preeco_study.json (use TSMC short forms NR/AN/ND, not "
-     "logical NOR/AND/NAND)."),
-    (re.compile(r"Failed to set top design to ['\"]?([^'\"]+?)['\"]?\.?\s*\(FM-156\)"),
-     'ABORT_LINK',
-     'top_design_link_failure',
-     "FM-156: cannot set top design {match!r} — usually a downstream symptom "
-     "of FE-LINK-2 / FM-234 above. Fix the upstream link errors first; this "
-     "will resolve automatically."),
-    (re.compile(r"Unknown name: ['\"]([^'\"]+)['\"].*\(FM-036\)"),
-     'ABORT_LINK',
-     'unknown_net',
-     "FM cannot find net {match}. Likely scope/instance path mismatch — "
-     "Step 1 mode_s_anchor.fm_scope must use INSTANCE names, not module-type "
-     "names. Re-run eco_pick_sibling.py with --tile-module."),
-    (re.compile(r"Cannot link reference design"),
-     'ABORT_LINK',
-     'reference_link_failure',
-     "Reference design failed to link. Check upstream Verilog read errors "
-     "and ensure the SynRtl bundle is intact."),
-    # ABORT_SVF — SVF guidance errors
-    (re.compile(r"CMD-005"),
-     'ABORT_SVF',
-     'svf_command_error',
-     "SVF guidance error CMD-005. Action: remove the offending SVF entry — "
-     "see eco_fm_pattern_library.md §B-ABORT-2."),
-    (re.compile(r"CMD-010"),
-     'ABORT_SVF',
-     'svf_command_error',
-     "SVF guidance error CMD-010. Action: remove the offending SVF entry."),
-    # ABORT_OTHER — environment/resource issues
-    (re.compile(r"License.*not (?:available|granted|checked out)", re.IGNORECASE),
-     'ABORT_OTHER',
-     'license_unavailable',
-     "FM license not granted. Re-run when license available; not a netlist "
-     "issue."),
-    (re.compile(r"Out of memory|OOM", re.IGNORECASE),
-     'ABORT_OTHER',
-     'out_of_memory',
-     "FM ran out of memory. Try a larger RAM machine; not a netlist issue."),
-    (re.compile(r"Segmentation fault"),
-     'ABORT_OTHER',
-     'fm_segfault',
-     "FM segfaulted. Save the netlist and report to Synopsys; retry on a "
-     "different host."),
-]
+
+# Default YAML location — alongside the eco_agents MD library.
+DEFAULT_PATTERN_YAML = (
+    Path(__file__).resolve().parent.parent.parent
+    / 'config' / 'eco_agents' / 'eco_fm_abort_patterns.yaml'
+)
+
+
+def load_patterns_from_yaml(yaml_path):
+    """Load ABORT patterns from YAML. Returns list of tuples:
+        [(compiled_regex, abort_class, pattern_kind, suggested_action), ...]
+
+    Raises RuntimeError on missing file, parse error, empty patterns, or any
+    regex compile failure. There is NO hardcoded fallback — the YAML is the
+    single source of truth, by design (see FUTURE_GAPS B9: parallel knowledge
+    stores caused stale recipes; YAML must be authoritative).
+    """
+    yp = Path(yaml_path)
+    if not yp.is_file():
+        raise RuntimeError(
+            f"ABORT pattern YAML not found at {yp}. This file is the SINGLE "
+            f"SOURCE OF TRUTH for ABORT pattern definitions; the script has "
+            f"no hardcoded fallback. Restore the file or pass --pattern-yaml "
+            f"<other_path>.")
+    try:
+        data = yaml.safe_load(yp.read_text())
+    except Exception as e:
+        raise RuntimeError(f"cannot parse pattern YAML {yp}: {e}") from e
+    patterns_dict = (data or {}).get('patterns', {})
+    if not isinstance(patterns_dict, dict) or not patterns_dict:
+        raise RuntimeError(
+            f"pattern YAML {yp} has no 'patterns:' dict or it is empty. "
+            f"Cannot classify any ABORT — refusing to silently no-op.")
+    out = []
+    errors = []
+    for kind, body in patterns_dict.items():
+        if not isinstance(body, dict):
+            errors.append(f"  {kind!r}: not a dict")
+            continue
+        rx = body.get('regex', '')
+        if not rx:
+            errors.append(f"  {kind!r}: missing 'regex' field")
+            continue
+        flags = 0
+        if body.get('multiline'):   flags |= re.MULTILINE
+        if body.get('ignore_case'): flags |= re.IGNORECASE
+        try:
+            crx = re.compile(rx, flags)
+        except re.error as e:
+            errors.append(f"  {kind!r}: regex compile failed — {e}")
+            continue
+        abort_class = body.get('abort_class', '')
+        if not abort_class:
+            errors.append(f"  {kind!r}: missing 'abort_class' field")
+            continue
+        action = body.get('suggested_action', '').strip()
+        out.append((crx, abort_class, kind, action))
+    if errors:
+        raise RuntimeError(
+            "Pattern YAML has invalid entries — refusing to load partially:\n"
+            + '\n'.join(errors))
+    return out
+
+
+def _load_one_yaml_safe(yaml_path, required=False):
+    """Internal helper used by load_patterns_with_auto. Returns list of pattern
+    tuples (possibly empty) without raising on a missing/empty optional file.
+    The `required=True` path delegates to load_patterns_from_yaml (raises)."""
+    if required:
+        return load_patterns_from_yaml(yaml_path)
+    if not Path(yaml_path).is_file():
+        return []
+    try:
+        return load_patterns_from_yaml(yaml_path)
+    except RuntimeError as e:
+        # Auto-YAML failures must not break main classification — log and skip.
+        # (Main YAML failure is fatal and goes through the required=True branch.)
+        print(f'WARN: auto pattern YAML {yaml_path} failed to load — '
+              f'falling back to main YAML only. Error: {e}', file=sys.stderr)
+        return []
+
+
+def load_patterns_with_auto(main_yaml_path):
+    """Load main YAML (required) and merge sibling _auto.yaml (optional, agent-
+    grown). Auto patterns are appended LAST so they have lower priority than
+    curated main patterns when ranking matches.
+
+    `<dir>/eco_fm_abort_patterns.yaml`        — main, engineer-curated
+    `<dir>/eco_fm_abort_patterns_auto.yaml`   — appended by APPLY_ORCHESTRATOR
+                                                after a reasoning-mode fix that
+                                                ended in FM PASS. Each entry is
+                                                a candidate the engineer may
+                                                review and promote to main.
+    """
+    main = _load_one_yaml_safe(main_yaml_path, required=True)
+    auto_path = Path(main_yaml_path).with_name(
+        Path(main_yaml_path).stem + '_auto.yaml')
+    auto = _load_one_yaml_safe(auto_path, required=False)
+    if auto:
+        print(f'eco_extract_fm_abort_cause.py: loaded {len(auto)} '
+              f'auto-pattern(s) from {auto_path}', file=sys.stderr)
+    return main + auto
+
+
+# Active pattern table — main YAML (required) + auto YAML (optional, agent-grown).
+# No hardcoded fallback. Auto patterns appended last → lower priority than curated.
+ABORT_PATTERNS = load_patterns_with_auto(DEFAULT_PATTERN_YAML)
 
 
 def _read_log(path):
-    """Read a possibly-gzipped log file as text, capping at 10MB to keep memory bounded."""
+    """Read a possibly-gzipped log file as text. Streams line-by-line and keeps
+    only lines containing anchor tokens (FM-, FE-, SVR-, Error:, Warning,
+    AMD-, Cannot, abort) plus 5 lines of context above each match. Bounds
+    memory regardless of log size, but does NOT silently truncate the way the
+    old 10 MB cap did.
+    """
+    ANCHOR = re.compile(r'(FM-\d|FE-\w|SVR-\d|^\s*Error:|^\s*Warning|AMD-|'
+                        r'Cannot|abort|License|Out of memory|Segmentation)',
+                        re.IGNORECASE)
     try:
-        if str(path).endswith('.gz'):
-            with gzip.open(path, 'rt', errors='replace') as f:
-                return f.read(10_000_000)
-        with open(path, 'r', errors='replace') as f:
-            return f.read(10_000_000)
-    except Exception:
+        opener = (lambda p: gzip.open(p, 'rt', errors='replace')) \
+                 if str(path).endswith('.gz') \
+                 else (lambda p: open(p, 'r', errors='replace'))
+        kept = []           # list of (line_no, line_text)
+        ring = []           # last 5 lines (context buffer)
+        last_kept_idx = -1
+        with opener(path) as f:
+            for i, line in enumerate(f, start=1):
+                ring.append((i, line))
+                if len(ring) > 5:
+                    ring.pop(0)
+                if ANCHOR.search(line):
+                    # Flush context (deduped against already-kept)
+                    for ln, lt in ring:
+                        if ln > last_kept_idx:
+                            kept.append((ln, lt))
+                            last_kept_idx = ln
+        # Re-assemble as a single text blob with original line numbers
+        # preserved by sentinel comments — classify() doesn't need line nums
+        # but evidence reporting uses them via _line_for_match()
+        return ''.join(lt for _, lt in kept)
+    except Exception as e:
+        print(f'WARN: cannot read log {path}: {e}', file=sys.stderr)
         return ''
+
+
+def _find_log_path(logs_dir, target):
+    """Search order for a per-target FM log. Returns first existing path or None.
+    Order matches eco_fm_runner.md §STEP E search list."""
+    candidates = [
+        Path(logs_dir) / f'{target}.log.gz',
+        Path(logs_dir) / f'{target}.log',
+        Path(logs_dir) / f'{target}.log.bz2',
+        # Also check rpts/<target>/formality.log.{gz,} — some flows write here
+        Path(logs_dir).parent / 'rpts' / target / 'formality.log.gz',
+        Path(logs_dir).parent / 'rpts' / target / 'formality.log',
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return None
 
 
 def classify(log_text, target):
@@ -197,6 +248,23 @@ def classify(log_text, target):
     return uniq
 
 
+def _is_abort(value):
+    """Return True if a per-target status value indicates ABORT.
+    Accepts THREE schemas:
+      1. Legacy string:   "ABORT"
+      2. Legacy dict:     {"status": "ABORT", ...}
+      3. New v1 schema:   {"verdict": "ABORT_NETLIST" | "ABORT_LINK" | ...}
+    Used to detect ABORT regardless of which schema upstream wrote."""
+    if isinstance(value, dict):
+        if value.get('status') == 'ABORT':
+            return True
+        verdict = value.get('verdict', '')
+        if isinstance(verdict, str) and verdict.startswith('ABORT'):
+            return True
+        return False
+    return str(value).strip().upper() == 'ABORT'
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--fm-verify',  required=True, help='eco_fm_verify.json from Step 6')
@@ -207,57 +275,67 @@ def main():
     p.add_argument('--update-round-handoff', default='',
                    help='Optional path to round_handoff.json — script merges '
                         'remediation_hint + abort_classification into it.')
+    p.add_argument('--pattern-yaml', default=str(DEFAULT_PATTERN_YAML),
+                   help='Override path to eco_fm_abort_patterns.yaml (rare).')
     args = p.parse_args()
 
-    fm_verify = json.loads(Path(args.fm_verify).read_text())
-    # Accept both schema variants: top-level `status` (legacy) OR `overall_status`
-    # (current eco_fm_runner output). Also accept ABORT detected via per-target
-    # status fields when neither top-level field is present.
-    top_status = fm_verify.get('status') or fm_verify.get('overall_status') or ''
-    if not top_status:
-        # Look at per-target nested dicts — if ANY says ABORT, treat as ABORT
-        for k, v in fm_verify.items():
-            if isinstance(v, dict) and v.get('status') == 'ABORT':
-                top_status = 'ABORT'
-                break
-    if top_status != 'ABORT':
-        out = {
-            'tag':                args.tag,
-            'round':              args.round,
-            'status':             top_status,
-            'note':               'No ABORT detected — classification skipped.',
-        }
-        Path(args.output).write_text(json.dumps(out, indent=2))
-        print(f'eco_extract_fm_abort_cause.py: status={top_status!r} '
-              f'(no ABORT) — wrote {args.output}')
-        return 0
+    # Allow CLI override of pattern source. If overridden, reload.
+    global ABORT_PATTERNS
+    if args.pattern_yaml and Path(args.pattern_yaml) != DEFAULT_PATTERN_YAML:
+        ABORT_PATTERNS = load_patterns_from_yaml(args.pattern_yaml)
 
-    # Find the per-target log file. Convention: <REF_DIR>/logs/<TARGET>.log.gz
-    # Per-target value can be EITHER a string ("ABORT") in legacy schema OR a
-    # dict {"status": "ABORT", "abort_reason": "...", ...} in current schema.
-    targets_status = {k: v for k, v in fm_verify.items()
-                      if k.startswith(('FmEqv', 'fm_'))}
+    fm_verify = json.loads(Path(args.fm_verify).read_text())
+
+    # ── ABORT detection — check ALL status fields, not just one ─────────────
+    # Bug history: prior version exited early when top-level
+    # `status` / `overall_status` was anything but exactly "ABORT". Run
+    # 20260512070625's eco_fm_runner wrote `overall_status="FM_FAILED"` even
+    # though every per-target was ABORT, so the classifier said "no ABORT
+    # detected" and the flow burned 3 rounds chasing the wrong cause.
+    #
+    # New rule: ABORT is detected if ANY of these is true:
+    #   1. Top-level `status` == "ABORT"
+    #   2. Top-level `overall_status` == "ABORT"
+    #   3. Any per-target dict has `status` == "ABORT"
+    #   4. Any per-target string value == "ABORT"
+    # Otherwise treat as no-ABORT — but ALWAYS still grep the per-target
+    # logs so we have evidence for FAIL diagnosis too (cheap; ~1s per target).
+    # New v1 schema (eco_fm_status_collector.py output) has top-level `verdict`
+    # AND a nested `per_target` dict; legacy schema has top-level `status` /
+    # `overall_status` and per-target dicts at the top level.
+    top_verdict_v1 = fm_verify.get('verdict', '')
+    top_status_raw = (fm_verify.get('status')
+                      or fm_verify.get('overall_status')
+                      or top_verdict_v1
+                      or '')
+
+    if 'per_target' in fm_verify and isinstance(fm_verify['per_target'], dict):
+        targets_status = fm_verify['per_target']
+    else:
+        targets_status = {k: v for k, v in fm_verify.items()
+                          if k.startswith('FmEqv')}
+
+    abort_targets = [t for t, v in targets_status.items() if _is_abort(v)]
+    detected_abort = (top_status_raw == 'ABORT'
+                      or top_verdict_v1.startswith('ABORT')
+                      or bool(abort_targets))
+
     classifications = []
     for target, value in targets_status.items():
-        if not target.startswith('FmEqv'):
+        # Always read the log if the target ABORTed. (Earlier behavior gated
+        # on top-level — this layer now decides per-target.)
+        if not _is_abort(value):
             continue
-        # Normalize value to status string
-        if isinstance(value, dict):
-            status_str = value.get('status', '')
-        else:
-            status_str = str(value)
-        if status_str != 'ABORT':
+        log_path = _find_log_path(args.logs_dir, target)
+        if log_path is None:
+            classifications.append({
+                'target':     target,
+                'abort_type': 'ABORT_OTHER',
+                'note':       f'no per-target log found in any expected location '
+                              f'(<logs_dir>/{target}.log[.gz|.bz2], '
+                              f'<ref>/rpts/{target}/formality.log[.gz])',
+            })
             continue
-        log_path = os.path.join(args.logs_dir, f'{target}.log.gz')
-        if not os.path.exists(log_path):
-            log_path = os.path.join(args.logs_dir, f'{target}.log')
-            if not os.path.exists(log_path):
-                classifications.append({
-                    'target':     target,
-                    'abort_type': 'ABORT_OTHER',
-                    'note':       f'log file not found at {log_path!r}',
-                })
-                continue
         log_text = _read_log(log_path)
         hits = classify(log_text, target)
         if hits:
@@ -266,9 +344,27 @@ def main():
             classifications.append({
                 'target':     target,
                 'abort_type': 'ABORT_OTHER',
-                'note':       'no known abort pattern matched in log; check manually',
+                'pattern_kind': 'unknown',
+                'note':       'log read but no known YAML pattern matched — '
+                              'add a new pattern entry to eco_fm_abort_patterns.yaml',
                 'log_path':   log_path,
             })
+
+    # ── Branch: no ABORT anywhere → write a clean no-op result ──────────────
+    if not detected_abort:
+        out = {
+            'tag':                args.tag,
+            'round':              args.round,
+            'status':             top_status_raw or 'UNKNOWN',
+            'detected_abort':     False,
+            'note':               'No ABORT detected in top-level status or any '
+                                  'per-target status — classification skipped.',
+            'targets_seen':       sorted(targets_status.keys()),
+        }
+        Path(args.output).write_text(json.dumps(out, indent=2))
+        print(f'eco_extract_fm_abort_cause.py: top_status={top_status_raw!r} '
+              f'no per-target ABORT — wrote {args.output}')
+        return 0
 
     # Aggregate verdict — pick the most-frequent abort_type as primary
     from collections import Counter
@@ -288,8 +384,10 @@ def main():
         'tag':                args.tag,
         'round':              args.round,
         'status':             'ABORT',
+        'detected_abort':     True,
+        'top_status_raw':     top_status_raw,
         'primary_abort_type': primary_abort_type,
-        'targets_aborted':    sorted(set(c['target'] for c in classifications)),
+        'targets_aborted':    sorted(abort_targets),
         'classifications':    classifications,
         'remediation_hints':  remediation_hints,
         # ABORT NEVER triggers re-study (Step 1/2/3) — per ROUND_ORCHESTRATOR.md

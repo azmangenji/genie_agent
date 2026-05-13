@@ -33,6 +33,31 @@ from pathlib import Path
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+# Bus-bit form (e.g. `X[1]`) is illegal in a wire declaration. Studier may
+# legitimately think of it as "bit 1 of bus X", but `wire X[1] ;` is invalid
+# Verilog. The convention used everywhere else in the netlist is the flat-net
+# form `X_1_` (underscore-escape). The applier auto-converts on consumption
+# so studier output gets emitted as legal Verilog without losing semantic intent.
+#
+# Run 20260512070625 root cause #2: studier's `named_net: "REG_UmcCfgEco[1]"`
+# was passed verbatim to wire_decls → `wire REG_UmcCfgEco[1] ;` → SVR-4/SVR-64
+# → FM-599 ABORT → 5 hours of misdiagnosis. With this sanitizer, the same
+# input becomes `wire REG_UmcCfgEco_1_ ;` (valid).
+_BRACKET_BIT_RE = re.compile(r'\[(\d+)\]')
+
+
+def _sanitize_named_net(named):
+    """Convert bus-bit form to flat-net form: 'X[1]' → 'X_1_'.
+    Idempotent. Pass through anything that's already a clean identifier.
+    Returns (sanitized_name, was_transformed) so the caller can log."""
+    if not named:
+        return named, False
+    if '[' not in named:
+        return named, False
+    sanitized = _BRACKET_BIT_RE.sub(lambda m: f'_{m.group(1)}_', named)
+    return sanitized, (sanitized != named)
+
+
 def zgrep_count(pattern, gz_path, timeout=60):
     """grep -cF (fixed string) pattern in gzipped file. Returns int.
     Uses -F to treat pattern as literal string — prevents brackets like [2]
@@ -289,12 +314,40 @@ def main():
                 # wire declaration (from UNCONNECTED rename) might be missing if it was
                 # added in a prior round and not re-verified. Without the explicit wire
                 # FM cannot trace the REGCMD bus bit → DFF0X / globally unmatched.
+                # Auto-sanitize bracket form + apply 5-layer dedup so we never emit
+                # a duplicate or invalid wire decl on this path either.
                 for ur in e.get('unconnected_rewires', []):
-                    named = ur.get('named_net', '')
-                    if named and named not in changes[mod]['wire_decls']:
-                        changes[mod]['wire_decls'].append(named)
-                        statuses.append({'name': inst, 'status':'INFO',
-                                         'reason': f'unconnected_rewires wire_decl re-added for {named} (ALREADY_APPLIED gate)'})
+                    named_raw = ur.get('named_net', '')
+                    if not named_raw:
+                        continue
+                    named, was_san = _sanitize_named_net(named_raw)
+                    if was_san:
+                        statuses.append({'name': named_raw, 'status': 'AUTO_SANITIZED',
+                                         'reason': f'(ALREADY_APPLIED path) named_net "{named_raw}" '
+                                                   f'used bus-bit form; converted to "{named}"'})
+                    # Skip if any of: rewire-implicit, PostEco existing, PreEco
+                    # existing, intra-batch, or PostEco port-use already present.
+                    if named in rewire_new_nets:
+                        continue
+                    if named in changes[mod]['wire_decls']:
+                        continue
+                    if zgrep_count(named, posteco) > 0:
+                        continue
+                    if zgrep_count(named, preeco) > 0:
+                        continue
+                    has_port_use = False
+                    try:
+                        import subprocess as _sp
+                        _g = _sp.run(['zgrep', '-c', f'\\.[A-Za-z0-9_]\\+ *( *{named} *)', posteco],
+                                     capture_output=True, text=True, timeout=60)
+                        has_port_use = int((_g.stdout or '0').strip() or '0') > 0
+                    except Exception:
+                        pass
+                    if has_port_use:
+                        continue
+                    changes[mod]['wire_decls'].append(named)
+                    statuses.append({'name': inst, 'status': 'INFO',
+                                     'reason': f'unconnected_rewires wire_decl re-added for {named} (ALREADY_APPLIED gate, dedup-passed)'})
                 continue
 
             # Per-stage port connections
@@ -422,19 +475,69 @@ def main():
         # Gap B: rename UNCONNECTED_* → named wire + rewire port bus bit.
         # Processed once per entry regardless of change_type.
         for ur in e.get('unconnected_rewires', []):
-            named = ur.get('named_net', '')
-            orig  = ur.get('original_unconnected', '')
-            if not named or not orig:
+            named_raw = ur.get('named_net', '')
+            orig      = ur.get('original_unconnected', '')
+            if not named_raw or not orig:
                 continue
-            # Wire declaration (dedup: check both batch list and disk)
+            # Auto-sanitize bus-bit form to flat-net form. Studier may emit
+            # `REG_UmcCfgEco[1]` thinking "bit 1 of bus X"; that's illegal as
+            # a wire decl. Convert to `REG_UmcCfgEco_1_` (the netlist's
+            # standard underscore-escape). The same sanitized name is used for
+            # BOTH the wire_decl AND the consumer rewrite below — keeps the
+            # connection intact.
+            named, was_sanitized = _sanitize_named_net(named_raw)
+            if was_sanitized:
+                statuses.append({
+                    'name': named_raw, 'status': 'AUTO_SANITIZED',
+                    'reason': f'named_net "{named_raw}" used bus-bit form (illegal '
+                              f'in wire decl). Auto-converted to flat-net "{named}". '
+                              f'Wire decl + consumer rewrite both use the sanitized '
+                              f'form so connection stays intact. Studier should emit '
+                              f'flat-net form directly to avoid this auto-fix.'
+                })
+            # Wire declaration with FULL 5-layer defensive dedup (same as
+            # new_logic_gate path at line ~378-422). Run history shows this
+            # path was the recurring source of wire-decl bugs:
+            #   - run 20260511083831: duplicate UNCONNECTED_19090 → FM-599 SVR-9
+            #   - run 20260511201004: implicit wire conflict on n_eco_9868_mux_sel
+            #   - run 20260512070625: bracket-form wire decl REG_UmcCfgEco[1]
+            # Earlier comment "ALWAYS declare the named wire explicitly" was
+            # wrong — it bypassed dedup and produced duplicates. The correct
+            # behavior: declare ONLY when not already present in any form.
             if mod not in changes:
                 changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': []}
-            # ALWAYS declare the named wire explicitly — even if it already appears implicitly
-            # from the REGCMD/submodule output bus. Without an explicit declaration, FM
-            # black-boxes the submodule in P&R stages and sees the wire as undriven → DFF0X.
-            # F2_implicit_wire_conflict from the duplicate is pre-existing/harmless (FM handles it).
-            if named not in changes[mod]['wire_decls']:
-                changes[mod]['wire_decls'].append(named)
+            # Layer 1: rewire-new-nets (Pass 4 creates implicit wire via .PORT)
+            if named in rewire_new_nets:
+                statuses.append({'name': named, 'status': 'INFO',
+                                 'reason': f'wire_decl SKIPPED for {named}: '
+                                           f'referenced by Pass 4 rewire → implicit decl (SVR-9 prevention)'})
+            else:
+                # Layer 2: existing reference in PostEco (any role)
+                existing_post = zgrep_count(named, posteco)
+                # Layer 3: existing reference in PreEco
+                existing_pre  = zgrep_count(named, preeco)
+                # Layer 4: intra-batch dedup
+                already_queued = named in changes[mod]['wire_decls']
+                # Layer 5: PostEco `.PORT(<named>)` use → implicit wire already exists
+                has_port_use_in_post = False
+                try:
+                    import subprocess as _sp
+                    _grep = _sp.run(['zgrep', '-c', f'\\.[A-Za-z0-9_]\\+ *( *{named} *)', posteco],
+                                    capture_output=True, text=True, timeout=60)
+                    has_port_use_in_post = int((_grep.stdout or '0').strip() or '0') > 0
+                except Exception:
+                    pass
+                if existing_post == 0 and existing_pre == 0 and not already_queued and not has_port_use_in_post:
+                    changes[mod]['wire_decls'].append(named)
+                else:
+                    why = []
+                    if existing_post > 0:    why.append(f'PostEco refs={existing_post}')
+                    if existing_pre  > 0:    why.append(f'PreEco refs={existing_pre}')
+                    if already_queued:       why.append('already queued in batch')
+                    if has_port_use_in_post: why.append('used as .PORT(net) in PostEco → implicit wire exists')
+                    statuses.append({'name': named, 'status': 'INFO',
+                                     'reason': f'unconnected_rewires wire_decl SKIPPED for {named}: ' +
+                                               ', '.join(why) + ' — SVR-9 prevention'})
             # Port bus bit replacement via Pass 4 rewire (word-boundary replace in bus { })
             # per_stage_bus_instance supports stage-specific renamed instances (e.g., REGCMD_0 in Route)
             # Use per-stage original (different UNCONNECTED_N names per stage)
@@ -447,7 +550,7 @@ def main():
                 rewires[bus_inst].append({
                     'pin':                ur.get('port_bus_name', ''),
                     'old':                orig_this_stage,
-                    'new':                named,
+                    'new':                named,             # ← sanitized form
                     'bus_element':        True,
                     'per_stage_cell_name': per_stage_bi,
                 })

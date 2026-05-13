@@ -432,7 +432,7 @@ pre{padding:10px;overflow-x:auto} code{padding:2px 5px}
     <td>[none | failure_mode: X — revised_changes: Y]</td></tr>
 <!-- ... -->
 </table>
-<!-- If ABORT: show abort_type and what STEP F attempted (SVR-14 fix, pin fix, etc.) -->
+<!-- If ABORT: show abort_class + abort_pattern from eco_fm_verify.json.per_target[*] and what abort_recovery_agent attempted (recovery.action from YAML) -->
 <!-- If FAIL: show eco_fm_analysis diagnosis, failure_mode, sample failing points -->
 <!-- If FAIL round 2+: show what re_studier changed and why -->
 

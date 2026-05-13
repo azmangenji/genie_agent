@@ -184,8 +184,19 @@ Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SA
 
 FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → globally unmatched → DFF non-equivalent. Any gate input matching `^(SYNOPSYS_)?UNCONNECTED_\d+$` must be renamed.
 
+**MANDATORY format constraints for `named_net`:**
+
+- MUST be a flat Verilog identifier: `^[A-Za-z_]\w*$` (letters, digits, underscores only — NO brackets, spaces, or special chars)
+- MUST NOT contain `[`, `]`, `.`, `/`, or whitespace
+- For bus-bit semantics (e.g. "bit 1 of REG_UmcCfgEco"), use **flat-net underscore-escape form**: `REG_UmcCfgEco_1_` — NEVER `REG_UmcCfgEco[1]`. Bracket form is only valid in port_connections / concatenations, NOT in wire declarations.
+- The applier (`eco_perl_spec.py`) auto-sanitizes bracket form via `_sanitize_named_net()` as a safety net (logs `AUTO_SANITIZED` in apply report) but the studier should emit the correct form directly. Repeated AUTO_SANITIZED entries indicate this rule is being violated.
+
+**Scope discipline (do NOT broadcast):**
+
+Each `unconnected_rewires` entry targets exactly ONE `(module, instance, port_name, bus_bit)` tuple. The applier executes per-instance — but if the studier emits N entries for N different modules all sharing the same `original` UNCONNECTED name AND the same `named_net`, the result LOOKS like a broadcast even though each individual edit is scoped. This is a scope-leak symptom — STUDIER should emit only the entries actually needed for the ECO.
+
 **Rule:** For each such net:
-1. Generate: `named_net = "n_eco_<jira>_<rtl_hint>"` — sanitized from `new_token`, port name, or RTL context. **Same name used across all stages.**
+1. Generate: `named_net = "n_eco_<jira>_<rtl_hint>"` — sanitized from `new_token`, port name, or RTL context. **Same name used across all stages.** **Flat-net form only — see format constraints above.**
 2. Find bus position in **each stage independently**: scan module scope for `.<port>( { ..., <UNCONNECTED_N>, ... } )`. Each stage may have a **different** UNCONNECTED name for the same bus bit (tool assigns fresh names per stage) — locate by bit position index from MSB, not by name matching.
 3. Record per-stage originals: `original_per_stage: {Synthesize: <N_syn>, PrePlace: <N_pp>, Route: <N_rt>}`. Record per-stage instance (submodule name may gain `_0` suffix in Route): `port_bus_instance_per_stage: {Synthesize: ..., Route: ...}`. Do NOT hardcode the instance name — read it from the port_connection entry or grep the PostEco module scope.
 4. Set on entry: `unconnected_rewires: [{original: <syn_name>, original_per_stage: {...}, named_net, needs_explicit_wire_decl:true, port_bus_instance, port_bus_instance_per_stage, port_bus_name, port_bus_bit}]`. Use `named_net` in `port_connections` for all stages.
@@ -201,7 +212,7 @@ Algorithm: walk the child module body, find any submodule instance whose output 
 - `instance_name`: the sub-instance whose bus output is undriven (e.g. the REGCMD internal block instance)
 - `port_name`: the bus port name on the sub-instance
 - `bus_bit_index`: same bit position
-- `net_name`: `<port_name>[<bit>]` (self-loop to the OWN output port — Verilog auto-wires)
+- `net_name`: `<port_name>[<bit>]` (self-loop to the OWN output port — Verilog auto-wires bus access in port_connections is legal). **CAUTION:** this bracket form is valid in a `.port_name(<port_name>[<bit>])` port_connection BUT illegal in a wire declaration. If this same value is also routed through `unconnected_rewires.named_net`, it will trigger the applier's AUTO_SANITIZE (rewriting to flat-net form) — that's the safety net, but the cleaner pattern is: keep bracket form ONLY in this port_connection's `net_name` field, and use the corresponding flat-net form (`<port_name>_<bit>_`) in `unconnected_rewires.named_net`.
 - `net_name_before`: per-stage map of the internal UNCONNECTED placeholders found per stage
 
 This is wire-up, not invention — it preserves clock/cone analysis. The new ECO is on a real driver, not an X. Engineers do this manually when bit[N] of a register output is "spare" (placeholder).

@@ -270,55 +270,31 @@ The script reads `<REF_DIR>/data/eco_fm_config` automatically.
 
 ---
 
-## STEP 6 — ABORT inline recovery loop (NEW, replaces immediate ROUND_ORCHESTRATOR spawn for whitelisted patterns)
+## STEP 6 — ABORT inline recovery loop (v1 schema — single canonical `verdict`)
 
-When Step 6 (eco_fm_runner) returns `status: "ABORT"`, the auto-classifier in `post_eco_formality.csh` has already written `<TAG>_eco_fm_abort_classification.json` and enriched `<TAG>_round_handoff.json` with `primary_abort_type` + `classifications[]` + `remediation_hints`. Read it to decide branching:
+When Step 6 (eco_fm_runner) finishes, the deterministic `eco_fm_status_collector.py` has written `<TAG>_eco_fm_verify.json` with the canonical v1 schema — single source of truth for FM status. **Read ONLY the `verdict` field for branching.** Legacy fields (`overall_status`, `status`) are gone in v1.
 
-**Whitelist of auto-fixable patterns (handled inline by abort_recovery_agent):**
-| primary_abort_type | pattern_kind | Patch action |
-|---|---|---|
-| `ABORT_NETLIST` | `duplicate_wire_decl` (FM-599 SVR-9) | Delete duplicate `wire <name> ;` line in same module |
-| `ABORT_NETLIST` | `verilog_parse_error` | Often co-occurs with above; same fix |
-| `ABORT_NETLIST` | `implicit_wire_conflict` | Delete explicit `wire X;` when `.PORT(X)` use precedes it |
-| `ABORT_LINK`    | `cell_type_not_in_library` (FE-LINK-2) | sed `<wrong_cell_type>` → `<correct_cell_type>` in study + 3 netlists |
+The status_collector also embeds per-target `abort_pattern` + `abort_evidence` + `log_path` directly in the JSON. `abort_recovery_agent` reads those to drive its dispatch (mechanical OR reasoning mode — no whitelist gate at this layer).
 
-Anything else (ABORT_LINK other kinds, ABORT_SVF, ABORT_OTHER, novel patterns) → escalate to ROUND_ORCHESTRATOR for full Step 6d analyzer pipeline.
+### Inline loop (max 10 iterations per orchestrator round)
 
-**Inline loop (max 10 iterations per orchestrator round):**
+**No whitelist gate.** Every ABORT_* verdict spawns `abort_recovery_agent`. The agent itself decides whether to apply a YAML mechanical action (when pattern is whitelisted) or to enter reasoning mode (when pattern is `unknown` or non-whitelisted). The orchestrator just iterates.
 
 ```python
-WHITELIST = {
-  ('ABORT_NETLIST', 'duplicate_wire_decl'),
-  ('ABORT_NETLIST', 'verilog_parse_error'),
-  ('ABORT_NETLIST', 'implicit_wire_conflict'),
-  ('ABORT_LINK',    'cell_type_not_in_library'),
-}
-
 attempt = 0
 while attempt < 10:
     fm = read_json(f'data/{TAG}_eco_fm_verify.json')
-    overall = fm.get('overall_status') or fm.get('status')
-    if overall == 'PASS':
+    verdict = fm.get('verdict', 'UNKNOWN')
+
+    if verdict == 'PASS':
         break  # converged
-    if overall == 'FAIL':
-        break  # logical mismatch — needs Mode A-H analyzer
-    if overall != 'ABORT':
-        break  # unknown — escalate
-
-    # Read classifier output (auto-written by post_eco_formality.csh)
-    cls = read_json(f'data/{TAG}_eco_fm_abort_classification.json')
-    primary = cls.get('primary_abort_type')
-    classifications = cls.get('classifications', [])
-
-    # Whitelist check — ALL classifications must be in WHITELIST
-    all_whitelisted = classifications and all(
-        (primary, c.get('pattern_kind')) in WHITELIST for c in classifications
-    )
-    if not all_whitelisted:
-        break  # escalate — needs full analyzer pipeline
+    if verdict == 'FAIL':
+        break  # logical mismatch — needs Mode A-H analyzer (ROUND_ORCHESTRATOR)
+    if not verdict.startswith('ABORT_'):
+        break  # NOT_RUN / PARTIAL / UNKNOWN — investigate FM scheduling, not netlist
 
     attempt += 1
-    # Spawn abort_recovery_agent (short-lived, ≤15 min)
+    # Spawn abort_recovery_agent — agent dispatches mechanical vs reasoning internally
     Agent(
         description=f'Patch ABORT iter {attempt}/10',
         subagent_type='general-purpose',
@@ -331,34 +307,149 @@ REF_DIR      = {REF_DIR}
 BASE_DIR     = {BASE_DIR}
 ROUND        = {ROUND}
 ATTEMPT      = {attempt}
-CLASSIFICATION_PATH = {BASE_DIR}/data/{TAG}_eco_fm_abort_classification.json
+FM_VERIFY_PATH = {BASE_DIR}/data/{TAG}_eco_fm_verify.json
 HANDOFF_PATH = {BASE_DIR}/data/{TAG}_round_handoff.json
 '''
     )
 
-    # Read recovery agent's summary
     summary = read_json(f'data/{TAG}_abort_recovery_attempt{attempt}.json')
+    # Loop continues only when a real patch landed. Anything else → exit.
     if summary.get('status') != 'PATCH_APPLIED':
-        break  # escalate — patch failed or refused
+        break  # PATCH_INCOMPLETE / PATCH_NOOP / REASONING_REFUSED / etc.
 
-    # Resubmit FM (Step 6 again, same round)
+    # Resubmit FM — eco_fm_runner re-invokes status_collector via the csh
     spawn_eco_fm_runner()
-    # Loop back to top — read new fm_verify.json, classify, check, etc.
 
 # After loop:
-final_status = read_json(f'data/{TAG}_eco_fm_verify.json').get('overall_status', 'UNKNOWN')
+final = read_json(f'data/{TAG}_eco_fm_verify.json').get('verdict', 'UNKNOWN')
+
+# ── Auto-grow YAML pattern library on PASS ─────────────────────────────────
+# When reasoning-mode patches led to FM PASS, append validated suggestions to
+# eco_fm_abort_patterns_auto.yaml so future runs handle the same ABORT
+# mechanically (faster) instead of via reasoning mode (slower).
+if final == 'PASS':
+    grow_auto_yaml_from_attempts(TAG, BASE_DIR, attempt_count=attempt)
 ```
 
-**Branch on final_status (after loop exit):**
+### Auto-grow YAML library after PASS
 
-| Final status | Loop verdict | Spawn next |
-|---|---|---|
-| `PASS`                                    | `CONVERGED`              | FINAL_ORCHESTRATOR |
-| `FAIL` (logical mismatch — Mode A-H)      | `ADVANCE_NEXT_ROUND`     | ROUND_ORCHESTRATOR |
-| `ABORT` with non-whitelisted pattern_kind | `RERUN_SAME_ROUND`       | ROUND_ORCHESTRATOR (full Step 6d) |
-| `ABORT` and attempt == 10                 | `RERUN_SAME_ROUND` + note "max inline retries exhausted" | ROUND_ORCHESTRATOR |
-| `ABORT_RECOVERY refused (escalation)`     | `RERUN_SAME_ROUND`       | ROUND_ORCHESTRATOR |
-| `UNKNOWN`                                 | `ESCALATE`               | ROUND_ORCHESTRATOR |
+When the recovery loop ends with `verdict == "PASS"` AND any iteration was reasoning-mode (not pure mechanical), scan attempt summaries for `yaml_pattern_suggestion` fields and append validated entries to `config/eco_agents/eco_fm_abort_patterns_auto.yaml`.
+
+```python
+def grow_auto_yaml_from_attempts(TAG, BASE_DIR, attempt_count):
+    import yaml, re
+    main_yaml = 'config/eco_agents/eco_fm_abort_patterns.yaml'
+    auto_yaml = 'config/eco_agents/eco_fm_abort_patterns_auto.yaml'
+    valid_classes = {'ABORT_NETLIST', 'ABORT_LINK', 'ABORT_SVF', 'ABORT_OTHER'}
+
+    # Existing pattern kinds (main + auto) — for collision check
+    existing_kinds = set()
+    for path in (main_yaml, auto_yaml):
+        if Path(path).is_file():
+            existing_kinds |= set((yaml.safe_load(open(path)) or {}).get('patterns', {}).keys())
+
+    new_entries = {}
+    for n in range(1, attempt_count + 1):
+        summary_path = f'{BASE_DIR}/data/{TAG}_abort_recovery_attempt{n}.json'
+        if not Path(summary_path).is_file():
+            continue
+        summary = read_json(summary_path)
+        if summary.get('status') != 'PATCH_APPLIED':
+            continue
+        for patch in summary.get('patches_applied', []):
+            sug = patch.get('yaml_pattern_suggestion')
+            if not sug:
+                continue
+            kind = sug.get('kind', '').strip()
+
+            # Validation gate 1 — kind doesn't collide
+            if not kind or kind in existing_kinds or kind in new_entries:
+                log_reject(kind, "duplicate or empty kind"); continue
+            # Validation gate 2 — abort_class is in enum
+            if sug.get('abort_class') not in valid_classes:
+                log_reject(kind, "invalid abort_class"); continue
+            # Validation gate 3 — regex compiles
+            try:
+                rx_flags = (re.MULTILINE if sug.get('multiline') else 0) \
+                         | (re.IGNORECASE if sug.get('ignore_case') else 0)
+                compiled = re.compile(sug['regex'], rx_flags)
+            except (KeyError, re.error) as e:
+                log_reject(kind, f"regex compile failed: {e}"); continue
+            # Validation gate 4 — regex matches the cited evidence
+            evidence_log = patch.get('evidence_log_path') or \
+                           patch.get('log_excerpts', [{}])[0].get('text', '')
+            if evidence_log and not compiled.search(evidence_log):
+                log_reject(kind, "regex does not match cited evidence"); continue
+
+            # All gates passed — stage for write
+            new_entries[kind] = {
+                'abort_class':      sug['abort_class'],
+                'regex':            sug['regex'],
+                'multiline':        sug.get('multiline', False),
+                'ignore_case':      sug.get('ignore_case', False),
+                'severity':         sug.get('severity', 'medium'),
+                'suggested_action': sug.get('suggested_action', ''),
+                'recovery':         sug.get('recovery', {'whitelist': False}),
+                '_provenance': {
+                    'tag':         TAG,
+                    'round':       ROUND,
+                    'attempt':     n,
+                    'auto_grown':  True,
+                },
+            }
+
+    if not new_entries:
+        return  # nothing to write
+
+    # Validation gate 5 (already implicit) — FM PASSed at end of loop, so
+    # the fix actually worked. Append.
+    auto_doc = {}
+    if Path(auto_yaml).is_file():
+        auto_doc = yaml.safe_load(open(auto_yaml)) or {}
+    auto_doc.setdefault('schema_version', 1)
+    auto_doc.setdefault('patterns', {})
+    auto_doc['patterns'].update(new_entries)
+    # Atomic write — temp + rename
+    tmp = auto_yaml + '.tmp'
+    with open(tmp, 'w') as f:
+        yaml.safe_dump(auto_doc, f, default_flow_style=False, sort_keys=False)
+    os.replace(tmp, auto_yaml)
+    print(f'YAML auto-grown: appended {len(new_entries)} pattern(s) to {auto_yaml}')
+```
+
+**Validation gates (all must pass before any append):**
+1. `kind` is non-empty and does NOT collide with existing patterns (main OR auto)
+2. `abort_class` is one of `ABORT_NETLIST | ABORT_LINK | ABORT_SVF | ABORT_OTHER`
+3. `regex` compiles via `re.compile()` with the requested flags
+4. `regex` actually matches the FM log excerpt cited as evidence (proves the suggestion isn't a hallucination)
+5. FM moved from ABORT → PASS in this round (implicit — only runs in the `final == 'PASS'` branch)
+
+Rejected suggestions are logged to `<TAG>_yaml_suggestion_rejected_attempt<N>.json` for visibility but do NOT block the PASS outcome.
+
+**Engineer review:** `eco_fm_abort_patterns_auto.yaml` is git-tracked. Engineer can:
+- Promote a pattern by moving it into `eco_fm_abort_patterns.yaml` (and removing from auto)
+- Edit a pattern (refine regex, change recovery.whitelist) in place
+- Delete a bad pattern — next run will use main YAML only
+
+The `_provenance` block on each auto entry shows `tag` / `round` / `attempt` so engineer can trace back to which run discovered it.
+
+### Branch on final verdict (after loop exit)
+
+| Final verdict + condition | Spawn next |
+|---|---|
+| `PASS` | FINAL_ORCHESTRATOR |
+| `FAIL` (logical mismatch — Mode A-H) | ROUND_ORCHESTRATOR |
+| `ABORT_*` and attempt == 10 (loop exhausted) | Write `round_handoff.json` with `note: "max inline retries (10) exhausted — recovery agent could not converge"` and EXIT. **Do NOT spawn ROUND_ORCHESTRATOR.** ABORT must be solved in same round; re-study is wrong tool for elaboration errors. |
+| `ABORT_*` and recovery agent returned `REASONING_REFUSED` | Write handoff with `note: "recovery agent refused — out of scope for direct patch"` and EXIT. Do NOT spawn ROUND_ORCHESTRATOR. |
+| `ABORT_*` and recovery agent returned `PATCH_INCOMPLETE` | Write handoff with `note: "patch applied but pre-FM check still failing"` and EXIT. Do NOT spawn ROUND_ORCHESTRATOR. |
+| `NOT_RUN` / `PARTIAL` / `UNKNOWN` | Write handoff with `note: "FM did not produce valid output — investigate scheduling/license/disk"` and EXIT. |
+
+### Notes on the branch table
+
+- **ABORT_* never spawns ROUND_ORCHESTRATOR.** ABORT must be solved in the same round by `abort_recovery_agent` (mechanical or reasoning mode). After the 10-iter loop exhausts, the orchestrator writes a handoff JSON and exits silently — no escalation channel, no email. The recovery_agent owns ABORT recovery end-to-end; if it can't fix it in 10 attempts, the round terminates as ABORT.
+- **ROUND_ORCHESTRATOR is for FAIL only.** FAIL = logical mismatch in the design (Mode A-H), which is what re-study + re-apply addresses. ABORT = elaboration / parse error in HOW the netlist was edited — re-study won't help (it produces the same kind of edit again).
+- **Reasoning-mode patches are validated.** `PATCH_APPLIED` return means the patched netlist passes the relevant pre-FM check. If recovery_agent fixed something but the check still fails, it returns `PATCH_INCOMPLETE` and the loop exits.
+- **Loop bound = 10 attempts.** Per-attempt MD5 verification + ONE-direct-edit-only rule keeps blast radius bounded.
 
 ---
 
@@ -412,7 +503,7 @@ This path is triggered when eco_pre_fm_checker returned `passed: false` after MA
 
 #### If FM RESULT = FAIL or ABORT → Spawn ROUND_ORCHESTRATOR
 
-> **ABORT vs FAIL:** eco_fm_runner STEP F already attempted inline fixes for all 4 abort types (ABORT_NETLIST: SVR-14/9/4, ABORT_LINK: wrong pin, ABORT_SVF: svf_ignore_errors, ABORT_OTHER: known patterns) and reran FM before returning ABORT. If ABORT reaches ORCHESTRATOR, STEP F was exhausted. Both ABORT and FAIL → spawn ROUND_ORCHESTRATOR. eco_fm_analyzer in Step 6d handles them differently but the spawn decision is the same.
+> **ABORT vs FAIL:** eco_fm_runner no longer patches on ABORT (STEP F deleted in the recovery consolidation). On ABORT, this orchestrator's Step 6 inline-loop spawns `abort_recovery_agent` every iteration (no whitelist gate) up to 10×. The agent runs in mechanical mode (YAML `recovery.action`) for whitelisted patterns or reasoning mode (reads FM log directly, proposes one direct fix) for unknown / non-whitelisted patterns. **ABORT must be solved in the same round** — if the loop exhausts, orchestrator writes the handoff and EXITs. ROUND_ORCHESTRATOR is never spawned for ABORT. FAIL always → ROUND_ORCHESTRATOR (logical mismatch, Mode A-H analyzer required).
 >
 > The difference between FAIL and ABORT only matters to eco_fm_analyzer (Step 0). To ORCHESTRATOR's spawn decision, both are the same: → ROUND_ORCHESTRATOR.
 

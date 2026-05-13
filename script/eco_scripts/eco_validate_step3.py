@@ -1117,6 +1117,63 @@ def main():
                         f"(<10). Bridge_port requires ≥10-DFF cluster (per studier MD §374) "
                         f"or fall back to neighbor_dff strategy.")
 
+    # ── 26. NAMED-NET FORMAT + SCOPE-LEAK SUSPECT DETECTION ────────────────
+    # Two related checks for unconnected_rewires entries:
+    # (a) named_net MUST be a flat Verilog identifier — no brackets, no spaces.
+    #     Bracket form (e.g. "REG_UmcCfgEco[1]") is illegal in `wire <name>;`
+    #     declarations. Run 20260512070625 root cause: studier emitted
+    #     `named_net: "REG_UmcCfgEco[1]"` → applier wrote `wire REG_UmcCfgEco[1];`
+    #     → FM SVR-4/SVR-64/FM-599 ABORT → 5 hours misdiagnosis.
+    #     The applier's eco_perl_spec.py auto-sanitizes, but this validator
+    #     flags the studier-side root cause so engineer can fix at source.
+    # (b) When N entries across N different modules share the same `named_net`
+    #     value AND the same `original` UNCONNECTED name, that's a likely
+    #     scope-leak symptom — the studier may have broadcast a substitution
+    #     that should have been scoped to ONE module (the actual target).
+    NAMED_NET_RE = re.compile(r'^[A-Za-z_]\w*$')
+    from collections import defaultdict
+    rewires_by_named = defaultdict(list)   # named_net -> [(stage, mod, inst, orig)]
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            mod = e.get('module_name', '')
+            for ur in e.get('unconnected_rewires', []) or []:
+                named = ur.get('named_net', '')
+                orig  = ur.get('original_unconnected', '')
+                inst  = ur.get('port_bus_instance', '') or e.get('instance_name', '')
+                if not named:
+                    continue
+                # (a) Format check
+                if not NAMED_NET_RE.match(named):
+                    issues.append(
+                        f"HIGH/26-NAMED-NET-FORMAT: stage={stage} mod={mod} "
+                        f"named_net={named!r} is not a flat Verilog identifier. "
+                        f"Use underscore-escape form (e.g. 'X_1_' instead of 'X[1]'). "
+                        f"Applier auto-sanitizes but studier should emit correct "
+                        f"form directly. See eco_netlist_studier.md §0b-UNCONNECTED "
+                        f"format constraints.")
+                rewires_by_named[(named, orig)].append((stage, mod, inst))
+
+    # (b) Scope-leak suspect: same (named, orig) used in entries with DIFFERENT
+    # modules. Allowed: same (named, orig) appears in 3 entries (one per stage)
+    # for the SAME module — that's normal multi-stage. Flag when the modules
+    # set has >1 distinct module per stage.
+    for (named, orig), occurrences in rewires_by_named.items():
+        # Group by stage
+        per_stage_mods = defaultdict(set)
+        for stage, mod, inst in occurrences:
+            per_stage_mods[stage].add(mod)
+        for stage, mods in per_stage_mods.items():
+            if len(mods) > 1:
+                issues.append(
+                    f"WARN/26-SCOPE-LEAK-SUSPECT: stage={stage} the same rename "
+                    f"(orig={orig!r} → named={named!r}) targets {len(mods)} different "
+                    f"modules: {sorted(mods)[:5]}. Applier executes per-instance, "
+                    f"so each entry results in its own substitution — this LOOKS "
+                    f"like a scope-leak. Verify all targets are intentional; if "
+                    f"only ONE module needs the rename, drop the others to avoid "
+                    f"polluting unrelated module scopes (run 20260512070625 root "
+                    f"cause class).")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

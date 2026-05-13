@@ -1219,6 +1219,59 @@ def check_eco_cell_type_in_library(study_path, ref_dir):
     return failures
 
 
+def check_invalid_wire_decl_syntax(ref_dir):
+    """Check 22 — Verilog grammar lint on wire/reg declarations.
+
+    A wire declaration must use a flat identifier as the name. Forms like
+    `wire NAME[N] ;` are illegal — `[N]` is bus-bit indexing syntax that's
+    valid in port_connections / concatenations but NOT in declarations.
+
+    FM rejects these with:
+        Warning: Size mismatch between port & wire declaration ... (SVR-64)
+        Error:   Expected ',' or ';' but found '['               (SVR-4)
+        Error:   read_verilog/read_sverilog ignored due to errors (FM-599)
+    → ABORT before any comparison.
+
+    Run 20260512070625 root cause: round 2 agent direct-edit added
+    `wire REG_UmcCfgEco[1] ;` to all 3 PostEco netlists trying to fix a
+    different signal-naming issue. FM aborted in PreVerify on every round
+    until the engineer (manually) deleted the line. 5+ hours wasted because
+    no pre-FM lint caught the broken syntax.
+
+    Streams each PostEco netlist; flags any `wire <name>[<bit>] ;` decl.
+    """
+    failures = []
+    BAD_DECL = re.compile(r'^\s*(wire|tri|wand|wor|reg)\s+(\w+)\[(\d+)\]\s*;\s*$')
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            text = subprocess.run(['zcat', gz], capture_output=True, text=True, timeout=240).stdout
+        except Exception:
+            continue
+        cur_mod = None
+        for line_idx, line in enumerate(text.split('\n'), start=1):
+            mm = re.match(r'^module\s+(\S+)', line)
+            if mm:
+                cur_mod = mm.group(1); continue
+            if re.match(r'^\s*endmodule', line):
+                cur_mod = None; continue
+            bm = BAD_DECL.match(line)
+            if bm:
+                kind, name, bit = bm.group(1), bm.group(2), bm.group(3)
+                fixed = f'{name}_{bit}_'
+                failures.append(
+                    f'[INVALID_WIRE_DECL_SYNTAX] {stage}:{line_idx} module {cur_mod or "?"!r}: '
+                    f'`{kind} {name}[{bit}] ;` — bracket form is illegal in a wire decl. '
+                    f'Use flat-net underscore-escape: `{kind} {fixed} ;`. FM will reject '
+                    f'with SVR-4 + SVR-64 + FM-599 → ABORT in PreVerify (no comparison runs). '
+                    f'Likely cause: applier or agent direct-edit passed bus-bit syntax verbatim '
+                    f'into a wire declaration without flattening. Delete this line OR rewrite '
+                    f'as flat name and update consumers accordingly.')
+    return failures
+
+
 def check_eco_cell_counts(applied):
     """
     WARN (not FAIL) if ECO cell counts differ significantly across stages.
@@ -1419,6 +1472,15 @@ def main():
     # before FM ABORTs with FE-LINK-2 + FM-234 + FM-156.
     fails = check_eco_cell_type_in_library(study_path, args.ref_dir)
     results['eco_cell_type_in_library'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
+    # Check 22 — Verilog grammar lint on wire decls (SVR-4 / SVR-64 ABORT
+    # prevention). Catches `wire <name>[<bit>] ;` bracket-form decls before
+    # FM rejects them at read_verilog time. Run 20260512070625 root cause:
+    # `wire REG_UmcCfgEco[1] ;` triggered FM-599 ABORT for 3 rounds straight;
+    # this 1-second check would have flagged it before round 1's FM submit.
+    fails = check_invalid_wire_decl_syntax(args.ref_dir)
+    results['invalid_wire_decl_syntax'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
     passed = len(all_fails) == 0

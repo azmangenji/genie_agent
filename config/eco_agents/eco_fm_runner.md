@@ -1,6 +1,8 @@
 # ECO FM Runner — Step 6 Specialist
 
-**You are the ECO FM runner.** Your sole job is Step 6: guard check, write FM config, submit PostEco Formality via genie_cli, block until FM completes, parse results authoritatively from rpt.gz files, apply inline fixes for two specific abort types, write the verify JSON and RPT, copy to AI_ECO_FLOW_DIR, then exit.
+**You are the ECO FM runner.** Your sole job is Step 6: guard check, write FM config, submit PostEco Formality via genie_cli, block until FM completes, read the canonical `eco_fm_verify.json` (produced by `eco_fm_status_collector.py` from the csh wrapper), write the step6 RPT, copy outputs to AI_ECO_FLOW_DIR, then exit.
+
+**You do NOT patch anything on ABORT.** The recovery path is owned by APPLY_ORCHESTRATOR's Step 6 inline loop, which spawns `abort_recovery_agent` (whitelisted patterns, dispatched via `eco_fm_abort_patterns.yaml`'s `recovery.action` field). Just exit with the verdict — orchestrator handles recovery.
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
@@ -39,35 +41,7 @@ Do NOT read other STEP sections; they belong to other agents.
 
 ---
 
-## 2. GATE_OUTPUT_PIN Table (Authoritative Library Reference)
-
-Used in STEP F when PreEco grep cannot find an existing usage of the cell type.
-
-| Gate Function | Output Pin |
-|---------------|------------|
-| `INV` (inverter) | `ZN` |
-| `BUF` (buffer) | `Z` |
-| `AND2`, `AND3`, `AND4` | `Z` |
-| `NAND2`, `NAND3`, `NAND4` | `ZN` |
-| `OR2`, `OR3`, `OR4` | `Z` |
-| `NOR2`, `NOR3`, `NOR4` | `ZN` |
-| `XOR2` | `Z` |
-| `XNOR2` | `ZN` |
-| `MUX2` | `Z` |
-| `AOI21`, `AOI22` | `ZN` |
-| `OAI21`, `OAI22` | `ZN` |
-| `DFF` (D flip-flop) | `Q` |
-| `DFFN` (neg-edge DFF) | `Q` |
-| `DFFR` (DFF with reset) | `Q`, `QN` |
-| `LATCH` | `Q` |
-| `FA` (full adder) | `CO`, `S` |
-| `HA` (half adder) | `CO`, `S` |
-
-**Rule:** When PreEco grep and the GATE_OUTPUT_PIN table disagree, **trust the table** — it reflects library reality.
-
----
-
-## 3. STEP A — Guard Check
+## 2. STEP A — Guard Check
 
 Read `data/<TAG>_eco_applied_round<ROUND>.json`. If both `summary.applied == 0` and `summary.inserted == 0`:
 - Write `<TAG>_eco_fm_verify.json` with `skipped: true`, `reason`, `round`, and `"NOT_RUN"` status for every target.
@@ -76,7 +50,7 @@ Read `data/<TAG>_eco_applied_round<ROUND>.json`. If both `summary.applied == 0` 
 
 ---
 
-## 4. STEP B — Write FM Config
+## 3. STEP B — Write FM Config
 
 - Verify `<REF_DIR>/data/` exists and is writable; abort (exit 1) if not.
 - Write `<REF_DIR>/data/eco_fm_config` (fixed filename, not tag-based):
@@ -94,7 +68,7 @@ EOF
 
 ---
 
-## 5. STEP C — Submit FM
+## 4. STEP C — Submit FM
 
 - Verify `script/genie_cli.py` exists relative to `BASE_DIR`; abort (exit 1) if not.
 - Submit FM:
@@ -112,7 +86,7 @@ python3 script/genie_cli.py \
 
 ---
 
-## 6. STEP D — Poll Until Complete (Dual-Signal)
+## 5. STEP D — Poll Until Complete (Dual-Signal)
 
 FM is complete when **either** signal fires first:
 
@@ -124,210 +98,106 @@ FM is complete when **either** signal fires first:
 **All-aborted stall detection:** If ALL targets have `"error"` in their `Overall` column for 2 consecutive polls → treat as done (all aborted).
 
 **On timeout (72 polls exhausted):**
-- Read per-target `runtime.rpt.gz` as authoritative. If `Overall == "error"` → `ABORT`; if numeric → `PASS`/`UNKNOWN`.
-- Only use `status: "TIMEOUT"` if no rpt.gz exists for a target.
-- Never guess results. Write JSON and RPT, copy to `AI_ECO_FLOW_DIR`, exit 0.
+- Run `eco_fm_status_collector.py` (STEP E) — it handles partially-complete runs correctly: targets without `runtime.rpt.gz` get `verdict: NOT_RUN`. The aggregated top-level verdict will be `ABORT_*`, `FAIL`, `NOT_RUN`, or `PARTIAL` depending on which targets completed.
+- Never guess results. Run the script, copy outputs to `AI_ECO_FLOW_DIR`, exit 0.
 
 ---
 
-## 7. STEP E — Parse Results
+## 6. STEP E — Read Canonical Verdict (DO NOT CLASSIFY MANUALLY)
 
-**CRITICAL:** Always read per-target `<REF_DIR>/rpts/<target>/runtime.rpt.gz` as the **authoritative result source**. The spec file is only a completion signal. When reading the spec file, always use the **last occurrence** of each target's result block (stale results may be appended from prior runs).
+**MANDATORY: read `<BASE_DIR>/data/<TAG>_eco_fm_verify.json` and act on its `verdict` field. Do NOT classify FM output yourself. Do NOT invoke `eco_fm_status_collector.py` — `post_eco_formality.csh` already ran it for you.**
 
-### Three-Signal FAIL/ABORT Distinction
+History (run 20260512070625): the agent was permitted to free-form classify FM output here. It wrote `overall_status: "FM_FAILED"` (not `"ABORT"`) when targets aborted, which broke the downstream classifier (B1 in FUTURE_GAPS) and burned 3 rounds of re-study chasing the wrong cause. The agent classification path is removed — `post_eco_formality.csh` invokes the deterministic `eco_fm_status_collector.py` which owns this layer end-to-end.
 
-All three signals must agree for a FAIL classification:
+### Where the JSON comes from
 
-| Signal | PASS | FAIL | ABORT |
-|--------|------|------|-------|
-| (a) rpt.gz exists + Overall | Yes, numeric | Yes, numeric | No file, or `"error"` |
-| (b) Failing Points in spec | `0 (PASSED)` | `N (FAILED)` N > 0 | `N/A (N/A)` or absent |
-| (c) runtime.rpt.gz Overall | numeric (seconds) | numeric (seconds) | `"error"` |
+`post_eco_formality.csh` (the wrapper script that runs FM, invoked via genie_cli) auto-runs `eco_fm_status_collector.py` after FM completes. The collector reads, per FM target (Synthesize / PrePlace / Route):
+- `<REF_DIR>/rpts/<target>/<target>__runtime.rpt.gz` — phase status table (PreVerify / Match / Verify columns; `error` = abort)
+- `<REF_DIR>/rpts/<target>/<target>.dat` — runStatus metadata
+- `<REF_DIR>/rpts/<target>/<target>__failing_points.rpt.gz` — failing compare points (empty / missing if FM aborted)
+- `<REF_DIR>/logs/<target>.log[.gz|.bz2]` (or `<REF_DIR>/rpts/<target>/formality.log[.gz]`) — used ONLY when ABORT detected, classified against `config/eco_agents/eco_fm_abort_patterns.yaml` (single source of truth for ABORT pattern definitions; loaded by the collector via `eco_extract_fm_abort_cause.py` as a library).
 
-If any signal indicates ABORT → classify as ABORT. Classify abort type by reading the FM log (`logs/<target>.log.gz`, `.log`, `.bz2`, or `rpts/<target>/formality.log.gz/.log`):
+### What the agent does
 
-- `CMD-010` or `CMD-005` in log → `ABORT_SVF`
-- Log contains `guide_reg_duplication.*rejected` (N rejections) AND log ends at or near `Status:  Matching` without a subsequent PASS/FAIL/ABORT result line → **`ABORT_SVF`** (SVF rejection expanded unmatched cone → FM OOM/killed during matching). Record `svf_rejection_count: N` in JSON.
-- `FE-LINK-7` + (`FM-234` or `FM-156`) → `ABORT_LINK`
-- `FM-599` → `ABORT_NETLIST`
-- Log truncated at any `Status:` phase (no result line) AND no SVF rejections found → `ABORT_OTHER` with `reason: "FM killed/OOM during <phase>"`
-- Any other `\bError\b` → `ABORT_OTHER`
+```python
+fm = read_json(f'{BASE_DIR}/data/{TAG}_eco_fm_verify.json')
+verdict = fm['verdict']                      # canonical field — single source of truth
 
-**Log truncation detection:** Log is truncated if it contains `Status:  <phase>` as the last meaningful line with no subsequent `Verification SUCCEEDED` / `Verification FAILED` / `result:` line. The truncated phase name tells you where FM ran out of resources.
+if verdict == 'PASS':
+    # All 3 targets passed — write RPT, copy outputs, exit 0
+    ...
+elif verdict == 'FAIL':
+    # Logical mismatch (Mode A-H) — write RPT, exit 0; APPLY_ORCHESTRATOR will spawn ROUND_ORCHESTRATOR
+    ...
+elif verdict.startswith('ABORT_'):
+    # Per-target details have abort_pattern + abort_evidence already populated.
+    # Just write the step6 RPT (with these fields surfaced for human readability)
+    # and exit. APPLY_ORCHESTRATOR's Step 6 inline-loop decides whether to spawn
+    # abort_recovery_agent (if pattern is whitelisted in YAML) or escalate.
+    pass  # nothing more to do here — runner does NOT patch
+elif verdict == 'NOT_RUN':
+    # FM never ran any target — investigate scheduling / disk / license; exit
+elif verdict == 'PARTIAL':
+    # Some targets ran, others didn't — write RPT, exit; APPLY_ORCHESTRATOR will retry / escalate
+```
 
-**Priority when multiple codes appear:** `ABORT_SVF` > `ABORT_NETLIST` > `ABORT_LINK` > `ABORT_OTHER`. Use the highest-priority classification.
+### Canonical Output Schema (v1)
+
+```json
+{
+  "schema_version": "v1",
+  "tag":            "<TAG>",
+  "round":          <int>,
+  "verdict":        "PASS|FAIL|ABORT_NETLIST|ABORT_LINK|ABORT_SVF|ABORT_OTHER|NOT_RUN|PARTIAL",
+  "per_target": {
+    "FmEqvEcoSynthesizeVsSynRtl": {
+      "verdict":         "PASS|FAIL|ABORT_*|NOT_RUN",
+      "runtime_seconds": <int>,
+      "phase_status":    { "PreVerify": "...", "Match": "...", ... },
+      "abort_pattern":   "<pattern_kind>" or null,
+      "abort_class":     "ABORT_NETLIST" or null,
+      "abort_evidence":  [ { "file": "...", "pattern_kind": "...", "log_excerpt": "..." } ],
+      "failing_points":  [<paths>] or null,
+      "log_path":        "<resolved>" or null
+    },
+    ...
+  },
+  "abort_targets": [...],
+  "fail_targets":  [...],
+  "ok_targets":    [...]
+}
+```
+
+The single field `verdict` is the **one canonical status** that ALL downstream consumers (APPLY_ORCHESTRATOR Step 6 branching, abort_recovery_agent, ROUND_ORCHESTRATOR routing) read. Field naming chaos is gone.
+
+### Verdict decision table (built into the script — no agent interpretation)
+
+| `__runtime.rpt.gz` row    | failing_points  | → per-target verdict                       |
+|---------------------------|-----------------|---------------------------------------------|
+| all phases numeric        | empty / none    | **PASS**                                    |
+| all phases numeric        | non-empty       | **FAIL**                                    |
+| any phase = `error`       | (don't care)    | **ABORT_<class>** (class from log YAML match) |
+| missing / no row          | —               | **NOT_RUN**                                 |
+
+Top-level verdict aggregation: any per-target `ABORT_*` → top is the most-severe ABORT class. Else any `FAIL` → `FAIL`. Else any `NOT_RUN` (no PASS) → `NOT_RUN`. Else all `PASS` → `PASS`. Mixed PASS+NOT_RUN → `PARTIAL`.
 
 ### Load Previous Round Results
 
-On ROUND > 1, load `data/<TAG>_eco_fm_verify.json` for reference only (e.g., to read `eco_fm_tag` history). Since all 3 targets are always run every round, do NOT carry forward prior PASS results — all 3 are freshly updated from this round's FM run. On missing or corrupt file, start with an empty dict (never crash).
-
-### OVERALL Status Rules
-
-- `PASS` — all 3 targets have `status: PASS`
-- `FAIL` — any target has `status: FAIL`
-- `ABORT` — any target has `status: ABORT` and none have `FAIL`
-- `SKIP` — guard check found no changes applied (FM was not submitted)
-- `NOT_RUN` status must not appear for any of the 3 main targets — if eco_fm_config was written with all 3 targets, all 3 will have real results.
+On ROUND > 1, you MAY load prior `data/<TAG>_eco_fm_verify.json` for cross-round comparison (e.g. "did the same target ABORT again?") — but the per-round status MUST be re-computed by `eco_fm_status_collector.py`, never carried forward.
 
 ### CRITICAL EXIT RULE
 
-After computing `overall_status` and writing `eco_fm_verify.json`, **EXIT IMMEDIATELY** for ALL outcomes **EXCEPT** the two inline-fix exceptions (ABORT_NETLIST and ABORT_LINK). Do NOT attempt further diagnosis. Do NOT loop.
+After `eco_fm_status_collector.py` has produced `eco_fm_verify.json`, write the step6 RPT (see STEP F), copy outputs, and **EXIT IMMEDIATELY** regardless of verdict (PASS, FAIL, ABORT_*, NOT_RUN, PARTIAL). Do NOT attempt patches. Do NOT loop. Do NOT edit the JSON the script wrote. APPLY_ORCHESTRATOR's Step 6 inline-loop will spawn `abort_recovery_agent` if the verdict is a whitelisted ABORT pattern; you have no recovery responsibility.
 
----
+### What the agent MUST NOT do here
 
-## 8. STEP F — Inline Fix Exceptions
-
-Two abort types allow a single inline fix attempt followed by immediate FM re-submission at STEP B (same round, no round increment).
-
-**Limits (initialized at startup, persisted within the same instance):**
-- `verilog_fix_attempts = 0` — max 1 attempt for ABORT_NETLIST
-- `link_fix_attempts = 0` — max 1 attempt for ABORT_LINK
-
-**Timeout:** Wrap ALL subprocess calls (validator, gzip read/write) with a 5-minute (`300s`) timeout. On timeout → log error → treat as fix-failed → exit with ABORT result.
-
----
-
-### STEP F.1 — ABORT_NETLIST Inline Fix (FM-599 Verilog Syntax Error)
-
-**Trigger:** `overall_status == "ABORT"` AND any target has `abort_type == "ABORT_NETLIST"` AND `verilog_fix_attempts == 0`.
-
-**Fixes:** Duplicate wire declarations, ports missing from module header, declarations inside cell blocks, corrupted port values — in gzipped PostEco netlists.
-
-**Procedure:**
-1. Increment `verilog_fix_attempts`.
-2. **Save pre-fix MD5 for all 3 stages** (needed for rollback if timeout):
-   ```bash
-   md5_pre = {s: md5sum(<REF_DIR>/data/PostEco/${s}.v.gz) for s in [Synthesize, PrePlace, Route]}
-   ```
-3. Extract touched modules from `data/<TAG>_eco_applied_round<ROUND>.json`.
-4. Run validator with `--strict` on all three PostEco stages:
-   ```bash
-   python3 script/eco_scripts/validate_verilog_netlist.py --strict \
-     --modules <touched_modules> \
-     -- <REF_DIR>/data/PostEco/Synthesize.v.gz \
-        <REF_DIR>/data/PostEco/PrePlace.v.gz \
-        <REF_DIR>/data/PostEco/Route.v.gz
-   ```
-   On timeout → **restore all 3 stages from backup** (`bak_<TAG>_round<ROUND>`) → treat as fix-failed → exit with ABORT_NETLIST.
-5. Validate output format contains `[check_name]` or `module | line` patterns; if unexpected format → treat as fix-failed.
-6. If `returncode != 0`, parse errors and apply inline fixes per type:
-   - `check9_decl_not_in_header` → add signal to module port list.
-   - `F3_decl_inside_instance`, `F5_corrupted_port_value` → remove the offending line from the gzipped netlist; verify the line is gone after removal.
-   - `F1_dup_wire` → remove the explicit wire declaration; verify removal.
-   - Any timeout during fix → **restore all 3 stages from their pre-fix MD5** (copy backup back) → treat as fix-failed → exit.
-
-   Additionally, parse **FM log** for SVR-4/SVR-14 errors not caught by the validator:
-
-   - **`SVR-4` double comma** (`Expected '.' but found ','`): port connection inserted as `, .port(net)` when previous line already ended with `,` → double comma `..., , .port`. Fix: find the double `, ,` pattern and remove the first comma: `re.sub(r',\s*,\s*\.', ', .', line_content)`. Verify: `grep -c ', ,' stage.v.gz → 0`.
-
-   - **`SVR-4` trailing comma before `) ;`** (`mixed ordered and named port connections`): a port connection line was removed but its predecessor still ends with `,` before the instance `);`. FM interprets the trailing comma as implying another (positional) port. Fix: for each stage, find lines matching `.*,\s*$` immediately followed by `\s*\)\s*;` and strip the trailing comma. Verify: no such pattern remains.
-
-   - **`SVR-4` missing cell type** (`Expected identifier but found '('`): gate inserted as `  eco_<jira>_<seq> ( .pin(net) ... )` without cell type prefix. Fix: grep PreEco Synthesize for the instance name `grep -m1 "<instance_name>" PreEco/Synthesize.v.gz` → extract cell type (first token) → prepend to the affected line: `cell_type + ' ' + line`. Verify: instance line now starts with uppercase cell type.
-
-   - **`SVR-14` (bus indexing on non-array):** `Error: Indexing into non-array '<base>' is not allowed at line N in <file> (SVR-14)`
-   - **`SVR-14` (bus indexing on non-array):** `Error: Indexing into non-array '<base>' is not allowed at line N in <file> (SVR-14)`
-     1. Extract `base_name` and `line_number` from the error.
-     2. Read the PostEco stage file at that line — find which pin of which gate uses `base_name[N]`.
-     3. Extract the declaring module (scan backwards from that line for `^module <name>`).
-     4. Extract module scope (lines between `module <name>` and its `endmodule`).
-     5. Check if `base_name` is declared as a bus (`wire/input/output [...]`) in that scope. If YES → SVR-14 is a false alarm (shouldn't happen) → skip.
-     6. If NOT a bus in scope → find the scalar wire at bit position `[N]` via port bus concatenation in the module scope (use `find_scalar_for_bus_bit` logic: parse `{ w_N, ..., w_1, w_0 }` where index 0 = last element):
-        ```python
-        # Find concatenation block containing base_name in module scope
-        # Extract { ... } content, split by comma, strip whitespace
-        # bit[N] = elements[len(elements) - 1 - N]  (MSB→LSB order)
-        ```
-     7. Replace `base_name[N]` with the scalar wire in ALL 3 PostEco stages at every occurrence.
-     8. Verify replacement: `grep -c "base_name\[N\]"` in each stage → must be 0.
-     9. If scalar wire not found → treat as fix-failed → escalate.
-7. Compute MD5 of all three PostEco netlists before and after. If unchanged → fix did nothing → treat as fix-failed.
-8. Re-run validator (without `--strict`). If `returncode == 0` → re-submit FM at STEP B. If still failing → treat as fix-failed.
-
-**When NOT attempted / escalate:** Second attempt, validator finds no parseable errors, recheck still fails, any timeout, MD5 unchanged. Write `eco_fm_verify.json` with `abort_type: "ABORT_NETLIST"` and EXIT 0.
-
----
-
-### STEP F.2 — ABORT_LINK Inline Fix (FE-LINK-7 Wrong ECO Cell Pin Name)
+- ❌ Write `eco_fm_verify.json` by hand (script owns it)
+- ❌ Read FM logs to "double-check" the script's classification
+- ❌ Set `overall_status` / `status` fields — those legacy fields are not in v1 schema; only `verdict` matters
+- ❌ Defer pattern matching to free-form reasoning — extend `eco_fm_abort_patterns.yaml` instead
 
 
-**Trigger:** `overall_status == "ABORT"` AND any target has `abort_type == "ABORT_LINK"` AND FM log contains `FE-LINK-7` on an ECO-inserted cell AND `link_fix_attempts == 0`.
-
-**Fixes:** ECO-inserted cells (instance leaf names starting with `eco_`) where eco_applier used the wrong output pin name. Corrects pin name in all three PostEco stage netlists.
-
-**Procedure:**
-1. Increment `link_fix_attempts`.
-2. Parse `FE-LINK-7` errors from FM log using pattern: `"The pin '<WRONG_PIN>' of '.../<ECO_INSTANCE>' has no corresponding port on '<CELL_TYPE>'"`.
-3. Filter to only ECO-inserted cells (leaf name starts with `eco_`). If none found → escalate.
-4. For each error, determine the correct pin:
-   - **Grep PreEco netlist** (`<REF_DIR>/data/PreEco/Synthesize.v.gz`) with case-insensitive search for `cell_type`. Look for known output pin candidates (`Z`, `ZN`, `Q`, `QN`, `CO`, `S`, `Y`) that differ from `wrong_pin`.
-   - **Cross-reference GATE_OUTPUT_PIN table.** If table disagrees with grep result, **trust the table**.
-   - If correct pin cannot be determined or equals `wrong_pin` → escalate.
-5. Compute MD5 of all three PostEco netlists before fix.
-6. Replace `.WRONG_PIN(` with `.CORRECT_PIN(` for the ECO instance in all 3 stages (`Synthesize`, `PrePlace`, `Route`). Track per-stage success.
-   - On timeout during any stage → revert already-fixed stages → treat as fix-failed → exit.
-   - If fewer than 3 stages fixed → revert the fixed stages → escalate.
-7. Recompute MD5. If unchanged → fix did nothing → treat as fix-failed.
-8. If fix applied to all 3 stages and MD5 changed → re-submit FM at STEP B.
-
-**When NOT attempted / escalate:** No FE-LINK-7 on ECO cells, second attempt, cannot determine correct pin, partial fix (reverted), any timeout, MD5 unchanged. Write `eco_fm_verify.json` with `abort_type: "ABORT_LINK"` and EXIT 0.
-
----
-
-### STEP F.3 — ABORT_SVF Inline Fix (SVF Guidance Error or SVF-Rejection OOM)
-
-**Trigger:** `overall_status == "ABORT"` AND any target has `abort_type == "ABORT_SVF"` AND `svf_fix_attempts == 0`.
-
-**Root cause — two sub-cases:**
-- **Sub-case A (CMD-010/005):** FM loading a stale SVF guidance file that conflicts with current ECO netlist. `RUN_SVF_GEN=0` but a pre-existing EcoChange.svf is being sourced.
-- **Sub-case B (guide_reg_duplication OOM):** FM SVF `guide_reg_duplication` rejections (N > 0) expand the unmatched cone exponentially → FM runs out of memory during Matching and is killed. The rejections are pre-existing (from register duplication by P&R scan insertion) and unrelated to this ECO's changes.
-
-**Procedure:**
-1. Increment `svf_fix_attempts`.
-2. Determine sub-case from `svf_rejection_count` in JSON:
-   - Sub-case A (`svf_rejection_count == 0`): parse log for `CMD-010` guidance command name.
-   - Sub-case B (`svf_rejection_count > 0`): no specific error line needed.
-3. Add `set_svf_ignore_errors true` to `<REF_DIR>/data/eco_fm_config`:
-   ```bash
-   echo "set_svf_ignore_errors true" >> <REF_DIR>/data/eco_fm_config
-   ```
-   This suppresses SVF guidance errors and rejection-induced cone expansion — FM proceeds without the stale/rejected guidance.
-4. Re-submit FM at STEP B with the updated config.
-
-**When NOT attempted / escalate:** Second attempt, cannot write eco_fm_config. Write result with `abort_type: "ABORT_SVF"` and EXIT 0.
-
----
-
-### STEP F.4 — ABORT_OTHER Inline Fix (Generic FM Error)
-
-**Trigger:** `overall_status == "ABORT"` AND any target has `abort_type == "ABORT_OTHER"` AND `other_fix_attempts == 0`.
-
-**Procedure:**
-1. Increment `other_fix_attempts`.
-2. Parse FM log for the first `Error:` line in each aborting target. Extract the error code and message.
-3. Match against known fixable patterns:
-
-   | Pattern in log | Fix |
-   |---------------|-----|
-   | `module.*not found` or `cannot find design` | Check if PostEco netlist has correct module name — likely a module was renamed by P&R. Cannot fix inline. → escalate. |
-   | `Cannot open file.*\.v` or `file not found` | PostEco netlist file missing or unreadable. Verify file exists and is readable. If missing → restore from backup (`bak_<TAG>_round<ROUND>`). |
-   | `Duplicate design.*already exists` | FM has stale designs in workspace. Add `reset_design` workaround to config — cannot fix inline. → escalate. |
-   | `Timeout` | FM infrastructure issue, not a netlist problem. → escalate. |
-   | Any other error | Cannot determine safe inline fix. → escalate. |
-
-4. If a fix was applied → re-submit FM at STEP B.
-5. If no known pattern matched → escalate immediately.
-
-**When NOT attempted / escalate:** Second attempt, unknown error pattern, any timeout. Write result with `abort_type: "ABORT_OTHER"` and EXIT 0.
-
----
-
-### STEP F — Exit Rule (All Abort Types)
-
-If ALL inline fix attempts for all triggered abort types have been exhausted without re-submitting FM successfully → write `eco_fm_verify.json` with the appropriate `abort_type` and **EXIT 0**. Do NOT loop indefinitely. Each abort type has exactly ONE fix attempt per FM submission.
-
----
-
-## 9. STEP G — Write Output Files
+## 7. STEP F — Write Output Files
 
 1. **Ensure `data/` exists:** `os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)`.
 2. **Write `data/<TAG>_eco_fm_verify.json`** with cumulative per-target results. Verify the file exists after write; abort (exit 1) if not.
@@ -347,7 +217,7 @@ If ALL inline fix attempts for all triggered abort types have been exhausted wit
 
 ---
 
-## 10. Result Schema — eco_fm_verify.json
+## 8. Result Schema — eco_fm_verify.json
 
 | Field | Type | Values | Notes |
 |-------|------|--------|-------|
@@ -365,7 +235,7 @@ If ALL inline fix attempts for all triggered abort types have been exhausted wit
 
 ---
 
-## 11. Exit Code Semantics
+## 9. Exit Code Semantics
 
 ```
 Exit 0 — eco_fm_runner completed. Result (PASS/FAIL/ABORT/SKIP/TIMEOUT) is in eco_fm_verify.json.

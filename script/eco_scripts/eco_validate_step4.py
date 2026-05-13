@@ -17,8 +17,43 @@ Usage:
 Exit: 0 = PASS, 1 = FAIL
 """
 
-import argparse, json, subprocess, sys
+import argparse, gzip, json, re, subprocess, sys
 from pathlib import Path
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+# Verilog wire decls must use a flat identifier — bracket form `wire X[N];` is
+# illegal (FM rejects with SVR-4 + SVR-64 + FM-599). Same check exists in
+# eco_pre_fm_check.py Check 22; this is the post-apply / pre-Step-5 mirror.
+_BAD_WIRE_DECL = re.compile(r'^\s*(wire|tri|wand|wor|reg)\s+(\w+)\[(\d+)\]\s*;\s*$')
+
+
+def lint_postEco_grammar(ref_dir):
+    """Walk each PostEco netlist; return list of (file, line, kind, text) for
+    every illegal `wire <name>[<bit>] ;` decl. The applier's auto-sanitize in
+    eco_perl_spec.py SHOULD have flattened these — this validator is the
+    safety net catching anything that slipped through."""
+    failures = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        path = Path(ref_dir) / 'data' / 'PostEco' / f'{stage}.v.gz'
+        if not path.is_file():
+            continue
+        try:
+            with gzip.open(path, 'rt', errors='replace') as f:
+                for ln_idx, line in enumerate(f, start=1):
+                    bm = _BAD_WIRE_DECL.match(line)
+                    if bm:
+                        kind, name, bit = bm.group(1), bm.group(2), bm.group(3)
+                        failures.append({
+                            'stage': stage, 'line': ln_idx,
+                            'kind': kind, 'name': name, 'bit': bit,
+                            'text': line.rstrip(),
+                            'fix_hint': f'flatten to `{kind} {name}_{bit}_ ;`',
+                        })
+        except Exception as e:
+            failures.append({'stage': stage, 'note': f'cannot read: {e}'})
+    return failures
 
 
 def md5(path):
@@ -130,6 +165,24 @@ def main():
             issues.append(
                 f"HIGH: GAP-3 — Synthesize entry {key!r} has bridge_port_role in study but was "
                 f"APPLIED/INSERTED in Synth (expected SKIPPED — Synth uses constant_zero, no bridge plumbing).")
+
+    # ── 9. Verilog grammar lint on PostEco wire decls ────────────────────────
+    # Catches `wire <name>[<bit>] ;` that slipped past the applier's
+    # auto-sanitize. Run 20260512070625 root cause #2: studier emitted
+    # `named_net: REG_UmcCfgEco[1]` and applier passed it through verbatim.
+    # eco_perl_spec.py now auto-converts to flat-net form; this is the safety
+    # net catching anything that bypasses the sanitizer (manual edits,
+    # corruption, future code paths).
+    grammar_failures = lint_postEco_grammar(args.ref_dir)
+    for f in grammar_failures:
+        if 'note' in f:
+            issues.append(f"MEDIUM: GRAMMAR-LINT — {f['stage']}: {f['note']}")
+        else:
+            issues.append(
+                f"CRITICAL: GRAMMAR-LINT — {f['stage']}:{f['line']} illegal wire decl "
+                f"`{f['text'].strip()}`. {f['fix_hint']}. FM will reject with "
+                f"SVR-4 + SVR-64 + FM-599 → ABORT in PreVerify. Likely cause: "
+                f"applier auto-sanitize bypassed OR netlist manually edited.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
