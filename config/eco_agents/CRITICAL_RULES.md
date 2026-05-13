@@ -210,7 +210,7 @@ When FM returns **No Equivalent Nets** or **FM-036** in Step 2, retries MUST be 
 
 > **This rule prevents:** wasting FM-036 retries by stripping hierarchy levels on an internal wire net that is invisible to FM at every depth. Classifying the net type first ensures the correct retry strategy is applied immediately.
 
-The retry strategies in Step 2 of ORCHESTRATOR.md are NOT optional. Only after the correct retries are exhausted may fallback be applied.
+The retry strategies in Step 2 of STUDY_ORCHESTRATOR.md are NOT optional. Only after the correct retries are exhausted may fallback be applied.
 
 ---
 

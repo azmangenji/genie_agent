@@ -336,7 +336,7 @@ Write back `<BASE_DIR>/data/<TAG>_eco_preeco_study.json` with ONLY modified entr
 Verify `wc -l` ≥ original line count.
 
 Write `<BASE_DIR>/data/<TAG>_eco_step3_netlist_study_round<NEXT_ROUND>.rpt` with:
-- Per change-type format (from ORCHESTRATOR.md Step 3)
+- Per change-type format (from STUDY_ORCHESTRATOR.md Step 3)
 - Identifier per entry type, old→new for rewires, gate_function/output_net/cell_type for new_logic
 - Direction for port_declaration, parent/port/net for port_connection
 - Full reason for EXCLUDED entries

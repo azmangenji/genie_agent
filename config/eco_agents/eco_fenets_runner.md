@@ -4,7 +4,7 @@
 
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
-**MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/ORCHESTRATOR.md` **§STEP 2 — Run find_equivalent_nets**. You handle exactly what is documented there — no more, no less. Do NOT read other STEP sections; they belong to other agents.
+**MANDATORY SECOND ACTION:** Read **only** your scope-contract section in the parent orchestrator: `config/eco_agents/STUDY_ORCHESTRATOR.md` **§STEP 2 — Run find_equivalent_nets**. You handle exactly what is documented there — no more, no less. Do NOT read other STEP sections; they belong to other agents.
 
 **Inputs:** TAG, REF_DIR, TILE, BASE_DIR, AI_ECO_FLOW_DIR, path to `<TAG>_eco_rtl_diff.json`
 
@@ -202,7 +202,7 @@ First determine if the net is a port-level signal or an internal wire:
 - Read `eco_rtl_diff.json` for this net's `change_type`. If `change_type = "wire_swap"` and the net has no `input`/`output` declaration in any RTL module (only `reg`/`wire`), it is an **internal wire** — FM will return FM-036 at every hierarchy level because the net is never exposed in FM's reference namespace. Do NOT strip levels. Instead, pivot immediately to querying `target_register` (the DFF output Q signal), which IS visible to FM. Submit one genie_cli call with `netName:<hierarchy_path>/<target_register>` — this is the internal wire pivot (max 1 pivot attempt per net).
 - If the net IS declared as `input`/`output` in any RTL module, it is a **port-level signal** — FM-036 means the hierarchy level is wrong. Strip one level per retry, max 3 retries.
 
-After all retries exhausted for a stage (including the internal wire pivot attempt when the net was classified as internal wire) → apply Stage Fallback: grep confirmed cell names from another stage's FM results and use them for this stage (documented in ORCHESTRATOR.md retry sections). Stage Fallback is applied only when ALL retry options for that stage are exhausted — not before.
+After all retries exhausted for a stage (including the internal wire pivot attempt when the net was classified as internal wire) → apply Stage Fallback: grep confirmed cell names from another stage's FM results and use them for this stage (documented in STUDY_ORCHESTRATOR.md retry sections). Stage Fallback is applied only when ALL retry options for that stage are exhausted — not before.
 
 ---
 

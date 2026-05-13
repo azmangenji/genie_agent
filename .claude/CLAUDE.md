@@ -351,100 +351,191 @@ FIXER_ROUND=<N>
 
 ---
 
-## ECO Analyze Mode (Phase A — STUDY orchestrator)
+## ECO Phase Spawning Pattern
 
-When `ECO_ANALYZE_MODE_ENABLED` is detected in output:
+Used for both STUDY (Phase A) and APPLY (Phase B):
 
-1. **Spawn ONE STUDY orchestrator agent** (general-purpose) — runs Steps 1-3 (RTL diff → fenets → netlist study) and exits:
+```python
+task_id = Agent(description=..., prompt=..., run_in_background=True)
+sentinel = f"<BASE_DIR>/data/<TAG>_<phase>_phase_exited.marker"
+for _ in range(360):                        # 360 × 60s = 6h cap
+    sleep(60)
+    if Path(sentinel).exists():
+        TaskStop(task_id)                   # external kill
+        break
+    if task_completed(task_id): break
+if not Path(sentinel).exists():
+    STOP — sentinel missing, do NOT spawn next phase
+verify phase-specific output files
+spawn next phase
+```
+
+---
+
+## ECO Analyze Mode (Phase A — STUDY)
+
+**Trigger:** `"analyze eco at <refdir> for <tile>"` or `"run eco analysis at <refdir> for <tile>"`
+**Signal:** `ECO_ANALYZE_MODE_ENABLED` block (with `TAG REF_DIR TILE JIRA LOG_FILE SPEC_FILE`)
+
+When detected:
+
+1. Spawn STUDY agent (background):
    ```
-   Agent(
-     description="ECO STUDY (Steps 1-3) <tile> at <ref_dir>",
+   task_id = Agent(
+     description="ECO STUDY (Steps 1-3 ONLY) <tile>",
      subagent_type="general-purpose",
+     run_in_background=True,
      prompt="""
-     *** ECO GATE-LEVEL NETLIST FLOW — Phase A (STUDY, Steps 1-3) ***
-     MANDATORY: Your ONLY guidance files are under config/eco_agents/ — do NOT read anything from config/analyze_agents/.
-     MANDATORY FIRST ACTION: Read config/eco_agents/CRITICAL_RULES.md Top-10 before anything else.
-     MANDATORY SECOND ACTION: Read config/eco_agents/STUDY_ORCHESTRATOR.md and execute Steps 1-3.
-     After Step 3, write <TAG>_phase_a_handoff.json + emit APPLY_PHASE_READY signal block to SPEC_FILE,
-     then EXIT. Do NOT run Steps 4-6 yourself — APPLY_ORCHESTRATOR handles those (Phase B).
+     PHASE A — ECO STUDY (Steps 1-3 ONLY).
 
-     TAG=<tag>
-     REF_DIR=<ref_dir>
-     TILE=<tile>
-     JIRA=<jira>
-     LOG_FILE=<log_file>
-     SPEC_FILE=<spec_file>
-     BASE_DIR=<parent of the 'runs/' folder in LOG_FILE>
+     READ: config/eco_agents/CRITICAL_RULES.md, then config/eco_agents/STUDY_ORCHESTRATOR.md.
+     EXECUTE: Steps 1, 2, 3 only.
+     SCOPE: rtl_diff_analyzer.md, eco_fenets_runner.md, eco_netlist_studier.md,
+            eco_validate_step{1,2,3}.py, eco_pick_sibling.py, eco_fenets_*.py.
+            Do NOT read any APPLY-phase or next-phase file.
+
+     EXIT — final actions in order:
+       1. Write <BASE_DIR>/data/<TAG>_phase_a_handoff.json
+       2. Emit APPLY_PHASE_READY block to SPEC_FILE
+       3. Write <BASE_DIR>/data/<TAG>_study_phase_exited.marker (one-line: exited <ISO_TIMESTAMP>)
+       4. One-line summary. STOP.
+
+     INPUTS:
+     TAG=<tag>  REF_DIR=<ref_dir>  TILE=<tile>  JIRA=<jira>
+     LOG_FILE=<log_file>  SPEC_FILE=<spec_file>
+     BASE_DIR=<parent of LOG_FILE's runs/ folder>
      AI_ECO_FLOW_DIR=<REF_DIR>/AI_ECO_FLOW_<TAG>
      """
    )
    ```
-2. When the STUDY agent completes, say only: `"STUDY phase complete. Waiting for APPLY_PHASE_READY signal."`
 
-**Signal format:**
-```
-ECO_ANALYZE_MODE_ENABLED
-TAG=<tag>
-REF_DIR=<ref_dir>
-TILE=<tile>
-JIRA=<jira>
-LOG_FILE=<log_file>
-SPEC_FILE=<spec_file>
-```
+2. Run the polling loop (per pattern above) — sentinel = `<BASE_DIR>/data/<TAG>_study_phase_exited.marker`.
 
-**Trigger:** `"analyze eco at <refdir> for <tile>"` or `"run eco analysis at <refdir> for <tile>"`
+3. Verify sentinel + `<TAG>_phase_a_handoff.json` exist. If either missing → STOP.
+
+4. Say only: `"STUDY phase complete. Waiting for APPLY_PHASE_READY signal."`
 
 ---
 
-## ECO Apply Mode (Phase B — APPLY orchestrator)
+## ECO Apply Mode (Phase B — APPLY)
 
-When `APPLY_PHASE_READY` is detected in output (emitted by STUDY_ORCHESTRATOR after Step 3):
+**Trigger:** `APPLY_PHASE_READY` block in output AND `<BASE_DIR>/data/<TAG>_study_phase_exited.marker` exists.
 
-1. **Spawn ONE APPLY orchestrator agent** (general-purpose) — runs Steps 4-6 (applier → pre-FM check → FM verification + ABORT recovery loop) in fresh context:
+1. Spawn APPLY agent (background):
    ```
-   Agent(
-     description="ECO APPLY (Steps 4-6) <tile> at <ref_dir>",
+   task_id = Agent(
+     description="ECO APPLY (Steps 4-6 ONLY) <tile>",
      subagent_type="general-purpose",
+     run_in_background=True,
      prompt="""
-     *** ECO GATE-LEVEL NETLIST FLOW — Phase B (APPLY, Steps 4-6) ***
-     MANDATORY: Your ONLY guidance files are under config/eco_agents/ — NOT config/analyze_agents/.
-     MANDATORY FIRST ACTION: Read config/eco_agents/CRITICAL_RULES.md Top-10 before anything else.
-     MANDATORY SECOND ACTION: Read config/eco_agents/APPLY_ORCHESTRATOR.md and execute Steps 4-6.
-     The PRE-FLIGHT step MUST verify HANDOFF_PATH exists and Phase A artifacts are on disk before Step 4.
-     After Step 6, write <TAG>_round_handoff.json and spawn either ROUND_ORCHESTRATOR (FM FAIL/non-fixable ABORT)
-     or FINAL_ORCHESTRATOR (FM PASS), then EXIT. Do NOT run Steps 7-8 yourself.
+     PHASE B — ECO APPLY (Steps 4-6 ONLY).
 
-     For Step 6 ABORT with auto-fixable pattern (cell_type_not_in_library, duplicate_wire_decl,
-     verilog_parse_error, implicit_wire_conflict): use the inline abort_recovery_agent loop
-     (max 10 iterations) to patch + resubmit FM in same round. See APPLY_ORCHESTRATOR.md
-     "Step 6 ABORT inline recovery loop" section.
+     READ: config/eco_agents/CRITICAL_RULES.md, then config/eco_agents/APPLY_ORCHESTRATOR.md.
+     EXECUTE: Steps 4, 5, 6 only (Step 6 ABORT → inline abort_recovery_agent loop).
+     PRE-FLIGHT: verify HANDOFF_PATH + all Phase-A artifacts exist on disk.
+     SCOPE: eco_applier.md, eco_pre_fm_checker.md, eco_fm_runner.md,
+            abort_recovery_agent.md, eco_fm_abort_patterns.yaml,
+            eco_perl_spec.py, eco_passes_2_4.py, eco_pre_fm_check.py,
+            eco_validate_step4.py, eco_fm_status_collector.py,
+            eco_extract_fm_abort_cause.py.
+            Do NOT re-read STUDY-phase files; consume Phase-A JSON artifacts.
 
-     TAG=<tag>
-     REF_DIR=<ref_dir>
-     TILE=<tile>
-     JIRA=<jira>
-     LOG_FILE=<log_file>
-     SPEC_FILE=<spec_file>
-     BASE_DIR=<base_dir>
-     AI_ECO_FLOW_DIR=<ai_eco_flow_dir>
+     EXIT — final actions in order:
+       1. Write <BASE_DIR>/data/<TAG>_round_handoff.json with `next_phase: ROUND|FINAL|STOP`
+       2. If next_phase=ROUND  → emit ROUND_PHASE_READY block to SPEC_FILE
+          If next_phase=FINAL  → spawn FINAL_ORCHESTRATOR directly (foreground; short task)
+          If next_phase=STOP   → no spawn (max rounds / unrecoverable error)
+       3. Write <BASE_DIR>/data/<TAG>_apply_phase_exited.marker (one-line: exited <ISO_TIMESTAMP>)
+       4. One-line summary. STOP.
+
+     INPUTS:
+     TAG=<tag>  REF_DIR=<ref_dir>  TILE=<tile>  JIRA=<jira>
+     LOG_FILE=<log_file>  SPEC_FILE=<spec_file>
+     BASE_DIR=<base_dir>  AI_ECO_FLOW_DIR=<ai_eco_flow_dir>
      HANDOFF_PATH=<base_dir>/data/<tag>_phase_a_handoff.json
      """
    )
    ```
-2. When the APPLY agent completes, say only: `"ECO analysis complete. Email sent."`
 
-**Signal format (emitted by STUDY_ORCHESTRATOR):**
+2. Run the polling loop — sentinel = `<BASE_DIR>/data/<TAG>_apply_phase_exited.marker`.
+
+3. Verify sentinel + `<TAG>_round_handoff.json` exist. Read `next_phase` field.
+
+4. Branch on next_phase:
+   - `ROUND` → proceed to ECO Round Mode (below)
+   - `FINAL` → say `"ECO analysis complete. Email sent."` (APPLY already spawned FINAL inline)
+   - `STOP`  → say `"ECO analysis stopped: <reason from handoff>"`
+
+**APPLY_PHASE_READY signal format** (emitted by STUDY into SPEC_FILE):
 ```
 APPLY_PHASE_READY
-TAG=<tag>
-REF_DIR=<ref_dir>
-TILE=<tile>
-JIRA=<jira>
-BASE_DIR=<base_dir>
-AI_ECO_FLOW_DIR=<ai_eco_flow_dir>
-LOG_FILE=<log_file>
-SPEC_FILE=<spec_file>
+TAG=<tag>  REF_DIR=<ref_dir>  TILE=<tile>  JIRA=<jira>
+BASE_DIR=<base_dir>  AI_ECO_FLOW_DIR=<ai_eco_flow_dir>
+LOG_FILE=<log_file>  SPEC_FILE=<spec_file>
 HANDOFF_PATH=<base_dir>/data/<tag>_phase_a_handoff.json
+```
+
+---
+
+## ECO Round Mode (Phase C — ROUND_ORCHESTRATOR per round)
+
+**Trigger:** `ROUND_PHASE_READY` block in output AND prior phase's exit sentinel exists (APPLY's for round 2, ROUND_<N-1>'s for round N+1).
+
+Loop while next_phase = ROUND, max 5 rounds total:
+
+1. Spawn ROUND agent (background):
+   ```
+   task_id = Agent(
+     description="ECO ROUND <N> (single round) <tile>",
+     subagent_type="general-purpose",
+     run_in_background=True,
+     prompt="""
+     PHASE C — ECO ROUND <N> (one round only — analyzer + re-study + re-apply + re-FM).
+
+     READ: config/eco_agents/CRITICAL_RULES.md, then config/eco_agents/ROUND_ORCHESTRATOR.md.
+     EXECUTE: one round's analyzer pipeline (Step 6d) + re_studier + applier + Step 5 + Step 6.
+     SCOPE: ROUND_ORCHESTRATOR.md, eco_fm_analyzer.md, eco_re_studier_evidence_contract.md,
+            eco_netlist_re_studier.md, eco_netlist_verifier.md, eco_applier.md,
+            eco_pre_fm_checker.md, eco_fm_runner.md, abort_recovery_agent.md,
+            eco_fm_abort_patterns.yaml, plus their script counterparts.
+            Do NOT re-read STUDY-phase files. Do NOT spawn ROUND_<N+1> yourself —
+            emit ROUND_PHASE_READY signal and exit; main session spawns next round.
+
+     EXIT — final actions in order:
+       1. Update <BASE_DIR>/data/<TAG>_round_handoff.json with `next_phase: ROUND|FINAL|STOP`
+       2. If next_phase=ROUND   → emit ROUND_PHASE_READY block to SPEC_FILE
+          If next_phase=FINAL   → spawn FINAL_ORCHESTRATOR directly (foreground)
+          If next_phase=STOP    → no spawn
+       3. Write <BASE_DIR>/data/<TAG>_round<N>_phase_exited.marker (one-line: exited <ISO_TIMESTAMP>)
+       4. One-line summary. STOP.
+
+     INPUTS:
+     TAG=<tag>  REF_DIR=<ref_dir>  TILE=<tile>  JIRA=<jira>
+     LOG_FILE=<log_file>  SPEC_FILE=<spec_file>
+     BASE_DIR=<base_dir>  AI_ECO_FLOW_DIR=<ai_eco_flow_dir>
+     ROUND=<N>  HANDOFF_PATH=<base_dir>/data/<tag>_round_handoff.json
+     """
+   )
+   ```
+
+2. Run the polling loop — sentinel = `<BASE_DIR>/data/<TAG>_round<N>_phase_exited.marker`.
+
+3. Verify sentinel + `<TAG>_round_handoff.json` exist. Read `next_phase`.
+
+4. Branch:
+   - `ROUND` AND round_count < 5 → loop, spawn ROUND_<N+1>
+   - `ROUND` AND round_count >= 5 → say `"ECO max rounds (5) hit without convergence."`, STOP
+   - `FINAL` → say `"ECO analysis complete. Email sent."` (ROUND already spawned FINAL inline)
+   - `STOP`  → say `"ECO analysis stopped: <reason>"`
+
+**ROUND_PHASE_READY signal format** (emitted by APPLY or prior ROUND):
+```
+ROUND_PHASE_READY
+TAG=<tag>  REF_DIR=<ref_dir>  TILE=<tile>  JIRA=<jira>
+BASE_DIR=<base_dir>  AI_ECO_FLOW_DIR=<ai_eco_flow_dir>
+LOG_FILE=<log_file>  SPEC_FILE=<spec_file>
+ROUND=<next_round_number>
+HANDOFF_PATH=<base_dir>/data/<tag>_round_handoff.json
 ```
 
 ---

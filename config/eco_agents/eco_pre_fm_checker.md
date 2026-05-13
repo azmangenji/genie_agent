@@ -5,7 +5,7 @@
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` before anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in whichever orchestrator spawned you:
-- Initial Round 1: `config/eco_agents/ORCHESTRATOR.md` **§STEP 5 — Pre-FM Quality Checker**
+- Initial Round 1: `config/eco_agents/APPLY_ORCHESTRATOR.md` **§STEP 5 — Pre-FM Quality Checker**
 - Per-round (Round 2+): `config/eco_agents/ROUND_ORCHESTRATOR.md` **§STEP 5 — Pre-FM Quality Checker**
 
 Do NOT read other STEP sections; they belong to other agents.

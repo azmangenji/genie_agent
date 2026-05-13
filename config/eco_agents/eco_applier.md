@@ -3,7 +3,7 @@
 **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else.
 
 **MANDATORY SECOND ACTION:** Read **only** your scope-contract section in whichever orchestrator spawned you:
-- Initial Round 1: `config/eco_agents/ORCHESTRATOR.md` **§STEP 4 — Apply ECO to PostEco Netlists**
+- Initial Round 1: `config/eco_agents/APPLY_ORCHESTRATOR.md` **§STEP 4 — Apply ECO to PostEco Netlists**
 - Per-round (Round 2+): `config/eco_agents/ROUND_ORCHESTRATOR.md` **§STEP 4 — Apply ECO Fix (eco_apply_fix_round_N)** (note ROLLBACK INVARIANT callout there)
 
 You handle exactly what is documented in the relevant section — no more, no less. Do NOT read other STEP sections.

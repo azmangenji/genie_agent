@@ -143,17 +143,16 @@ if check["passed"]:
     pass
 else:
     # Issues remained after eco_pre_fm_checker inline attempts.
-    # DO NOT pass to ROUND_ORCHESTRATOR yet — attempt self-healing within this round:
+    # DO NOT escalate yet — attempt self-healing within this round:
     #
     # Step 5 Self-Healing Loop (one attempt):
     #   1. Read issues_unresolved from pre_fm_check JSON — these are the gaps
     #   2. Re-spawn eco_netlist_verifier to re-enrich study JSON addressing the gaps
-    #      (verifier checks 7/8/9 auto-add missing port_declaration/rewire entries)
     #   3. Re-spawn eco_applier (ROUND=1, force_reapply entries re-applied)
     #   4. Re-run eco_check8.sh
     #   5. Re-spawn eco_pre_fm_checker (fresh full attempt)
     #   6. If passed=true → proceed to Step 6
-    #   7. If still passed=false → THEN escalate to ROUND_ORCHESTRATOR
+    #   7. If still passed=false → set next_phase=ROUND in handoff, emit ROUND_PHASE_READY, EXIT
 
     # Step 5a: Re-enrich study JSON with verifier
     spawn eco_netlist_verifier (same inputs as Step 3b)
@@ -172,16 +171,20 @@ else:
     if check2["passed"]:
         pass  # self-healing succeeded → proceed to Step 6
     else:
-        # Self-healing failed — true escalation to ROUND_ORCHESTRATOR
+        # Self-healing failed — escalate via next_phase=ROUND signal pattern
+        # (see "After Step 6 — Hand off to next phase" below for full handoff schema)
         write_round_handoff({
             "status": "FM_FAILED",
             "eco_fm_tag": "NOT_RUN_PRE_FM_CHECK_FAILED",
             "pre_fm_check_failed": True,
-            "pre_fm_check_path": f"data/{TAG}_eco_pre_fm_check_round1.json"
+            "pre_fm_check_path": f"data/{TAG}_eco_pre_fm_check_round1.json",
+            "next_phase": "ROUND",
+            "next_phase_reason": "pre_fm_check failed after self-healing — needs Mode A-H re-study"
         })
         write_eco_fixer_state(round=1)
-        spawn ROUND_ORCHESTRATOR
-        HARD STOP  # Step 6 skipped — FM never submitted
+        emit ROUND_PHASE_READY signal block to SPEC_FILE
+        write apply_phase_exited.marker
+        HARD STOP  # Step 6 skipped — FM never submitted; main session spawns ROUND
 ```
 
 > **Why before FM:** FM stage-to-stage comparisons (PrePlace vs Synthesize, Route vs PrePlace) fail when stages have different ECO changes applied — e.g., a port added to Synthesize but SKIPPED in PrePlace causes thousands of non-equivalent DFFs. This check takes seconds. FM takes 1-2 hours.
@@ -216,8 +219,8 @@ Also read `data/<TAG>_eco_fm_tag_round1.tmp` to get `eco_fm_tag` — save it to 
 
 > **HARD RULE: ORCHESTRATOR runs PostEco FM EXACTLY ONCE — Round 1 only, all 3 targets.**
 > If FM fails after Round 1: do NOT re-run FM. Do NOT write a new eco_fm_config. Do NOT call genie_cli again.
-> Instead: write round_handoff.json → spawn ROUND_ORCHESTRATOR → HARD STOP.
-> Subsequent rounds (Round 2+) are entirely ROUND_ORCHESTRATOR's responsibility. Each ROUND_ORCHESTRATOR instance runs FM exactly once for its round and then spawns the next agent.
+> Instead: write round_handoff.json with `next_phase: ROUND` → emit `ROUND_PHASE_READY` signal block → write exit sentinel → HARD STOP. The main session spawns ROUND_ORCHESTRATOR for round 2.
+> Subsequent rounds (Round 2+) are spawned by the main session per `ROUND_PHASE_READY` signal. Each ROUND_ORCHESTRATOR instance runs FM exactly once for its round and then emits its own `ROUND_PHASE_READY` (for round N+1) or spawns FINAL_ORCHESTRATOR.
 
 Full implementation is in `eco_fm_runner.md`. Key rules for the Round 1 sub-agent: write eco_fm_config with ALL 3 targets (fixed filename, not tag-based), poll every 5 minutes with individual Bash tool calls (max 72 polls = 6h), write tmp file with eco_fm_tag.
 
@@ -435,35 +438,49 @@ The `_provenance` block on each auto entry shows `tag` / `round` / `attempt` so 
 
 ### Branch on final verdict (after loop exit)
 
-| Final verdict + condition | Spawn next |
-|---|---|
-| `PASS` | FINAL_ORCHESTRATOR |
-| `FAIL` (logical mismatch — Mode A-H) | ROUND_ORCHESTRATOR |
-| `ABORT_*` and attempt == 10 (loop exhausted) | Write `round_handoff.json` with `note: "max inline retries (10) exhausted — recovery agent could not converge"` and EXIT. **Do NOT spawn ROUND_ORCHESTRATOR.** ABORT must be solved in same round; re-study is wrong tool for elaboration errors. |
-| `ABORT_*` and recovery agent returned `REASONING_REFUSED` | Write handoff with `note: "recovery agent refused — out of scope for direct patch"` and EXIT. Do NOT spawn ROUND_ORCHESTRATOR. |
-| `ABORT_*` and recovery agent returned `PATCH_INCOMPLETE` | Write handoff with `note: "patch applied but pre-FM check still failing"` and EXIT. Do NOT spawn ROUND_ORCHESTRATOR. |
-| `NOT_RUN` / `PARTIAL` / `UNKNOWN` | Write handoff with `note: "FM did not produce valid output — investigate scheduling/license/disk"` and EXIT. |
+The verdict drives `next_phase` in `round_handoff.json` (see "After Step 6 — Hand off to next phase" below). Mapping:
+
+| Final verdict + condition | `next_phase` | Hand off |
+|---|---|---|
+| `PASS` | `FINAL` | spawn FINAL_ORCHESTRATOR inline |
+| `FAIL` (logical mismatch — Mode A-H) | `ROUND` | emit `ROUND_PHASE_READY` signal block, EXIT |
+| `ABORT_*` and attempt == 10 (loop exhausted) | `STOP` | no spawn, no signal — write reason in handoff and EXIT |
+| `ABORT_*` and recovery agent returned `REASONING_REFUSED` | `STOP` | no spawn |
+| `ABORT_*` and recovery agent returned `PATCH_INCOMPLETE` | `STOP` | no spawn |
+| `NOT_RUN` / `PARTIAL` / `UNKNOWN` | `STOP` | no spawn |
 
 ### Notes on the branch table
 
-- **ABORT_* never spawns ROUND_ORCHESTRATOR.** ABORT must be solved in the same round by `abort_recovery_agent` (mechanical or reasoning mode). After the 10-iter loop exhausts, the orchestrator writes a handoff JSON and exits silently — no escalation channel, no email. The recovery_agent owns ABORT recovery end-to-end; if it can't fix it in 10 attempts, the round terminates as ABORT.
-- **ROUND_ORCHESTRATOR is for FAIL only.** FAIL = logical mismatch in the design (Mode A-H), which is what re-study + re-apply addresses. ABORT = elaboration / parse error in HOW the netlist was edited — re-study won't help (it produces the same kind of edit again).
-- **Reasoning-mode patches are validated.** `PATCH_APPLIED` return means the patched netlist passes the relevant pre-FM check. If recovery_agent fixed something but the check still fails, it returns `PATCH_INCOMPLETE` and the loop exits.
+- **ABORT_* never produces `next_phase: ROUND`.** ABORT must be solved in the same round by `abort_recovery_agent` (mechanical or reasoning mode). After the 10-iter loop exhausts, this orchestrator writes the handoff (`next_phase: STOP`) and exits silently. The recovery_agent owns ABORT recovery end-to-end.
+- **`next_phase: ROUND` is for FAIL only.** FAIL = logical mismatch in the design (Mode A-H), which is what re-study + re-apply addresses. ABORT = elaboration / parse error in HOW the netlist was edited — re-study won't help.
+- **Reasoning-mode patches are validated.** `PATCH_APPLIED` means the patched netlist passes the relevant pre-FM check. If recovery_agent fixed something but the check still fails, it returns `PATCH_INCOMPLETE` and the loop exits with `next_phase: STOP`.
 - **Loop bound = 10 attempts.** Per-attempt MD5 verification + ONE-direct-edit-only rule keeps blast radius bounded.
 
 ---
 
-## After Step 6 — Spawn Next Agent
+## After Step 6 — Hand off to next phase
 
 > **ANTI-PATTERN WARNING — READ FIRST:**
-> Your ONLY job here is: (A) write `round_handoff.json`, (B) spawn the correct next agent, (C) stop.
+> Your ONLY job here is: (A) write `round_handoff.json` with `next_phase`, (B) signal OR spawn per `next_phase`, (C) write exit sentinel and STOP.
 > Do NOT run Steps 7 or 8. Do NOT generate reports. Do NOT send emails. Do NOT write `eco_summary.rpt` or `eco_report.html`.
-> Those files are FINAL_ORCHESTRATOR's responsibility. If you produce them yourself, you are violating the spawn-then-exit contract and breaking the multi-agent handoff chain.
-> **The presence of `eco_report.html` written by THIS agent is a bug, not a success.**
+> Those files are FINAL_ORCHESTRATOR's responsibility.
+> Do NOT spawn ROUND_ORCHESTRATOR yourself — the main session spawns it after detecting the `ROUND_PHASE_READY` signal block.
 
 ### Mandatory Step A — Write round_handoff.json FIRST
 
-Write `<BASE_DIR>/data/<TAG>_round_handoff.json` **before any spawn decision**:
+Decide `next_phase` from the FM verdict:
+
+| Condition | `next_phase` |
+|---|---|
+| FM verdict = `PASS` | `FINAL` |
+| FM verdict = `FAIL` (logical mismatch) | `ROUND` |
+| FM verdict = `FAIL` from pre_fm_check (Step 5 failure — FM never submitted) | `ROUND` |
+| FM verdict = `ABORT_*` AND inline loop exhausted (10 attempts) | `STOP` |
+| FM verdict = `ABORT_*` AND recovery_agent returned `REASONING_REFUSED` | `STOP` |
+| FM verdict = `ABORT_*` AND recovery_agent returned `PATCH_INCOMPLETE` | `STOP` |
+| FM verdict = `NOT_RUN` / `PARTIAL` / `UNKNOWN` | `STOP` |
+
+Write `<BASE_DIR>/data/<TAG>_round_handoff.json` **before any signal/spawn**:
 
 ```json
 {
@@ -476,56 +493,49 @@ Write `<BASE_DIR>/data/<TAG>_round_handoff.json` **before any spawn decision**:
   "round": 1,
   "fenets_tag": "<fenets_tag>",
   "eco_fm_tag": "<eco_fm_tag>",
-  "status": "<FM_PASSED|FM_FAILED>"
+  "status": "<FM_PASSED|FM_FAILED|FM_ABORT_EXHAUSTED|FM_PARTIAL>",
+  "next_phase": "<ROUND|FINAL|STOP>",
+  "next_phase_reason": "<short note: e.g. 'logical mismatch — Mode A-H', 'FM PASS', 'abort loop exhausted after 10 attempts', 'pre_fm_check failed'>",
+  "pre_fm_check_failed": <true|false>
 }
 ```
 
-**CHECKPOINT — MANDATORY:** Verify `data/<TAG>_round_handoff.json` exists on disk and is non-empty before proceeding:
+**CHECKPOINT — MANDATORY:** Verify the file exists and is non-empty:
 ```bash
 ls -la <BASE_DIR>/data/<TAG>_round_handoff.json
 ```
-If the file does not exist or is empty — write it again. Do NOT proceed to spawn until this file is confirmed on disk.
+If missing or empty — write it again. Do NOT proceed until confirmed on disk.
 
-### Mandatory Step B — Spawn the correct next agent
+### Mandatory Step B — Signal OR spawn per `next_phase`
 
-#### If pre_fm_check_failed = true (Step 5 failure — FM was never submitted)
+#### `next_phase: FINAL` → spawn FINAL_ORCHESTRATOR inline (foreground, short task)
 
-This path is triggered when eco_pre_fm_checker returned `passed: false` after MAX_RETRIES inline fix attempts. FM was **never submitted** this round. The round_handoff.json already has `status: FM_FAILED` and `pre_fm_check_failed: true` from Step 5.
-
-**Spawn ROUND_ORCHESTRATOR** — same as FM FAIL path below. ROUND_ORCHESTRATOR's Step 0 will detect `pre_fm_check_failed: true` in the handoff and skip FM log parsing, reading instead from `eco_pre_fm_check_round<ROUND>.json` for the diagnosis.
-
-#### If FM RESULT = PASS → Spawn FINAL_ORCHESTRATOR
-
-**Spawn FINAL_ORCHESTRATOR agent** with content of `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
+**Spawn FINAL_ORCHESTRATOR** with content of `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
 - `TOTAL_ROUNDS`: 1
 
-#### If FM RESULT = FAIL or ABORT → Spawn ROUND_ORCHESTRATOR
+FINAL is short (report compilation + email) — fine to run inline before EXIT sentinel.
 
-> **ABORT vs FAIL:** eco_fm_runner no longer patches on ABORT (STEP F deleted in the recovery consolidation). On ABORT, this orchestrator's Step 6 inline-loop spawns `abort_recovery_agent` every iteration (no whitelist gate) up to 10×. The agent runs in mechanical mode (YAML `recovery.action`) for whitelisted patterns or reasoning mode (reads FM log directly, proposes one direct fix) for unknown / non-whitelisted patterns. **ABORT must be solved in the same round** — if the loop exhausts, orchestrator writes the handoff and EXITs. ROUND_ORCHESTRATOR is never spawned for ABORT. FAIL always → ROUND_ORCHESTRATOR (logical mismatch, Mode A-H analyzer required).
->
-> The difference between FAIL and ABORT only matters to eco_fm_analyzer (Step 0). To ORCHESTRATOR's spawn decision, both are the same: → ROUND_ORCHESTRATOR.
+#### `next_phase: ROUND` → emit `ROUND_PHASE_READY` signal block + EXIT (no spawn)
 
-**SPAWN FIRST, THEN write eco_fixer_state — context pressure protection:**
+The main session detects `ROUND_PHASE_READY` (per CLAUDE.md ECO Round Mode) and spawns `ROUND_ORCHESTRATOR` for round 2 in fresh context.
 
-> The spawn MUST happen before any other tool calls. Context is lowest at this point.
-> Writing eco_fixer_state AFTER the spawn is intentional — ROUND_ORCHESTRATOR reads it on startup and handles missing-file gracefully via RESUMPTION CHECK.
-
-**Write pending spawn sentinel BEFORE spawn** (so RESUMPTION CHECK can recover if spawn fails):
-```bash
-echo "PENDING_SPAWN:ROUND_ORCHESTRATOR:round=1" > <BASE_DIR>/data/<TAG>_pending_spawn.txt
+Append this block to `<SPEC_FILE>`:
+```
+ROUND_PHASE_READY
+TAG=<TAG>
+REF_DIR=<REF_DIR>
+TILE=<TILE>
+JIRA=<JIRA>
+BASE_DIR=<BASE_DIR>
+AI_ECO_FLOW_DIR=<REF_DIR>/AI_ECO_FLOW_<TAG>
+LOG_FILE=<LOG_FILE>
+SPEC_FILE=<SPEC_FILE>
+ROUND=2
+HANDOFF_PATH=<BASE_DIR>/data/<TAG>_round_handoff.json
 ```
 
-**Spawn ROUND_ORCHESTRATOR agent IMMEDIATELY:**
-Spawn with content of `config/eco_agents/ROUND_ORCHESTRATOR.md` prepended. Pass:
-- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
-- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
-
-**After spawn succeeds → delete sentinel and write eco_fixer_state:**
-```bash
-rm -f <BASE_DIR>/data/<TAG>_pending_spawn.txt
-```
 Then write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
 ```json
 {
@@ -536,31 +546,46 @@ Then write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
   "jira": "<JIRA>",
   "base_dir": "<BASE_DIR>",
   "ai_eco_flow_dir": "<REF_DIR>/AI_ECO_FLOW_<TAG>",
-  "max_rounds": 10,
+  "max_rounds": 5,
   "strategies_tried": [],
   "fm_results_per_round": [
     {
       "round": 1,
       "eco_fm_tag": "<eco_fm_tag>",
-      "failing_targets": ["<list of failing targets>"],
+      "failing_targets": ["<list>"],
       "failing_count": {"<target>": "<N>"}
     }
   ]
 }
 ```
 
-### Mandatory Step C — HARD STOP
+#### `next_phase: STOP` → no signal, no spawn
+
+Write a one-line note to SPEC_FILE describing why (e.g., `STOP: ABORT loop exhausted after 10 attempts`). Main session reads `next_phase` from handoff and reports stop reason to user.
+
+### Mandatory Step C — Write EXIT sentinel + HARD STOP
+
+The main session uses this marker to verify you honored the EXIT CONTRACT (per CLAUDE.md ECO Apply Mode block).
+
+```bash
+date -Iseconds | xargs -I{} echo "exited {}" > <BASE_DIR>/data/<TAG>_apply_phase_exited.marker
+ls -la <BASE_DIR>/data/<TAG>_apply_phase_exited.marker
+```
+
+This is the LAST file you write. After this:
 
 **Your task ends here. Make no further tool calls. Return your status to the caller.**
 
-You MUST stop after spawning. Do not:
-- Run any bash commands after the spawn
+You MUST stop after writing the sentinel. Do not:
+- Run any bash commands after the sentinel write
 - Write any more files
 - Read any more files
 - Generate any reports or emails
-- "Help" FINAL_ORCHESTRATOR or ROUND_ORCHESTRATOR by doing their work early
+- Spawn ROUND_ORCHESTRATOR yourself (main session does it)
+- "Help" the next ROUND or FINAL agent by doing their work early
+- Read STUDY-phase MDs (rtl_diff_analyzer / eco_fenets_runner / eco_netlist_studier)
 
-The next agent has its own fresh context and instructions. Trust the handoff.
+**If you find yourself at this point about to call any tool — STOP. The EXIT CONTRACT forbids further activity.**
 
 ---
 
@@ -581,4 +606,5 @@ The next agent has its own fresh context and instructions. Trust the handoff.
 | `data/<TAG>_eco_step3_netlist_study_round1.rpt` | Step 3 RPT (written by eco_netlist_studier) |
 | `data/<TAG>_eco_step4_eco_applied_round1.rpt` | Step 4 RPT Round 1 (written by eco_applier) |
 | `data/<TAG>_eco_step6_fm_verify_round1.rpt` | Step 6 RPT Round 1 |
-| `data/<TAG>_round_handoff.json` | Handoff to ROUND_ORCHESTRATOR or FINAL_ORCHESTRATOR |
+| `data/<TAG>_round_handoff.json` | Handoff with `next_phase` (ROUND→signal main session; FINAL→spawned inline; STOP→no spawn) |
+| `data/<TAG>_apply_phase_exited.marker` | EXIT sentinel — main session polls for this to confirm clean exit |

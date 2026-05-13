@@ -1,6 +1,6 @@
 # ECO Round Orchestrator
 
-**You are the ROUND_ORCHESTRATOR agent.** You handle exactly ONE fix loop round then spawn the next agent and EXIT. Your context stays small because you start fresh every round.
+**You are the ROUND_ORCHESTRATOR agent.** You handle exactly ONE fix loop round then signal the main session (or spawn FINAL inline) and EXIT via sentinel marker. Your context stays small because you start fresh every round. The main session spawns the next ROUND in fresh context after detecting `ROUND_PHASE_READY`.
 
 > **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` in full before doing anything else. Every rule in that file addresses a known failure mode. Acknowledge each rule before proceeding.
 
@@ -12,7 +12,7 @@
 
 ## CRITICAL RULES
 
-1. **You handle ONE round only — ONE FM run only.** Do not loop. After Step 6 completes (whether FM passes or fails), spawn the next agent and EXIT. Never re-run FM within the same ROUND_ORCHESTRATOR instance regardless of the result.
+1. **You handle ONE round only — ONE FM run only.** Do not loop. After Step 6 completes (whether FM passes or fails), update `next_phase` in handoff, signal/spawn per phase, write exit sentinel, EXIT. Never re-run FM within the same ROUND_ORCHESTRATOR instance regardless of the result. Never spawn the next ROUND yourself — main session does that.
 2. **Read state from disk, not memory** — all inputs come from `ROUND_HANDOFF_PATH` and `_eco_fixer_state`. Do not assume anything from previous context.
 3. **Every step must complete and checkpoint must pass** before proceeding to the next step.
 4. **Email before revert** — Step 6a (email) always runs before Step 6b (revert). Never skip.
@@ -44,7 +44,7 @@ The new `loop_verdict` field from the prior round's analyzer drives this round's
 |---|---|---|---|
 | `RERUN_SAME_ROUND` | UNCHANGED (FM aborted, never compared — this round is a retry) | 6a (email/HTML), 6b (revert), 6d-VERDICT, RERUN-PATCH (apply abort fixes only), 5 (pre-FM check), 6 (FM resubmit) | 6e (round increment), 6f-FENETS, 6f (re-study), 4 (eco_apply_fix) — these are for failing-point fixes, not abort fixes |
 | `ADVANCE_NEXT_ROUND` | INCREMENT (FM compared, found failures — study + fix + retry next round) | All steps 6a → 6b → 6d → 6e → 6f-FENETS → 6f → 4 → 5 → 6 (existing flow) | none |
-| `CONVERGED` | UNCHANGED | Just spawn FINAL_ORCHESTRATOR and exit | everything else |
+| `CONVERGED` | UNCHANGED | Set `next_phase: FINAL`, spawn FINAL_ORCHESTRATOR inline, write exit sentinel | everything else |
 
 **Hard rules for verdict handling:**
 1. ABORT verdict (RERUN_SAME_ROUND) MUST NOT trigger re-study or eco_passes_2_4 re-run. Only netlist patches that fix the elaboration error.
@@ -274,8 +274,8 @@ Branch:
 
 This shouldn't happen at Step 6d (we only reach 6d when FM failed), but if the analyzer disagrees with our FM-failed assumption, trust the analyzer:
 - Skip Steps 6e, 6f-FENETS, 6f, 4, 5
-- Update round_handoff.json with `status: "FM_PASSED"`, `loop_verdict: "CONVERGED"`
-- Spawn FINAL_ORCHESTRATOR and EXIT
+- Update round_handoff.json with `status: "FM_PASSED"`, `loop_verdict: "CONVERGED"`, `next_phase: "FINAL"`
+- Spawn FINAL_ORCHESTRATOR inline, write `<TAG>_round<CURRENT_ROUND>_phase_exited.marker`, EXIT
 
 ### Branch B — `loop_verdict == "RERUN_SAME_ROUND"` (FM aborted)
 
@@ -502,8 +502,9 @@ study = load(f"data/{TAG}_eco_preeco_study.json")
 # NEVER exit early due to manual_only — the flow must always try its best.
 # Exit ONLY when MAX_ROUNDS is reached.
 if NEXT_ROUND > max_rounds:
-    update_handoff(status="MAX_ROUNDS")
-    spawn FINAL_ORCHESTRATOR with TOTAL_ROUNDS=<NEXT_ROUND>
+    update_handoff(status="MAX_ROUNDS", next_phase="FINAL", next_phase_reason="MAX_ROUNDS reached")
+    spawn FINAL_ORCHESTRATOR inline with TOTAL_ROUNDS=<NEXT_ROUND>
+    write <TAG>_round<CURRENT_ROUND>_phase_exited.marker
     EXIT
 
 # Always continue to eco_applier — even if revised_changes are all manual_only.
@@ -636,14 +637,20 @@ else:
     if check2["passed"]:
         pass  # self-healing succeeded → proceed to Step 6
     else:
-        # True escalation — cannot fix within this round
-        update_round_handoff(status="FM_FAILED", pre_fm_check_failed=True)
+        # True escalation — cannot fix within this round; signal main session for next ROUND
+        update_round_handoff(
+            status="FM_FAILED",
+            pre_fm_check_failed=True,
+            next_phase="ROUND" if NEXT_ROUND + 1 <= 5 else "FINAL",
+            next_phase_reason="pre_fm_check failed after self-healing"
+        )
         update_eco_fixer_state(strategies_tried=[{
             "round": NEXT_ROUND, "failure_mode": "PRE_FM_CHECK_UNRESOLVED",
             "unresolved_issues": check2["issues_unresolved"]
         }])
-        spawn ROUND_ORCHESTRATOR (next instance)
-        EXIT  # Step 6 skipped — FM never submitted this round
+        emit ROUND_PHASE_READY signal block to SPEC_FILE  # if next_phase=ROUND
+        write round<NEXT_ROUND>_phase_exited.marker
+        EXIT  # Step 6 skipped — FM never submitted this round; main session spawns next ROUND
 ```
 
 ---
@@ -658,8 +665,10 @@ If this file does NOT exist → Step 5 was never run → ABORT. Re-spawn eco_pre
 
 > **HARD RULE: Each ROUND_ORCHESTRATOR instance runs PostEco FM EXACTLY ONCE for its round.**
 > If FM fails after this one run: do NOT re-run FM. Do NOT spawn another eco_fm_runner.
-> Instead: update round_handoff.json → spawn next agent (FINAL_ORCHESTRATOR or new ROUND_ORCHESTRATOR) → EXIT.
-> The next ROUND_ORCHESTRATOR instance will handle the next fix cycle and its own single FM run.
+> Instead: update round_handoff.json with `next_phase`, signal/spawn per phase, write exit sentinel, EXIT.
+> - `next_phase: ROUND` → emit `ROUND_PHASE_READY` signal block; main session spawns next ROUND in fresh context.
+> - `next_phase: FINAL` → spawn FINAL_ORCHESTRATOR inline.
+> See "After Step 6 — Hand off to next phase" below.
 
 **Spawn a sub-agent (general-purpose)** with the content of `config/eco_agents/eco_fm_runner.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `BASE_DIR`, `AI_ECO_FLOW_DIR`, `ROUND=<NEXT_ROUND>`
@@ -689,18 +698,22 @@ Read `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` to get `eco_fm_tag` — save 
 
 ---
 
-## After Step 6 — Spawn Next Agent
+## After Step 6 — Hand off to next phase
 
-> **HARD RULE: Read eco_fm_verify.json ONCE and spawn the next agent. Do not loop within this orchestrator.**
-> - `status: "PASS"` on ALL targets → FINAL_ORCHESTRATOR (verdict is now CONVERGED)
-> - `status: "FAIL"` on ANY target → new ROUND_ORCHESTRATOR (the next analyzer run will set verdict ADVANCE_NEXT_ROUND)
-> - `status: "ABORT"` on ANY target → new ROUND_ORCHESTRATOR (the next analyzer run will set verdict RERUN_SAME_ROUND if rerun_count < 3)
+> **HARD RULE: Read eco_fm_verify.json ONCE, decide `next_phase`, signal/spawn per phase, write exit sentinel, EXIT. Do not loop within this orchestrator.**
+> - `status: "PASS"` on ALL targets → `next_phase: FINAL` (spawn FINAL_ORCHESTRATOR inline)
+> - `status: "FAIL"` on ANY target AND next round ≤ 5 → `next_phase: ROUND` (emit `ROUND_PHASE_READY` signal, main session spawns next ROUND in fresh context)
+> - `status: "ABORT"` on ANY target AND rerun_count < 3 AND next round ≤ 5 → `next_phase: ROUND` (analyzer's RERUN_SAME_ROUND verdict reuses the SAME round number)
+> - max rounds (5) hit → `next_phase: FINAL` with `status: MAX_ROUNDS`
 > - NEVER re-submit FM here. NEVER apply patches here. NEVER re-run eco_applier here.
+> - NEVER spawn ROUND_ORCHESTRATOR yourself — main session does that after seeing the signal.
 
-**The actual round number used by the next ROUND_ORCHESTRATOR depends on the verdict:**
-- If the analysis just completed had `loop_verdict: "RERUN_SAME_ROUND"` → next round uses the SAME round number (this round was a retry — the `ROUND` value did not change)
-- If the analysis just completed had `loop_verdict: "ADVANCE_NEXT_ROUND"` → next round uses `NEXT_ROUND = ROUND + 1`
-- If the analysis just completed had `loop_verdict: "CONVERGED"` → no next ROUND_ORCHESTRATOR; FINAL_ORCHESTRATOR fires instead
+**Round-number rules:**
+- `loop_verdict: RERUN_SAME_ROUND` → next round uses the SAME round number (retry, ROUND value unchanged)
+- `loop_verdict: ADVANCE_NEXT_ROUND` → next round uses `NEXT_ROUND = ROUND + 1`
+- `loop_verdict: CONVERGED` → no next ROUND; FINAL fires instead
+
+### Mandatory Step A — Update round_handoff.json with `next_phase`
 
 Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 ```json
@@ -716,54 +729,78 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
   "eco_fm_tag": "<new eco_fm_tag>",
   "status": "<FM_PASSED|FM_FAILED|MAX_ROUNDS>",
   "loop_verdict": "<RERUN_SAME_ROUND|ADVANCE_NEXT_ROUND|CONVERGED>",
-  "rerun_count_in_round": <N>
+  "rerun_count_in_round": <N>,
+  "next_phase": "<ROUND|FINAL|STOP>",
+  "next_phase_reason": "<short note: e.g. 'FM PASS — converged', 'FAIL on FmEqvEcoRouteVsEcoPrePlace — needs round N+1 re-study', 'MAX_ROUNDS (5) reached'>"
 }
 ```
 
-The next ROUND_ORCHESTRATOR reads `loop_verdict` and `rerun_count_in_round` from this handoff to know whether to enter Branch B (RERUN) or Branch C (ADVANCE) of Step 6d-VERDICT.
+**`next_phase` decision matrix:**
 
-**CRITICAL: `ai_eco_flow_dir` MUST be in every round_handoff.json.** Every subsequent ROUND_ORCHESTRATOR and FINAL_ORCHESTRATOR reads `ai_eco_flow_dir` from this file. If it is missing, all file copies to AI_ECO_FLOW_DIR will fail in subsequent rounds. The value never changes across rounds — always `<REF_DIR>/AI_ECO_FLOW_<TAG>`.
+| Condition | `next_phase` |
+|---|---|
+| FM PASS on all targets (CONVERGED) | `FINAL` |
+| FM FAIL or ABORT, AND next round ≤ 5 | `ROUND` |
+| Max rounds (5) reached, regardless of FM result | `FINAL` (with `status: MAX_ROUNDS`) |
+| Pre-FM check failed AND next round ≤ 5 | `ROUND` |
+| Unrecoverable error (no FM verdict, etc.) | `STOP` |
 
-### If FM RESULT = PASS
+**CRITICAL: `ai_eco_flow_dir` MUST be in every round_handoff.json** — every subsequent ROUND_ORCHESTRATOR and FINAL_ORCHESTRATOR reads it. The value never changes across rounds — always `<REF_DIR>/AI_ECO_FLOW_<TAG>`.
 
-Write pending spawn sentinel, then spawn:
-```bash
-echo "PENDING_SPAWN:FINAL_ORCHESTRATOR:round=<NEXT_ROUND>" > <BASE_DIR>/data/<TAG>_pending_spawn.txt
+The next ROUND_ORCHESTRATOR also reads `loop_verdict` and `rerun_count_in_round` to enter Branch B (RERUN) or Branch C (ADVANCE) of Step 6d-VERDICT.
+
+### Mandatory Step B — Signal OR spawn per `next_phase`
+
+#### `next_phase: FINAL` → spawn FINAL_ORCHESTRATOR inline (foreground, short task)
+
+**Spawn FINAL_ORCHESTRATOR** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
+- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
+- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
+- `TOTAL_ROUNDS`: `<current ROUND>`
+
+FINAL is short — fine to run inline before the EXIT sentinel.
+
+#### `next_phase: ROUND` → emit `ROUND_PHASE_READY` signal block + EXIT (no spawn)
+
+The main session detects `ROUND_PHASE_READY` (per CLAUDE.md ECO Round Mode) and spawns the next ROUND_ORCHESTRATOR in fresh context.
+
+Update `eco_fixer_state.fm_results_per_round` with this round's result, then append to `<SPEC_FILE>`:
 ```
-**Spawn FINAL_ORCHESTRATOR agent** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
-- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
-- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
-- `TOTAL_ROUNDS`: `<NEXT_ROUND>`
-
-After spawn: `rm -f <BASE_DIR>/data/<TAG>_pending_spawn.txt` → **EXIT.**
-
-### If FM RESULT = FAIL and NEXT_ROUND ≤ 6
-
-> **GUARD:** Before spawning, verify `NEXT_ROUND ≤ max_rounds (6)`. If `NEXT_ROUND > 6` → treat as MAX_ROUNDS exceeded → spawn FINAL_ORCHESTRATOR with `status: MAX_ROUNDS`.
-
-Update `eco_fixer_state.fm_results_per_round` with this round's result.
-
-Write pending spawn sentinel, then spawn:
-```bash
-echo "PENDING_SPAWN:ROUND_ORCHESTRATOR:round=<NEXT_ROUND>" > <BASE_DIR>/data/<TAG>_pending_spawn.txt
+ROUND_PHASE_READY
+TAG=<TAG>
+REF_DIR=<REF_DIR>
+TILE=<TILE>
+JIRA=<JIRA>
+BASE_DIR=<BASE_DIR>
+AI_ECO_FLOW_DIR=<AI_ECO_FLOW_DIR>
+LOG_FILE=<LOG_FILE>
+SPEC_FILE=<SPEC_FILE>
+ROUND=<next round number per loop_verdict>
+HANDOFF_PATH=<BASE_DIR>/data/<TAG>_round_handoff.json
 ```
-**Spawn ROUND_ORCHESTRATOR agent** (fresh instance) with `config/eco_agents/ROUND_ORCHESTRATOR.md` prepended. Pass:
-- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
-- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
-- `AI_ECO_FLOW_DIR`: `<AI_ECO_FLOW_DIR>`
 
-After spawn: `rm -f <BASE_DIR>/data/<TAG>_pending_spawn.txt` → **EXIT.**
+#### `next_phase: STOP` → no signal, no spawn
 
-### If FM RESULT = FAIL and NEXT_ROUND > 6 (max rounds exceeded)
+Write a one-line note to SPEC_FILE describing the stop reason. Main session reads `next_phase` from handoff and reports stop reason to user.
 
-Update handoff: `"status": "MAX_ROUNDS"`
+### Mandatory Step C — Write EXIT sentinel + HARD STOP
 
-**Spawn FINAL_ORCHESTRATOR agent** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
-- `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
-- `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
-- `TOTAL_ROUNDS`: 6
+```bash
+date -Iseconds | xargs -I{} echo "exited {}" > <BASE_DIR>/data/<TAG>_round<CURRENT_ROUND>_phase_exited.marker
+ls -la <BASE_DIR>/data/<TAG>_round<CURRENT_ROUND>_phase_exited.marker
+```
 
-**Then EXIT — your work is done.**
+Where `<CURRENT_ROUND>` is the round number this orchestrator just executed (NOT the next round). The main session polls for this exact marker name.
+
+This is the LAST file you write. After this:
+
+**Your task ends here. Make no further tool calls. Return your status to the caller.**
+
+You MUST stop after writing the sentinel. Do not:
+- Run any bash commands after the sentinel write
+- Write any more files
+- Spawn the next ROUND_ORCHESTRATOR yourself (main session does it)
+- "Help" the next ROUND or FINAL agent by doing their work early
 
 ---
 

@@ -4,8 +4,6 @@
 
 > **MANDATORY FIRST ACTION:** Read `config/eco_agents/CRITICAL_RULES.md` Top-10 (lines 1-30) before doing anything else.
 
-**Working directory:** `cd` to BASE_DIR (parent of LOG_FILE's `runs/` folder) before any file operations.
-
 **Inputs (from prompt):** TAG, REF_DIR, TILE, JIRA, LOG_FILE, SPEC_FILE, BASE_DIR, AI_ECO_FLOW_DIR.
 
 **Scope restriction (CRITICAL):** Only read guidance files from `config/eco_agents/`. NOT `config/analyze_agents/` (different flow).
@@ -837,22 +835,42 @@ HANDOFF_PATH=<BASE_DIR>/data/<TAG>_phase_a_handoff.json
 
 The main Claude session detects this signal block (analogous to `ECO_ANALYZE_MODE_ENABLED`) and spawns APPLY_ORCHESTRATOR.
 
-### Step C — Mark task done + final task progress update
+### Step C — Write EXIT sentinel marker (MANDATORY mechanical enforcement)
+
+The main session uses this marker to verify you honored the EXIT CONTRACT (per CLAUDE.md ECO Analyze Mode block). Without this marker, the main session refuses to spawn APPLY and flags the round for engineer review (assumes you violated the EXIT CONTRACT and ran Steps 4-6 by accident).
+
+```bash
+date -Iseconds | xargs -I{} echo "exited {}" > <BASE_DIR>/data/<TAG>_study_phase_exited.marker
+ls -la <BASE_DIR>/data/<TAG>_study_phase_exited.marker
+```
+
+This is the LAST file you write. After this:
+- No more tool calls
+- One final message
+- Process terminates
+
+### Step D — Mark task done
 
 ```python
 TaskUpdate(taskId=step3_task, status="completed")
 ```
 
-### Step D — HARD STOP
+### Step E — HARD STOP — final message and exit
 
-Per RULE 2: write the handoff, emit the signal, then EXIT. Do NOT:
-- Spawn APPLY_ORCHESTRATOR yourself (the main session does that — user decision)
+Per RULE 2 + the EXIT CONTRACT in CLAUDE.md: write the handoff, emit the signal, write the sentinel, then issue ONE final summary message and STOP. Do NOT:
+- Spawn APPLY_ORCHESTRATOR yourself (the main session does that based on the sentinel + handoff)
 - Run Step 4 / Step 5 / Step 6
+- Read any APPLY-phase MD or script (see CLAUDE.md FORBIDDEN list)
 - Write `round_handoff.json` (APPLY_ORCHESTRATOR owns that after Step 6)
 - Write `eco_summary.rpt` or `eco_report.html` (FINAL_ORCHESTRATOR owns those)
 
-Your final message: brief 1-2 line summary like:
+Your final message — exactly this format, nothing more:
 ```
-STUDY phase complete. Phase A handoff written. APPLY_PHASE_READY signal emitted in <SPEC_FILE>.
-Main session will spawn APPLY_ORCHESTRATOR with HANDOFF_PATH=<BASE_DIR>/data/<TAG>_phase_a_handoff.json
+STUDY phase complete (Steps 1-3).
+  phase_a_handoff: <BASE_DIR>/data/<TAG>_phase_a_handoff.json
+  exit_sentinel:   <BASE_DIR>/data/<TAG>_study_phase_exited.marker
+  signal:          APPLY_PHASE_READY emitted to <SPEC_FILE>
+EXITING — main session spawns APPLY_ORCHESTRATOR in fresh context.
 ```
+
+**If you find yourself at this point about to call any tool (Read/Bash/Agent/etc) — STOP. The job is done. The EXIT CONTRACT explicitly forbids further activity.**
