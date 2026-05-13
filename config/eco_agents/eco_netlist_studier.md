@@ -161,16 +161,11 @@ P&R renames DFF outputs (scan insertion in PP, CTS/optimization in Route). A wir
 4. If upstream also absent → **CTS buffer search**: grep entire module scope for any cell whose output is the only driver of any net that feeds the same downstream consumers as `<net>` in Synthesize. CTS creates buffer chains (any cell type, not just BUF) with tool-generated output net names — accept the first driven net found in the P&R module scope that reaches the same fanout path.
 5. If aliases differ across stages → set `entry["net_per_stage"][pin] = {Syn: ..., PP: ..., Route: ...}`.
 
-**P&R PER-STAGE ALIAS RULE (MANDATORY — all ECO input pins):** Per-stage values for every input pin (anything except `{Z, ZN, ZN1, Q, QN, CO}`) are resolved in this priority order. **The rule is a strict cascade: you may only proceed to Path N+1 if Path N has no answer. You may NEVER prefer a "better-looking" value from a lower-priority path over a value the rename_map already provides.**
+**P&R PER-STAGE ALIAS RULE (MANDATORY — all ECO input pins):** Per-stage values for every input pin (anything except `{Z, ZN, ZN1, Q, QN, CO}`) are resolved in this priority order:
 
-1. **PATH 1 (MANDATORY FIRST — single source of truth) — Read `<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json`.** Step 2 (eco_fenets_runner) builds an FM-anchored per-stage rename map for every queried signal (clocks, resets, chain leaves, port_promotion targets, Mode I candidates). Lookup by exact key match OR scope-suffix match (`<scope>/<signal>` or `endswith('/' + signal)`). **If a rename_map entry exists for the signal, use the map's per-stage values VERBATIM. STOP — do NOT consult Path 2 or Path 3 for that signal.**
-   - The rename_map values are FM's authoritative per-stage equivalence anchors. They may name a CTS inverter pin or a scan-test wire — that's intentional, FM verified those nets are equivalent.
-   - **NEVER override a rename_map value because a module-body grep produces a "more readable" or "more obvious" net name** (e.g., picking `.Q3` of a multi-bit register replica because it has more references in the scope). The grep result is logically equivalent but physically a different routed net — FM will mark the cone unmatched.
-   - Validator Check 28 (`28-INPUTS-PER-STAGE-VS-RENAME-MAP`) hard-fails the round if `inputs_per_stage[stage]` ≠ `rename_map[signal][stage]` when a map entry exists. There is no warning level — this is a hard error.
-
-2. **PATH 2 (only if Path 1 has no entry) — Neighbor-DFF inference.** Find a pre-existing DFF in the same module scope whose Synthesize value of the same pin matches the ECO entry's logical signal; copy that neighbor's per-stage net name verbatim, including scan/DFT/CTS-renamed names.
-
-3. **PATH 3 (only if Paths 1+2 both fail) — Module-body grep for driver.** When a chain leaf references a signal that's a local internal wire (driven by a sync-flop INSIDE the host module, e.g. `IReset` driven by `IReset_reg.Q`), P&R may rename the driver's `.Q` net per stage. Grep the host module body in EACH stage's PostEco netlist for the original sync-flop's `.Q(<net>)`. Studier code:
+1. **Read `<BASE_DIR>/data/<TAG>_eco_fenets_rename_map.json` first** — Step 2 (eco_fenets_runner) builds an authoritative per-stage rename map for every queried signal (clocks, resets, chain leaves, port_promotion targets, Mode I candidates). If the map has the pin's logical signal, USE THE MAP'S PER-STAGE VALUES VERBATIM. This is the single source of truth.
+2. **Fallback — neighbor-DFF inference** (only when signal is not in the rename map): find a pre-existing DFF in the same module scope whose Synthesize value of the same pin matches the ECO entry's logical signal; copy that neighbor's per-stage net name verbatim, including scan/DFT/CTS-renamed names.
+3. **Internal-wire fallback (when both above fail) — grep the host module body for the driver:** when a chain leaf references a signal that's a local internal wire (driven by a sync-flop INSIDE the host module), P&R may rename the driver's `.Q` net per stage. When the rename map missed it, grep the host module body in EACH stage's PostEco netlist for the original sync-flop's `.Q(<net>)` and use that per-stage value. Studier code:
 
 ```python
 def find_driver_in_module(host_mod_text, original_signal, source_dff_inst):
@@ -179,9 +174,9 @@ def find_driver_in_module(host_mod_text, original_signal, source_dff_inst):
     return m.group(1) if m else original_signal
 ```
 
-**Failure mode to internalize:** when synthesis duplicates a register into a multi-bit replica (MBR), each bit's `.Qn` output holds the same logical value but is a separately routed physical net. Picking one of those `.Qn` nets via Path 3 grep — even if it has many references in the scope — is **not equivalent** to the rename_map's FM-anchored value (typically a CTS inverter pin). The two wires carry the same logical signal, but FM treats them as distinct cone inputs and reports the consuming compare point as not equivalent. A single Path 1 lookup prevents this entire failure class.
-
 NEVER force the Synthesize name across all stages — all three resolution paths produce per-stage values that match what FM expects. For SE/SI on new ECO DFFs: Synth = `1'b0` (RTL-clean), PP/Route = neighbor DFF's per-stage SE/SI (real scan-bridge wire — NOT `1'b0`).
+
+**Note on Path 1 vs Path 3 equivalence:** the rename_map value is FM-anchored to a *combinational* path through CTS inverters. Path 3 (module-body grep) may legitimately resolve to a different topologically-equivalent net (e.g., a `.Qn` output of a multi-bit register replica that holds a registered version of the same logical signal). Both can be FM-equivalent for combinational compare-point checks; choose based on the consuming gate's needs. Do not treat any single path as universally correct — FM equivalence is the arbiter, not a static rule.
 
 Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SAME` if identical.
 
