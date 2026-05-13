@@ -16,3 +16,9 @@ timing_details_report.csv
 command.csv
 available_instructions.csv
 script/rtg_oss_feint/supra/2
+
+# ECO gap-tracking notes — local only, not for repo
+config/eco_agents/9899_fix_plan.md
+config/eco_agents/9899_gaps.md
+config/eco_agents/9905_gaps.md
+config/eco_agents/FUTURE_GAPS.md
