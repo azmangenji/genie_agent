@@ -699,6 +699,8 @@ If `fanout > 10` → **NEVER use this net as gate output**. High-fanout nets hav
 1. Identify `parent_module`, `instance_name`, `port_name`, `net_name`, `submodule_type`
 2. **MANDATORY — Validate `submodule_pattern`:** `grep -c "<submodule_type> <instance_name>" /tmp/eco_study_<TAG>_Synthesize.v`. If 0 → check PrePlace and Route; record per-stage `instance_confirmed` flags.
 
+**Per-instance expansion:** When the rtl_diff entry has `flat_net_name_per_instance`, emit one separate `port_connection` study entry per instance, each with its own `instance_name` and `net_name` from the dict. When absent, emit a single entry using `flat_net_name` as normal. This is backward-compatible — single-instance ECOs produce one entry, multi-instance cross-channel ECOs produce one entry per instance with the correct hookup net.
+
 ### 0i — Process `port_promotion` changes → `port_promotion` study entries
 
 1. Check Synthesize: `grep -cw "<signal_name>" /tmp/eco_study_<TAG>_Synthesize.v`
