@@ -240,6 +240,47 @@ def main():
             if not ok:
                 issues.append(f"C3: no candidate covers PrePlace+Route for {key}/{pin}")
 
+    # C8: rename-map polarity stage-consistency. For each rename_map entry,
+    # verify all 3 stages (Synthesize / PrePlace / Route) reference wires of
+    # the SAME polarity class (input pin / output pin / scalar wire). Mixed
+    # polarity (e.g. PP=<inv>/ZN, Route=<inv>/I) means the same logical signal
+    # is being read with opposite sign in different stages — silently inverts
+    # downstream logic when studier wires it through a new INV cell.
+    #
+    # Polarity classification for a per-stage value `<cell>/<pin>`:
+    #   /ZN, /Q, /Z         → 'output'  (cell drives the wire)
+    #   /I, /A, /A1, /A2,
+    #     /B, /B1, /B2, /D  → 'input'   (cell reads the wire)
+    #   no '/'              → 'wire'    (bare wire name, no cell context)
+    OUT_PINS = {'ZN', 'Q', 'Z', 'CO', 'S', 'QN'}
+    IN_PINS  = {'I', 'A', 'A1', 'A2', 'A3', 'A4', 'B', 'B1', 'B2', 'B3', 'B4',
+                'C', 'C1', 'C2', 'D', 'D1', 'D2', 'CP', 'SI', 'SE', 'EN'}
+    def _polarity(val):
+        if not val or '/' not in val:
+            return 'wire'
+        pin = val.rsplit('/', 1)[-1]
+        if pin in OUT_PINS: return 'output'
+        if pin in IN_PINS:  return 'input'
+        return 'wire'   # unknown pin — treat as bare wire reference
+
+    if args.rename_map and Path(args.rename_map).is_file():
+        rmap = _load_json(args.rename_map) or {}
+        for sig_key, stages in rmap.items():
+            if sig_key == '_metadata' or not isinstance(stages, dict):
+                continue
+            kinds = {st: _polarity(stages.get(st, '')) for st in ('Synthesize','PrePlace','Route')}
+            distinct = set(k for k in kinds.values() if k)
+            # Mixed = both 'input' AND 'output' present → silent polarity flip
+            if 'input' in distinct and 'output' in distinct:
+                issues.append(
+                    f"C8: rename_map polarity mismatch — {sig_key!r} has mixed "
+                    f"input/output references across stages: {kinds}. The same "
+                    f"logical signal is read with opposite sign in different stages. "
+                    f"Studier wiring this through a new INV cell will silently flip "
+                    f"the logic in one of the stages → FM mismatch. Studier MUST "
+                    f"pick a single-polarity reference (preferably the wire/output "
+                    f"form, not an inverter input) per stage.")
+
     out = {
         'queries':            args.queries,
         'queries_raw':        args.queries_raw,

@@ -171,6 +171,26 @@ def derive_queries(rtl_diff):
                                 'source': f'changes[{idx}].mode_I_candidate',
                                 'mode_I_candidate': True})
 
+        # Cat 8: Mode-S anchor wires (SI/SE/Q for new DFF scan stitching).
+        # Without these in the rename map, Step 3 studier has no per-stage
+        # data for the bridge source wires and must grep the netlist directly
+        # (fragile — works when names are stable, fails when CTS rebalances).
+        anchor = c.get('mode_s_anchor') or {}
+        if anchor:
+            fm_scope    = anchor.get('fm_scope', '')
+            for role, fld in (('SI', 'anchor_si_wire'),
+                              ('SE', 'anchor_se_wire'),
+                              ('Q',  'anchor_q_wire')):
+                wire = anchor.get(fld)
+                if wire:
+                    queries.append({
+                        'net_path':    f'{fm_scope}/{wire}'.strip('/'),
+                        'signal':      wire,
+                        'source':      f'changes[{idx}].mode_s_anchor.{fld}',
+                        'cat_8_anchor': True,
+                        'anchor_role': role,
+                    })
+
     # Deduplicate by net_path (preserve first source)
     seen = set(); unique = []
     for q in queries:

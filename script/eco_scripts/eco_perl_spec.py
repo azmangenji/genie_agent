@@ -293,13 +293,23 @@ def main():
         # ── new_logic_gate / new_logic_dff ───────────────────────────────────
         if ct in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
             # GAP-7: existing-signal reuse — skip cell insertion entirely when
-            # the studier marked this INV gate as reusing an existing wire.
-            # The downstream gate that consumed this entry's output should
-            # already have its input substituted in port_connections_per_stage.
-            if e.get('reuse_existing_wire'):
+            # the studier marked this gate as reusing an existing wire. The
+            # downstream gate that consumed this entry's output should already
+            # have its input substituted in port_connections_per_stage.
+            #
+            # Two equivalent flags trigger skip (studier MD §0a — both should be
+            # set on reuse entries; either alone is sufficient for backward compat):
+            #   reuse_existing_wire: true        — legacy / semantic flag
+            #   skip_cell_instantiate: true      — explicit applier directive
+            if e.get('reuse_existing_wire') or e.get('skip_cell_instantiate'):
                 ips = (e.get('inputs_per_stage') or {}).get(args.stage)
+                flags = []
+                if e.get('reuse_existing_wire'):    flags.append('reuse_existing_wire')
+                if e.get('skip_cell_instantiate'): flags.append('skip_cell_instantiate')
                 statuses.append({'name': inst, 'status': 'SKIPPED',
-                                 'reason': f'GAP-7: reuse_existing_wire — {args.stage} uses {ips!r} (no new INV cell)'})
+                                 'reason': f'GAP-7: cell skip ({"+".join(flags)}) — '
+                                           f'{args.stage} uses {ips!r} (cell not instantiated; '
+                                           f'output_net aliased to per-stage input)'})
                 continue
 
             if mod not in changes:

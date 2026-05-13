@@ -107,7 +107,7 @@ FM is complete when **either** signal fires first:
 
 **MANDATORY: read `<BASE_DIR>/data/<TAG>_eco_fm_verify.json` and act on its `verdict` field. Do NOT classify FM output yourself. Do NOT invoke `eco_fm_status_collector.py` — `post_eco_formality.csh` already ran it for you.**
 
-History (run 20260512070625): the agent was permitted to free-form classify FM output here. It wrote `overall_status: "FM_FAILED"` (not `"ABORT"`) when targets aborted, which broke the downstream classifier (B1 in FUTURE_GAPS) and burned 3 rounds of re-study chasing the wrong cause. The agent classification path is removed — `post_eco_formality.csh` invokes the deterministic `eco_fm_status_collector.py` which owns this layer end-to-end.
+Known failure mode (now closed): when the agent was permitted to free-form classify FM output here, status-field naming inconsistency (e.g. `overall_status: "FM_FAILED"` vs `"ABORT"`) broke downstream classifier matching, causing rounds of misdiagnosis. The agent classification path is removed — `post_eco_formality.csh` invokes the deterministic `eco_fm_status_collector.py` which owns this layer end-to-end.
 
 ### Where the JSON comes from
 

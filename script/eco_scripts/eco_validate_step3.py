@@ -1171,8 +1171,62 @@ def main():
                     f"so each entry results in its own substitution — this LOOKS "
                     f"like a scope-leak. Verify all targets are intentional; if "
                     f"only ONE module needs the rename, drop the others to avoid "
-                    f"polluting unrelated module scopes (run 20260512070625 root "
-                    f"cause class).")
+                    f"polluting unrelated module scopes.")
+
+    # ── 27. CLOCK-STAGE-STABILITY for new DFFs ──────────────────────────────
+    # For each new_logic_dff, check that port_connections_per_stage[*].CP
+    # references wires from the SAME clock domain across all 3 stages.
+    # Failure mode: studier picks Synth=ClkA, PP=ClkA, Route=<ClkB-tree
+    # CTS-rebalanced antenna fix> — different clock domain in Route → FM
+    # logical mismatch.
+    #
+    # Heuristic: extract the "root clock token" from each per-stage CP wire
+    # name. Patterns like '<clk_token>_buf_*', '<clk_token>_cts_*',
+    # 'ant_fix_net_*_<clk_token>_*', 'FxOptCts_*<clk_token>*', etc., should
+    # all share the same <clk_token>. If the tokens disagree, fail.
+    CLK_TOKEN_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*?clk[A-Za-z0-9_]*|'
+                              r'[A-Z][A-Z0-9]*CLK[A-Z0-9_]*)', re.IGNORECASE)
+    def _extract_clock_tokens(cp_value):
+        """Find all clock-like tokens in a CP wire/cell name. Returns set."""
+        if not cp_value:
+            return set()
+        tokens = set()
+        for m in CLK_TOKEN_RE.finditer(cp_value):
+            tok = m.group(1).upper()
+            # Strip common decorators
+            for suffix in ('_CTS', '_BUF', '_INV', '_GATE'):
+                if tok.endswith(suffix):
+                    tok = tok[:-len(suffix)]
+            tokens.add(tok)
+        return tokens
+
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            inst = e.get('instance_name', '?')
+            pcs = e.get('port_connections_per_stage', {})
+            if not pcs:
+                continue
+            per_stage_tokens = {}
+            for st in ('Synthesize', 'PrePlace', 'Route'):
+                cp = (pcs.get(st) or {}).get('CP', '')
+                per_stage_tokens[st] = _extract_clock_tokens(cp)
+            # Find any pairwise disjoint set (no common token across stages)
+            non_empty = {st: tks for st, tks in per_stage_tokens.items() if tks}
+            if len(non_empty) >= 2:
+                common = set.intersection(*non_empty.values())
+                if not common:
+                    issues.append(
+                        f"HIGH/27-CLOCK-STAGE-MISMATCH: DFF {inst} per-stage CP "
+                        f"references DIFFERENT clock domains: " +
+                        ', '.join(f"{st}=tokens{sorted(tks)}" for st, tks in per_stage_tokens.items() if tks) +
+                        f". A new DFF must clock on the SAME logical clock across "
+                        f"all 3 PostEco stages (CTS-rebalanced names are OK as long "
+                        f"as the clock-token root matches). Mismatch → FM logical "
+                        f"mismatch on this DFF. Studier should re-pick CP per stage "
+                        f"to ensure all 3 belong to the same clock tree (verify by "
+                        f"tracing each CP wire's source register's CP recursively).")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

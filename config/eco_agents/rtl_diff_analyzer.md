@@ -92,6 +92,23 @@ From `context_line`, extract the LHS register being assigned — this is the TAR
 - If multiple always blocks changed (different bits of same register), record each separately with its own `target_bit`
 - For `new_port`, `new_logic`, `port_connection` types: set both to `null`
 
+**`dff_clock` extraction (MANDATORY for `new_logic_dff` change_type, recommended for all `target_register` entries):**
+
+For each new DFF (and ideally for any `target_register` change), extract the clock signal from the enclosing `always @(posedge <clk> ...)` or `always @(clocked_on <clk> ...)` block. Step 2 fenets uses this to build clock-domain queries; Step 3 studier uses it to pick the per-stage CP wire — without it, studier has to guess and may pick a wrong-domain CTS-rebalanced clock in P&R stages.
+
+Algorithm:
+1. Locate the `always @(posedge <X>` or `always @(<X> or <Y>)` block enclosing the new register assignment
+2. The first signal after `posedge` is the clock (if it's `<X>`, that's the clock; for sync/async resets like `posedge clk or negedge rst_n`, the clock is the first one)
+3. Record as `dff_clock: "<clk_signal>"`
+4. If multiple always blocks affect the same register at different bits → record per-change
+
+```json
+"dff_clock": "<clk_signal_name>",   // for new_logic_dff entries
+                                    // null when not applicable (combinational, port_connection, etc.)
+```
+
+Failure mode if missing: studier has to infer the clock from neighboring DFFs in the netlist; in P&R stages the inferred clock may be a CTS-rebalanced antenna-fix net from the wrong clock tree. The new DFF then ends up on a different clock domain in Route vs Synth → FM logical mismatch.
+
 **`module_name`** = the module that **declares** the changed signals as `reg` or `wire` — NOT necessarily the module in the changed file. The changed file's module is only the starting candidate. Step C will verify whether the signals are truly declared (`reg`/`wire`) in that module or merely passed through as input/output ports. If they are only ports, `module_name` must be updated to the parent module where the `reg`/`wire` declaration lives. Leave this field as the changed file's module initially — Step C is responsible for correcting it if needed.
 
 ---
@@ -308,6 +325,22 @@ All fields below are MANDATORY — every intermediate D-MUX-3/4 derivation value
 "mux_select_old_S_when_condition_true": 0|1,
 "mux_select_reasoning": "<one sentence: driver cell + inverting → old_S → branch_true_on → gate>"
 ```
+
+**MANDATORY — `mux_select_i0_net` / `mux_select_i1_net` source rule:**
+
+When the new MUX inputs are `new_port` signals (signals that don't yet exist as flat nets in the netlist — they're being created by THIS ECO), populate `mux_select_i{0,1}_net` **DIRECTLY from the symbolic RTL signal name** (the same value that appears in `new_select_inputs[k]`). Do NOT attempt to flat-net-resolve them — there's nothing to resolve yet.
+
+```
+if new_select_inputs_from_change[0] == True:
+    mux_select_i0_net = new_select_inputs[0]    # use symbolic RTL name verbatim
+else:
+    mux_select_i0_net = <flat-net resolution of existing signal>
+# Same logic for i1
+```
+
+Failure mode if violated: the flat-net-resolve grabs unrelated CTS-renamed wires from elsewhere in the cone (since the new signals don't exist as flat nets yet). Step 3 studier reading these wrong values builds the wrong AND2/OR2 inputs → FM logical mismatch on the target register.
+
+**Cross-check before writing JSON:** assert `mux_select_i0_net == new_select_inputs[0]` and `mux_select_i1_net == new_select_inputs[1]` (when the corresponding `new_select_inputs_from_change[k]` is true). Step 1 validator (Check 27) enforces this.
 
 Set `mux_select_polarity_pending: false` — the gate function is fully resolved here.
 

@@ -817,8 +817,51 @@ def main():
                 f"Chain is functionally incomplete vs declared expected_function.")
             overall_pass = False
 
+    # ── Check 27 — MUX_SELECT field consistency ─────────────────────────────
+    # When mux_select_i{0,1}_net SHOULD come from new_select_inputs (because
+    # the new MUX inputs are new_port signals, not yet in netlist), assert the
+    # values agree. Run 20260512070625 root cause #2: AI populated
+    # mux_select_i0_net="ctmn_517750" (random CTS-renamed wire) while
+    # new_select_inputs[0]="EcoUseSdpOutstRdCnt" (correct). Studier may pick
+    # the wrong field downstream → wrong AND2 inputs → FM logical mismatch.
+    mux_select_issues = []
+    rtl_diff_doc = json.loads(open(args.rtl_diff).read())
+    for idx, ch in enumerate(rtl_diff_doc.get('changes', [])):
+        if ch.get('change_type') != 'wire_swap':
+            continue
+        new_inputs = ch.get('new_select_inputs') or []
+        from_change = ch.get('new_select_inputs_from_change') or []
+        if not new_inputs or len(new_inputs) < 2:
+            continue
+        i0_net = ch.get('mux_select_i0_net')
+        i1_net = ch.get('mux_select_i1_net')
+        # Only enforce when the corresponding flag says new_port
+        for k, field_name, actual in (
+            (0, 'mux_select_i0_net', i0_net),
+            (1, 'mux_select_i1_net', i1_net),
+        ):
+            if k >= len(from_change) or not from_change[k]:
+                continue   # not a new_port — flat-net resolve is allowed
+            expected = new_inputs[k]
+            if actual != expected:
+                tgt = ch.get('target_register') or ch.get('new_token') or '?'
+                mux_select_issues.append(
+                    f"changes[{idx}] target={tgt} [FAIL/27-MUX-SELECT-FIELD-MISMATCH]: "
+                    f"{field_name}={actual!r} but new_select_inputs[{k}]={expected!r} "
+                    f"(new_select_inputs_from_change[{k}]=true means this signal is a new_port "
+                    f"that doesn't exist as a flat net yet). The {field_name} field must equal "
+                    f"the symbolic RTL name from new_select_inputs[k] — flat-net-resolve grabbed "
+                    f"an unrelated wire. Step 3 studier reading {field_name} would build the "
+                    f"wrong AND2 inputs → FM logical mismatch on {tgt}. "
+                    f"Fix Step E mux_select branch to use new_select_inputs[k] verbatim when "
+                    f"new_select_inputs_from_change[k]=true."
+                )
+                overall_pass = False
+
     out = {
         'rtl_diff': args.rtl_diff,
+        'mux_select_issue_count': len(mux_select_issues),
+        'mux_select_issues':      mux_select_issues,
         'wire_swap_count':       len(results),
         'phantom_wire_count':    len(phantom),
         'phantom_wire_issues':   phantom,

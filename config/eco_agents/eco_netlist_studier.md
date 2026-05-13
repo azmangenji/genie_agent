@@ -188,7 +188,7 @@ FM cannot trace `UNCONNECTED_*` / `SYNOPSYS_UNCONNECTED_*` across hierarchy → 
 
 - MUST be a flat Verilog identifier: `^[A-Za-z_]\w*$` (letters, digits, underscores only — NO brackets, spaces, or special chars)
 - MUST NOT contain `[`, `]`, `.`, `/`, or whitespace
-- For bus-bit semantics (e.g. "bit 1 of REG_UmcCfgEco"), use **flat-net underscore-escape form**: `REG_UmcCfgEco_1_` — NEVER `REG_UmcCfgEco[1]`. Bracket form is only valid in port_connections / concatenations, NOT in wire declarations.
+- For bus-bit semantics (e.g. "bit N of bus X"), use **flat-net underscore-escape form**: `X_N_` — NEVER `X[N]`. Bracket form is only valid in port_connections / concatenations, NOT in wire declarations.
 - The applier (`eco_perl_spec.py`) auto-sanitizes bracket form via `_sanitize_named_net()` as a safety net (logs `AUTO_SANITIZED` in apply report) but the studier should emit the correct form directly. Repeated AUTO_SANITIZED entries indicate this rule is being violated.
 
 **Scope discipline (do NOT broadcast):**
@@ -280,6 +280,7 @@ After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>
   "seq": "d005",
   "gate_function": "INV",
   "reuse_existing_wire": true,
+  "skip_cell_instantiate": true,
   "inputs_per_stage": {
     "Synthesize": "<wire_synth_or_inv_self>",
     "PrePlace":   "<wire_pp>",
@@ -287,7 +288,11 @@ After all chain gates: set DFF entry `port_connections.D = "n_eco_<jira>_d<last>
   }
 }
 ```
-The applier skips inserting the INV cell and substitutes the per-stage wire wherever any downstream gate consumed `n_eco_<jira>_d<seq>`. This avoids widening the FM cone with a new INV.
+**Both `reuse_existing_wire: true` AND `skip_cell_instantiate: true` are MANDATORY** when reusing. The applier honors `skip_cell_instantiate=true` by NOT emitting the cell instance — instead it treats the chain entry's output_net (`n_eco_<jira>_d<seq>`) as a per-stage alias for `inputs_per_stage[stage]`. Downstream gates that consumed `n_eco_<jira>_d<seq>` get rewired to consume the per-stage wire directly.
+
+**Why both fields:** `reuse_existing_wire: true` alone is ambiguous — applier could either (a) skip the cell entirely and alias, or (b) instantiate the cell with `inputs_per_stage[stage]` as its input pin. (b) is wrong for INV reuse: it would compute `~~X = X` in stages where the reused wire is already inverted (e.g., a `*_rstb` flat-net that is `~IReset`). `skip_cell_instantiate: true` eliminates the ambiguity — the applier never emits the cell.
+
+This avoids widening the FM cone with a new INV AND preserves the polarity of the reused signal.
 
 **GAP-14 — Wire declaration flag:** For each new gate whose output net does not exist in PreEco (`grep -cw "<output_net>" /tmp/eco_study_<TAG>_Synthesize.v` = 0), set `needs_explicit_wire_decl: true`. **Output net ONLY — never set for input nets.**
 

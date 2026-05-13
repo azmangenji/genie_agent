@@ -332,7 +332,11 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
 ```
 If any is missing — copy before exiting.
 
-## STEP F — Run Step 2 validator (BLOCKING handoff to Step 3)
+## STEP F — Run Step 2 validator (BLOCKING — orchestrator gates Step 3 on this)
+
+**MANDATORY. NOT OPTIONAL.** STUDY_ORCHESTRATOR explicitly asserts the validator output exists AND `overall_pass: true` before spawning Step 3. If you skip this, the orchestrator BLOCKS Step 3 and re-spawns you to do it. If you skip again, the round terminates with `phase_a_status: BLOCKED_STEP2_VALIDATOR`.
+
+Skipping sanitize + validator is a known failure mode under context pressure (silent shortcut). Step 3 then runs on incomplete fenets data and downstream symptoms cost hours to diagnose. The validator gate now fires at orchestrator level, not just here — but you SHOULD still run it before exiting so the orchestrator's gate finds a passing artifact.
 
 ```bash
 python3 script/eco_scripts/eco_validate_step2.py \
@@ -342,7 +346,11 @@ python3 script/eco_scripts/eco_validate_step2.py \
     --output      data/<TAG>_eco_validate_step2.json
 ```
 
-Exit 1 → block Step 3 handoff. Validator confirms every Cat 8 Mode-S anchor query was actually submitted to FM and returned equivalence data (not FM-036 / Unknown name). On fail, re-derive queries with `mode_s_anchor` populated and re-run fenets.
+**Exit semantics:**
+- Validator exit 0 → write `data/<TAG>_eco_validate_step2.json` with `overall_pass: true` → eco_fenets_runner exits successfully → STUDY_ORCHESTRATOR proceeds to Step 3.
+- Validator exit 1 → JSON has `overall_pass: false` + issues list. eco_fenets_runner MUST exit with the failure visible in its output RPT. STUDY_ORCHESTRATOR's gate will catch the failure and either re-spawn fenets or terminate the phase.
+
+Validator confirms every Cat 8 Mode-S anchor query was actually submitted to FM and returned equivalence data (not FM-036 / Unknown name). On fail, re-derive queries with `mode_s_anchor` populated and re-run fenets.
 
 ---
 

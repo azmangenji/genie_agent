@@ -173,6 +173,33 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_fenets_rename_map.json
 ```
 If any file is missing — eco_fenets_runner failed. Do NOT continue.
 
+**MANDATORY VALIDATOR GATE — block Step 3 spawn until Step 2 validator PASSES:**
+
+eco_fenets_runner is required by `eco_fenets_runner.md` STEP F to run `eco_validate_step2.py` as a BLOCKING handoff. The orchestrator must NOT trust that the runner did its job (silent skip is a known failure mode under context pressure); assert it directly:
+
+```bash
+# 1. Validator output JSON must exist
+ls <BASE_DIR>/data/<TAG>_eco_validate_step2.json || { echo "FAIL: Step 2 validator did not run"; exit 1; }
+
+# 2. overall_pass must be true
+python3 -c "
+import json, sys
+d = json.loads(open('<BASE_DIR>/data/<TAG>_eco_validate_step2.json').read())
+if not d.get('overall_pass'):
+    print(f'FAIL: Step 2 validator overall_pass=False, {len(d.get(\"issues\",[]))} issues:')
+    for i in d.get('issues', [])[:5]:
+        print(f'  - {i}')
+    sys.exit(1)
+print('Step 2 validator PASSED — proceeding to Step 3')
+"
+
+# 3. Sanitize marker must exist (proves eco_fenets_sanitize_queries.py ran, not agent panic-rewrite)
+ls <BASE_DIR>/data/<TAG>_eco_fenets_queries_sanitize_marker.txt || \
+  { echo "FAIL: sanitize marker missing — runner skipped sanitize step"; exit 1; }
+```
+
+If ANY of the 3 assertions fail → **HARD STOP**, do NOT spawn Step 3. Re-spawn `eco_fenets_runner` with explicit instruction to re-run STEP A (sanitize) and STEP F (validator). If the runner still skips them after a retry → write phase_a_handoff.json with `phase_a_status: "BLOCKED_STEP2_VALIDATOR"` + emit error to SPEC_FILE → orchestrator EXIT.
+
 **Extract SPEC_SOURCES from `data/<TAG>_eco_step2_fenets.rpt`** (read the SPEC_SOURCES section at the bottom of the RPT) — pass these to the Step 3 sub-agent prompt.
 
 ---
