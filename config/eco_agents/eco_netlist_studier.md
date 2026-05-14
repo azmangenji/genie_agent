@@ -371,10 +371,13 @@ python3 script/eco_scripts/eco_pick_bridge_dffs.py \
 
 python3 script/eco_scripts/eco_emit_bridge_plumbing.py \
     --bridge-pick data/<TAG>_eco_bridge_pick_<dff>.json \
-    --jira <jira> --host-module <host> --sibling-module <sib> \
-    --parent-module <parent> --host-inst <inst> --sibling-inst <inst> \
+    --jira <jira> --ref-dir <REF_DIR> \
+    --host-module <host_base> --sibling-module <sib_base> \
+    --parent-module <parent_base> --host-inst <inst> --sibling-inst <inst> \
     --new-dff-instance <DFF> --output data/<TAG>_eco_bridge_plumbing_<dff>.json
 ```
+
+Pass BASE module names (no `_0`/`_1` suffix) for `--host/sibling/parent-module`. The emitter auto-resolves the per-stage uniquified name (e.g. `<base>_0` in Route) by greping each PostEco netlist via `--ref-dir`. Buffer cell types are auto-discovered from PreEco (`BUF*` grep) — `--si-buffer-cell` / `--se-buffer-cell` are optional overrides. Output lands in the right module name per stage so FM doesn't see `BRIDGE_PARENT_MISSING`.
 
 **MANDATORY minimum cluster size: `consolidation_target_dffs` ≥ 10 DFFs** (use SIBLING ESCALATION above when picker can't reach 10). Smaller clusters mean the bridge isn't a meaningful scan path participant → FM cone matching unstable.
 
