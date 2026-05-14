@@ -762,6 +762,79 @@ def main():
                     f"See rtl_diff_analyzer.md §E2.5.")
                 overall_pass = False
 
+    # Check 9e — Compound gate preference: detect consecutive gate pairs (gate_i →
+    # gate_i+1) where gate_i's output feeds ONLY gate_i+1 and the combined function
+    # matches a known compound gate family. Using simple primitive chains (OR2→AND2,
+    # AND2→OR2, etc.) when a compound exists creates intermediate wires that FM must
+    # trace back to RTL without SVF → compare point failures on downstream DFFs.
+    _COMPOUND_PATTERNS = {
+        ('OR2',  'AND2')  : 'OA21/OA12',
+        ('OR2',  'AN2')   : 'OA21/OA12',
+        ('OR3',  'AND2')  : 'OA31',
+        ('AND2', 'OR2')   : 'AO21',
+        ('OR2',  'NAND2') : 'OAI21',
+        ('OR2',  'ND2')   : 'OAI21',
+        ('AND2', 'NOR2')  : 'AOI21',
+        ('AND2', 'NR2')   : 'AOI21',
+        ('OR3',  'NAND2') : 'OAI31',
+        ('AND3', 'NOR2')  : 'AOI31',
+        ('AND2', 'OR3')   : 'AO211',
+        ('OR2',  'AND3')  : 'OA211',
+    }
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        for chain_field in ('new_condition_gate_chain', 'd_input_gate_chain'):
+            chain = c.get(chain_field) or []
+            if len(chain) < 2:
+                continue
+            # Map each n_eco_* net to list of gate indices that consume it
+            output_to_consumers = {}
+            for gi, g in enumerate(chain):
+                for inp in (g.get('inputs') or []):
+                    base = str(inp).split('[')[0]
+                    if base.startswith('n_eco_'):
+                        output_to_consumers.setdefault(base, []).append(gi)
+            for gi in range(len(chain) - 1):
+                g1 = chain[gi]
+                g1_out = str(g1.get('output_net') or '').split('[')[0]
+                if not g1_out.startswith('n_eco_'):
+                    continue
+                consumers = output_to_consumers.get(g1_out, [])
+                if not consumers:
+                    continue
+                g1f = g1.get('gate_function', '').upper()
+                tgt = c.get('target_register') or c.get('old_token') or '?'
+
+                if len(consumers) == 1:
+                    # Single consumer — can fold g1+g2 into one compound gate
+                    g2 = chain[consumers[0]]
+                    g2f = g2.get('gate_function', '').upper()
+                    compound = _COMPOUND_PATTERNS.get((g1f, g2f))
+                    if compound:
+                        chain_compact_issues.append(
+                            f"changes[{idx}] target={tgt} [FAIL/9e-COMPOUND-PREFER]: "
+                            f"{g1f}(seq={g1.get('seq')})→{g2f}(seq={g2.get('seq')}) "
+                            f"can be a single compound cell ({compound}). "
+                            f"Compound gates avoid intermediate wires FM cannot trace to RTL. "
+                            f"Apply E4d (rtl_diff_analyzer.md §E2.5/E4d).")
+                        overall_pass = False
+                else:
+                    # Multiple consumers — g1 output fans to N gates of same type.
+                    # Each consumer can become a separate compound gate using g1's raw
+                    # inputs directly, eliminating the shared intermediate wire entirely.
+                    consumer_funcs = set(chain[ci].get('gate_function','').upper() for ci in consumers)
+                    if len(consumer_funcs) == 1:
+                        g2f = next(iter(consumer_funcs))
+                        compound = _COMPOUND_PATTERNS.get((g1f, g2f))
+                        if compound:
+                            chain_compact_issues.append(
+                                f"changes[{idx}] target={tgt} [FAIL/9e-COMPOUND-PREFER]: "
+                                f"{g1f}(seq={g1.get('seq')}) fans to {len(consumers)} {g2f} gates "
+                                f"— each consumer can be an independent compound cell ({compound}) "
+                                f"using {g1f}'s raw inputs directly, eliminating the shared "
+                                f"intermediate wire '{g1_out}' that FM cannot trace to RTL. "
+                                f"Apply E4d (rtl_diff_analyzer.md §E2.5/E4d).")
+                            overall_pass = False
+
     # Check 10: Reset signal must be present in chain when reset_baked_in_d_input=True.
     # When the DFF has no RN/R reset pin and reset is sync, the reset must be baked
     # into the D-input combinational chain. If the reset signal is missing from
