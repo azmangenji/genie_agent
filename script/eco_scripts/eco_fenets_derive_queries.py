@@ -77,15 +77,28 @@ def derive(rtl_diff, tile=''):
 
         # Cat 1: wire_swap / and_term tokens + the rewired target_register
         if ct in ('wire_swap', 'and_term'):
+            # When instances[] lists multiple instance names (e.g. DCQARB + DCQARB1),
+            # generate one query per instance so FM resolves the signal in each
+            # module separately. Without this, only the primary scope is queried
+            # and the second instance's gate-level net name is never resolved.
+            instances = c.get('instances') or []
             for tok_field in ('old_token', 'new_token', 'target_register'):
                 t = c.get(tok_field)
-                if t:
-                    # target_register is the DFF/signal whose driver gets rewired —
-                    # often lives at a different scope (the DFF's own module). Use
-                    # the change's `target_scope` if present, else fall back to scope.
-                    s = c.get('target_scope') if tok_field == 'target_register' else scope
+                if not t:
+                    continue
+                s = c.get('target_scope') if tok_field == 'target_register' else scope
+                base_scope = s or scope
+                # Build list of scopes to query: primary scope + any extra instances
+                scopes_to_query = [base_scope]
+                if instances and len(instances) > 1 and tok_field != 'target_register':
+                    # Add sibling instance scopes by replacing the last path component
+                    parent = '/'.join(base_scope.split('/')[:-1]) if '/' in base_scope else ''
+                    for inst in instances[1:]:
+                        sibling_scope = f"{parent}/{inst}" if parent else inst
+                        scopes_to_query.append(sibling_scope)
+                for sc in scopes_to_query:
                     out.append({
-                        'net_path': _abs_path(tile, s or scope, t),
+                        'net_path': _abs_path(tile, sc, t),
                         'signal':   t,
                         'category': 1,
                         'source':   f'changes[{idx}].{tok_field}',
@@ -123,16 +136,23 @@ def derive(rtl_diff, tile=''):
                         'source':   f'changes[{idx}].chain[{g.get("seq", "?")}]',
                     })
 
-        # Cat 5: port_promotion
+        # Cat 5: port_promotion — one query per instance when instances[] present
         if ct == 'port_promotion':
             s = c.get('signal_name') or c.get('new_token')
             if s:
-                out.append({
-                    'net_path': _abs_path(tile, scope, s),
-                    'signal':   s,
-                    'category': 5,
-                    'source':   f'changes[{idx}].port_promotion',
-                })
+                pp_instances = c.get('instances') or []
+                pp_scopes = [scope]
+                if len(pp_instances) > 1:
+                    parent = '/'.join(scope.split('/')[:-1]) if '/' in scope else ''
+                    for inst in pp_instances[1:]:
+                        pp_scopes.append(f"{parent}/{inst}" if parent else inst)
+                for sc in pp_scopes:
+                    out.append({
+                        'net_path': _abs_path(tile, sc, s),
+                        'signal':   s,
+                        'category': 5,
+                        'source':   f'changes[{idx}].port_promotion',
+                    })
 
         # Cat 6: Mode I — UNCONNECTED rename target
         unc = c.get('original_unconnected_net') or c.get('d_input_net') or ''
@@ -204,6 +224,23 @@ def derive(rtl_diff, tile=''):
                     'sibling_module': sib,
                     'source':         f'changes[{idx}].mode_s_anchor.{wire_field}',
                 })
+
+        # Cat 9: condition_inputs_to_query — signals in condition gate chains that
+        # the rtl_diff_analyzer couldn't resolve to gate-level names (marked as
+        # PENDING_FM_RESOLUTION). FM find_equivalent_nets resolves them per stage.
+        # Without Cat 9, the studier uses wrong fallback signals (GAP-2 in 9899).
+        for ci in (c.get('condition_inputs_to_query') or []):
+            sig   = ci.get('signal', '')
+            cscope = ci.get('scope', '') or scope
+            if not sig or sig.startswith(_SKIP_INPUT_PREFIXES):
+                continue
+            out.append({
+                'net_path':                  _abs_path(tile, cscope, sig),
+                'signal':                    sig,
+                'category':                  9,
+                'condition_input_resolution': True,
+                'source':                    f'changes[{idx}].condition_inputs_to_query',
+            })
 
     # Deduplicate by net_path (preserve first source)
     seen, unique = set(), []
