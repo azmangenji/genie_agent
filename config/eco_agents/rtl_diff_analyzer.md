@@ -63,6 +63,9 @@ When a `wire_swap` diff adds an extra `& ~<NewSignal>` term to an existing expre
 
 Classify as `and_term` (NOT `wire_swap`). `old_token` = the final output net of the existing expression, `new_token` = `<NewSignal>` (the new term being added). The applier will: find the existing gate driving the output net, insert a new AND/NAND gate in series with `~<NewSignal>` as additional input.
 
+**CRITICAL — `and_term` vs `wire_swap + intermediate_net_insertion`:**  
+`and_term` is ONLY for simple single-gate gating (one new term added to one existing expression). If the RTL diff shows **multiple new conditions prepended before the old expression as a default fallback** (priority chain pattern: `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expr>`), this is **NOT `and_term`** — it MUST be classified as `wire_swap` with `fallback_strategy: "intermediate_net_insertion"`. The key test: if the `new_condition_gate_chain` requires MUX2 gates, it is `wire_swap + intermediate_net_insertion`, not `and_term`. Misclassifying as `and_term` causes the studier to do a simple gate modification and skip the full MUX cascade — the ECO logic is never applied.
+
 For each change record:
 ```json
 {

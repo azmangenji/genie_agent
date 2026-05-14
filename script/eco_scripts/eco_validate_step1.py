@@ -858,6 +858,24 @@ def main():
                 )
                 overall_pass = False
 
+    # Check: and_term misclassified — should be wire_swap + intermediate_net_insertion
+    # When an and_term change has a new_condition_gate_chain containing MUX2 gates,
+    # the agent misclassified a priority chain as a simple gating term. This causes
+    # the studier to do a simple gate modification and skip the full MUX cascade.
+    and_term_mux_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'and_term':
+            continue
+        chain = c.get('new_condition_gate_chain') or []
+        has_mux = any(g.get('gate_function', '').upper().startswith('MUX') for g in chain)
+        if has_mux:
+            and_term_mux_issues.append(
+                f"changes[{idx}]: change_type='and_term' but new_condition_gate_chain "
+                f"contains MUX2 gate(s) — this is a priority chain, NOT a simple and_term. "
+                f"Must be classified as 'wire_swap' with fallback_strategy='intermediate_net_insertion'. "
+                f"Studier will do simple gate modification and skip the MUX cascade.")
+            overall_pass = False
+
     # Check: PENDING_FM_RESOLUTION on gate-structural inputs (inverted / comparison)
     # These should be decomposed as INV/NAND/AND gates, not marked as PENDING.
     # PENDING is only valid for raw RTL signal names that V3 grep cannot find.
@@ -918,6 +936,8 @@ def main():
         'chain_compactness_issues':      chain_compact_issues,
         'reset_inclusion_issue_count':   len(reset_inclusion_issues),
         'reset_inclusion_issues':        reset_inclusion_issues,
+        'and_term_mux_issue_count':        len(and_term_mux_issues),
+        'and_term_mux_issues':             and_term_mux_issues,
         'pending_structural_issue_count': len(pending_structural_issues),
         'pending_structural_issues':      pending_structural_issues,
         'overall_pass':          overall_pass,
