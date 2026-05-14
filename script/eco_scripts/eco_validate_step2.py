@@ -56,6 +56,7 @@ def main():
     p.add_argument('--raw-rpts',   nargs='+', default=[], help='glob(s) for raw FM rpts')
     p.add_argument('--rename-map', required=False, default='', help='fenets_rename_map.json')
     p.add_argument('--candidates', required=False, default='', help='eco_bridge_candidates.json (optional)')
+    p.add_argument('--rtl-diff',   required=False, default='', help='eco_rtl_diff.json — required for C9 Mode H recovery check')
     p.add_argument('--output',     required=True)
     args = p.parse_args()
 
@@ -280,6 +281,101 @@ def main():
                     f"the logic in one of the stages → FM mismatch. Studier MUST "
                     f"pick a single-polarity reference (preferably the wire/output "
                     f"form, not an inverter input) per stage.")
+
+    # C9: Mode H recovery — for every condition gate input that FM-036'd in PP/Route
+    # but was resolved in Synth, verify that a fallback query using the Synth driver
+    # cell name was submitted and returned equivalence data.
+    #
+    # Background: signals like phfnn_2405075 / N2408127 are synthesis intermediates
+    # that don't survive to PP/Route as named wires. When FM-036 is returned for
+    # these in PP/Route, eco_fenets_runner MUST submit a fallback query using the
+    # Synth driver cell name (e.g. ARB/CMDARB/A2304450) to find the PP/Route
+    # equivalent output net. Without this, eco_netlist_studier has no per-stage data
+    # for the condition gate inputs → falls back to wrong signal → FM FAIL.
+    if args.rtl_diff and Path(args.rtl_diff).is_file() and args.rename_map and Path(args.rename_map).is_file():
+        rtl_diff = _load_json(args.rtl_diff) or {}
+        rmap     = _load_json(args.rename_map) or {}
+        rmap_keys = set(k for k in rmap.keys() if k != '_metadata')
+
+        # Collect all condition_inputs_to_query from rtl_diff changes
+        cond_inputs = []
+        for idx, c in enumerate(rtl_diff.get('changes', [])):
+            for ci in (c.get('condition_inputs_to_query') or []):
+                cond_inputs.append({
+                    'signal':    ci.get('signal', ''),
+                    'net_path':  ci.get('net_path', ''),
+                    'scope':     ci.get('scope', ''),
+                    'change_idx': idx,
+                })
+
+        for ci in cond_inputs:
+            signal = ci.get('signal', '')
+            scope  = ci.get('scope', '')
+            # Build net_path from scope+signal if net_path not explicitly set
+            np_q = ci.get('net_path', '') or (f"{scope}/{signal}" if scope and signal else signal)
+            if not np_q or not signal:
+                continue
+
+            # Check if Synth resolved it (present in rename map with a non-echo value)
+            rmap_entry = rmap.get(np_q) or {}
+            synth_val  = rmap_entry.get('Synthesize', '') if isinstance(rmap_entry, dict) else ''
+            pp_val     = rmap_entry.get('PrePlace', '')   if isinstance(rmap_entry, dict) else ''
+            rt_val     = rmap_entry.get('Route', '')      if isinstance(rmap_entry, dict) else ''
+
+            def _is_unresolved(v, sig):
+                """True when FM returned no usable equivalence for this stage."""
+                if not v: return True
+                if v == sig: return True
+                if 'FM-036' in v or 'FALLBACK' in v: return True
+                return False
+
+            synth_resolved = synth_val and not _is_unresolved(synth_val, signal)
+            pp_fm036       = _is_unresolved(pp_val, signal)
+            rt_fm036       = _is_unresolved(rt_val, signal)
+
+            if not synth_resolved:
+                continue  # Synth also failed — not a Mode H case
+            if not (pp_fm036 or rt_fm036):
+                continue  # PP and Route both resolved — no issue
+
+            # Synth resolved but PP/Route FM-036 — check for fallback query
+            # A fallback query uses the Synth driver cell name as the net_path.
+            # It should appear in queries.json with category=9 (mode_H_recovery)
+            # or as a separate entry whose net_path contains the Synth cell name.
+            # Extract the net name from the Synth resolved path (last component)
+            # e.g. 'ARB/CMDARB/phfnn_2405075' → net='phfnn_2405075'
+            # The driver cell must be found by grepping PreEco Synth netlist for
+            # what drives this net (e.g. grep ".ZN ( phfnn_2405075 )" → cell name)
+            synth_net  = synth_val.rsplit('/', 1)[-1] if '/' in synth_val else synth_val
+            synth_cell = synth_net  # use net name as proxy for fallback query
+
+            fallback_found = False
+            if synth_cell:
+                fallback_found = any(
+                    q.get('net_path', '').endswith(synth_cell) or
+                    q.get('mode_H_recovery') is True
+                    for q in queries
+                )
+                # Also check rename_map for a mode_H_recovery entry
+                if not fallback_found:
+                    mh_key = f"{ci.get('scope','')}/{synth_cell}" if synth_cell else ''
+                    fallback_found = mh_key in rmap_keys or any(
+                        isinstance(v, dict) and v.get('mode_H_recovery')
+                        for v in rmap.values()
+                        if isinstance(v, dict)
+                    )
+
+            if not fallback_found:
+                stages_missing = []
+                if pp_fm036: stages_missing.append('PrePlace')
+                if rt_fm036: stages_missing.append('Route')
+                issues.append(
+                    f"C9: Mode H recovery MISSING — condition gate input {signal!r} "
+                    f"(net_path={np_q!r}) resolved in Synth ({synth_val!r}) but "
+                    f"FM-036 in {stages_missing}. eco_fenets_runner MUST submit a "
+                    f"fallback query using Synth driver cell {synth_cell!r} for "
+                    f"{stages_missing} stages. Without this, studier has no per-stage "
+                    f"data and will substitute a wrong signal (GAP-2 in 9899 run).")
 
     out = {
         'queries':            args.queries,

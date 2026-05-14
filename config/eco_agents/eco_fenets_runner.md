@@ -332,25 +332,81 @@ ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step2_fenets.rpt
 ```
 If any is missing — copy before exiting.
 
-## STEP F — Run Step 2 validator (BLOCKING — orchestrator gates Step 3 on this)
+## STEP F — Run Step 2 validator with self-healing loop (BLOCKING — gates Step 3)
 
-**MANDATORY. NOT OPTIONAL.** STUDY_ORCHESTRATOR explicitly asserts the validator output exists AND `overall_pass: true` before spawning Step 3. If you skip this, the orchestrator BLOCKS Step 3 and re-spawns you to do it. If you skip again, the round terminates with `phase_a_status: BLOCKED_STEP2_VALIDATOR`.
+**MANDATORY. NOT OPTIONAL.** eco_fenets_runner owns the full validator fix loop internally. Do NOT exit and push failures to the orchestrator — fix them here, re-run FM, update the rename map, and re-run the validator until it passes. Only exit when `overall_pass: true` OR max iterations exhausted.
 
-Skipping sanitize + validator is a known failure mode under context pressure (silent shortcut). Step 3 then runs on incomplete fenets data and downstream symptoms cost hours to diagnose. The validator gate now fires at orchestrator level, not just here — but you SHOULD still run it before exiting so the orchestrator's gate finds a passing artifact.
+**Max iterations: 3.** Each iteration submits one targeted FM re-query batch and updates the rename map. If still failing after 3 iterations, exit with the failure JSON so STUDY_ORCHESTRATOR can terminate the phase with `phase_a_status: BLOCKED_STEP2_VALIDATOR`.
+
+### STEP F-1 — Run validator
 
 ```bash
 python3 script/eco_scripts/eco_validate_step2.py \
     --queries     data/<TAG>_eco_fenets_queries.json \
+    --queries-raw data/<TAG>_eco_fenets_queries_raw.json \
     --raw-rpts    data/<FENETS_TAG>_find_equivalent_nets_raw*.rpt \
     --rename-map  data/<TAG>_eco_fenets_rename_map.json \
+    --rtl-diff    data/<TAG>_eco_rtl_diff.json \
     --output      data/<TAG>_eco_validate_step2.json
 ```
 
-**Exit semantics:**
-- Validator exit 0 → write `data/<TAG>_eco_validate_step2.json` with `overall_pass: true` → eco_fenets_runner exits successfully → STUDY_ORCHESTRATOR proceeds to Step 3.
-- Validator exit 1 → JSON has `overall_pass: false` + issues list. eco_fenets_runner MUST exit with the failure visible in its output RPT. STUDY_ORCHESTRATOR's gate will catch the failure and either re-spawn fenets or terminate the phase.
+- Exit 0 → `overall_pass: true` → proceed to STEP F-5 (write output and exit)
+- Exit 1 → read issues list → enter STEP F-2 fix loop
 
-Validator confirms every Cat 8 Mode-S anchor query was actually submitted to FM and returned equivalence data (not FM-036 / Unknown name). On fail, re-derive queries with `mode_s_anchor` populated and re-run fenets.
+### STEP F-2 — Classify issues and build fix batch
+
+Read `data/<TAG>_eco_validate_step2.json` issues list. For each issue, build a targeted re-query:
+
+**C9 — Mode H recovery (condition gate input FM-036 in PP/Route):**
+- Extract: `signal`, Synth resolved net (e.g. `phfnn_2405075`), scope
+- In the PreEco Synth netlist, find the driver cell of the resolved net:
+  ```bash
+  zgrep -n "\.ZN ( <synth_net> )\|\.Z ( <synth_net> )\|\.Q ( <synth_net> )" \
+      data/PreEco/Synthesize.v.gz | head -3
+  ```
+- Extract the cell instance name from the grep result
+- Build fallback query: `<scope>/<driver_cell_instance>` for PP and Route stages
+- Add to re-query batch with `category: 9, mode_H_recovery: true`
+
+**C2 / C7 — Cat 8 anchor FM-036:**
+- Re-derive queries with corrected `mode_s_anchor.fm_scope` (fix instance path)
+- Add to re-query batch
+
+**C4 / C5 — Sanitize / coverage gaps:**
+- Re-run `eco_fenets_derive_queries.py` + `eco_fenets_sanitize_queries.py` with corrected inputs
+- Re-submit full query batch
+
+### STEP F-3 — Re-submit FM for fix batch (BLOCKING)
+
+```bash
+python3 script/genie_cli.py \
+  -i "find equivalent nets at <REF_DIR> for <TILE> netName:<net1>,<net2>,..." \
+  --execute --xterm
+```
+
+Poll every 5 minutes until complete. Write raw rpt:
+```
+<fix_fenets_tag>_find_equivalent_nets_raw_fix<N>.rpt
+```
+Copy to `AI_ECO_FLOW_DIR/`. Verify copy exists.
+
+### STEP F-4 — Rebuild rename map and re-run validator
+
+```bash
+python3 script/eco_scripts/eco_fenets_rename_map.py \
+    --rtl-diff data/<TAG>_eco_rtl_diff.json \
+    --raw-dir  data/ \
+    --tag      <TAG> \
+    --tile     <TILE> \
+    --output   data/<TAG>_eco_fenets_rename_map.json
+```
+
+Then re-run validator (STEP F-1). If still failing and iterations < 3 → go back to STEP F-2. If iterations = 3 and still failing → STEP F-5 with failure.
+
+### STEP F-5 — Exit
+
+- **Pass:** `overall_pass: true` → eco_fenets_runner exits successfully → STUDY_ORCHESTRATOR proceeds to Step 3.
+- **Fail after 3 iterations:** exit with `overall_pass: false` + full issues list. STUDY_ORCHESTRATOR terminates phase with `phase_a_status: BLOCKED_STEP2_VALIDATOR`.
 
 ---
 
