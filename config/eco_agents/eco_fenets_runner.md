@@ -347,8 +347,11 @@ python3 script/eco_scripts/eco_validate_step2.py \
     --raw-rpts    data/<FENETS_TAG>_find_equivalent_nets_raw*.rpt \
     --rename-map  data/<TAG>_eco_fenets_rename_map.json \
     --rtl-diff    data/<TAG>_eco_rtl_diff.json \
+    --ref-dir     <REF_DIR> \
     --output      data/<TAG>_eco_validate_step2.json
 ```
+
+`--ref-dir` is REQUIRED for the C6 preserved-name auto-classification (greps PreEco/PrePlace.v.gz + PreEco/Route.v.gz to verify echo'd signals are real preserved names, not FM failures). Without it, C6 over-fires on legitimate bus signals like `BeqCtrlPeSrc_*` or `RegRdbRspCredits` that survive P&R unchanged.
 
 - Exit 0 → `overall_pass: true` → proceed to STEP F-5 (write output and exit)
 - Exit 1 → read issues list → enter STEP F-2 fix loop
