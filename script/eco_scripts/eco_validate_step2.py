@@ -25,7 +25,7 @@ Usage:
         --candidates  data/<TAG>_eco_bridge_candidates.json   (optional) \\
         --output      data/<TAG>_eco_validate_step2.json
 """
-import argparse, glob, json, re, sys
+import argparse, glob, json, re, subprocess, sys
 from pathlib import Path
 
 
@@ -57,6 +57,7 @@ def main():
     p.add_argument('--rename-map', required=False, default='', help='fenets_rename_map.json')
     p.add_argument('--candidates', required=False, default='', help='eco_bridge_candidates.json (optional)')
     p.add_argument('--rtl-diff',   required=False, default='', help='eco_rtl_diff.json — required for C9 Mode H recovery check')
+    p.add_argument('--ref-dir',    required=False, default='', help='REF_DIR — used by C6 to verify preserved bus names exist as real wires in PP/Route netlists (avoids false-positive echo-fallback flags)')
     p.add_argument('--output',     required=True)
     args = p.parse_args()
 
@@ -186,6 +187,36 @@ def main():
                             expected_echo.add(sig)
             real_fallbacks = [sig for sig in echo_fallbacks
                               if sig.rsplit('/', 1)[-1] not in expected_echo]
+
+            # Auto-classify preserved-name echoes: if the bare signal name
+            # exists as a wire/port in BOTH PP and Route netlists, the echo
+            # is legitimate (P&R preserved the name unchanged — no FM-036).
+            # Only flag echoes that are genuinely missing in PP or Route.
+            # Closes the false-positive class observed in run 20260514070341
+            # where 5 of 6 C6 entries (BeqCtrlPeSrc bits, REG_UmcCfgEco_1_)
+            # were preserved-name bus signals, not FM failures.
+            if real_fallbacks and args.ref_dir:
+                pp_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'PrePlace.v.gz'
+                rt_gz = Path(args.ref_dir) / 'data' / 'PreEco' / 'Route.v.gz'
+                accepted = set()
+                if pp_gz.is_file() and rt_gz.is_file():
+                    for sig in real_fallbacks:
+                        bare = sig.rsplit('/', 1)[-1]
+                        try:
+                            r_pp = subprocess.run(
+                                f"zgrep -c '\\b{re.escape(bare)}\\b' '{pp_gz}'",
+                                shell=True, capture_output=True, text=True, timeout=60)
+                            r_rt = subprocess.run(
+                                f"zgrep -c '\\b{re.escape(bare)}\\b' '{rt_gz}'",
+                                shell=True, capture_output=True, text=True, timeout=60)
+                            n_pp = int((r_pp.stdout or '0').strip() or '0')
+                            n_rt = int((r_rt.stdout or '0').strip() or '0')
+                        except Exception:
+                            n_pp, n_rt = 0, 0
+                        if n_pp > 0 and n_rt > 0:
+                            accepted.add(sig)
+                real_fallbacks = [s for s in real_fallbacks if s not in accepted]
+
             if real_fallbacks:
                 issues.append(
                     f"C6: rename map echo-fallback detected for {len(real_fallbacks)} signal(s): "
