@@ -236,6 +236,69 @@ def main():
                 f"physical wires per stage on apparently-unrelated DFFs. The "
                 f"applier MUST apply the same edit to all 3 stages or HARD ERROR.")
 
+    # ── 11. GAP-2: PENDING_STAGE_RESOLUTION wrong-signal substitution check ─────
+    # When a condition gate input was PENDING_STAGE_RESOLUTION, the applier must
+    # mark it confirmed: false and SKIP — never substitute a signal from a different
+    # change type. Detect when a resolved net name matches a signal from a
+    # port_declaration or port_promotion entry (wrong change type substitution).
+    port_decl_names = set()
+    for s in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(s, []):
+            if e.get('change_type') in ('port_declaration', 'new_port', 'port_promotion'):
+                sig = e.get('signal_name') or e.get('port_name') or e.get('new_token', '')
+                if sig:
+                    port_decl_names.add(sig)
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in applied.get(stage, []):
+            if e.get('status') not in ('APPLIED', 'INSERTED'):
+                continue
+            if e.get('change_type') not in ('new_logic_gate', 'condition_gate', 'new_logic'):
+                continue
+            reason = e.get('reason', '')
+            if 'PENDING_STAGE_RESOLUTION' not in reason:
+                continue
+            # Check if resolved net name appears in port_decl_names
+            resolved = e.get('resolved_net') or ''
+            if not resolved:
+                # Try extracting from reason string
+                import re as _re
+                m = _re.search(r'resolved[_\s]+(?:to|net)[=:\s]+[\'"]?(\w+)[\'"]?', reason, _re.I)
+                if m:
+                    resolved = m.group(1)
+            if resolved and resolved in port_decl_names:
+                inst = e.get('instance_name') or e.get('cell_name') or '?'
+                issues.append(
+                    f"HIGH: GAP-2 — {stage} condition gate {inst!r} resolved "
+                    f"PENDING_STAGE_RESOLUTION to {resolved!r} which is a port_declaration "
+                    f"signal from a different change type. Applier substituted wrong signal. "
+                    f"Must mark confirmed: false and SKIP when no valid Mode H recovery found.")
+
+    # ── 12. GAP-4: port_declaration applied in Synth must exist in PP/Route ────
+    # Every new port added in Synthesize must also be declared in PrePlace and Route.
+    # Silently missing port decls in PP/Route cause FE-LINK-7 ABORT or SVR-8.
+    synth_port_decls = {}  # signal_name → entry
+    for e in applied.get('Synthesize', []):
+        if e.get('change_type') in ('port_declaration', 'new_port') \
+                and e.get('status') in ('APPLIED', 'INSERTED'):
+            sig = e.get('signal_name') or e.get('port_name') or e.get('instance_name', '')
+            if sig:
+                synth_port_decls[sig] = e
+    for sig in synth_port_decls:
+        for stage in ('PrePlace', 'Route'):
+            found = any(
+                (e.get('signal_name') == sig or e.get('port_name') == sig or
+                 e.get('instance_name') == sig) and
+                e.get('status') in ('APPLIED', 'INSERTED', 'ALREADY_APPLIED')
+                for e in applied.get(stage, [])
+                if e.get('change_type') in ('port_declaration', 'new_port')
+            )
+            if not found:
+                issues.append(
+                    f"HIGH: GAP-4 — port_declaration {sig!r} APPLIED in Synthesize "
+                    f"but missing in {stage}. Gates using this port in {stage} will "
+                    f"trigger FE-LINK-7 ABORT or SVR-8 in FM. eco_passes_2_4.py must "
+                    f"apply port_declaration entries to all 3 stages.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': tag, 'round': args.round, 'passed': passed, 'issues': issues}

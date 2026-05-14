@@ -229,15 +229,26 @@ def main():
             if out:
                 new_port_nets.add(out)
 
-    # Build set of nets referenced by Pass 4 rewires (new_net of rewire entries).
-    # If a gate's output_net is used as a rewire target, that net will be implicitly
-    # declared by the rewire — do NOT add explicit wire_decl (prevents SVR-9 F2 conflict).
+    # Build set of nets that will be implicitly declared by other passes in this
+    # batch — do NOT add explicit wire_decl for these (prevents FM-599 duplicate).
+    # Sources of implicit wire creation:
+    #   - Pass 4 rewires: .PORT(new_net) hookup creates the wire implicitly
+    #   - Pass 3 port_connections: .PORT(net) connection in parent module
+    # GAP-4 fix: also collect port_connection nets — a port connection in the
+    # same batch creates an implicit wire before the explicit wire_decl can land,
+    # causing FM-599 'Duplicate wire declaration' (observed in 9899 Route CMDARB
+    # with n_eco_9899_new_pri_chain: rewire + port_connection both in same batch).
     rewire_new_nets = set()
     for e in entries:
         if e.get('change_type') == 'rewire':
             new_net = e.get('new_net', '')
             if new_net:
                 rewire_new_nets.add(new_net)
+        elif e.get('change_type') in ('port_connection', 'port_promotion'):
+            # Port connections create implicit wires for the connected net
+            net = e.get('net_name') or e.get('flat_net_name') or e.get('new_token', '')
+            if net and not net.startswith("1'b"):
+                rewire_new_nets.add(net)
 
     # Track instance names already queued in this Perl batch (dedup guard for RISK 1.1).
     queued_instances = set()

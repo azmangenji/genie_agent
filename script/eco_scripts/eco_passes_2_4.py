@@ -845,7 +845,9 @@ def main():
             continue
         ct = e.get('change_type', '')
 
-        if ct in ('port_declaration', 'port_promotion'):
+        if ct in ('port_declaration', 'port_promotion', 'new_port'):
+            # GAP-4: new_port must also be applied in PP/Route — previously silently
+            # dropped causing FE-LINK-7 ABORT (SplitActInProgOthDcq missing in PP/Route)
             lines, st, reason = apply_port_declaration(lines, e, stage=args.stage)
         elif ct == 'port_connection':
             lines, st, reason = apply_port_connection(lines, e, gz_path=posteco, stage=args.stage)

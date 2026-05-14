@@ -1444,6 +1444,47 @@ def main():
                         f"Re-strategy to 'bridge_port' (default) and emit full "
                         f"bridge plumbing.")
 
+    # ── GAP-5: [CELL_TYPE_STAGE_VALID] — cell type must exist in per-stage PreEco netlist
+    # Prevents FE-LINK-2 ABORT caused by studier picking a Synth-only cell variant
+    # (e.g. MUX2D1AMDBWP136P5M156H3P48CPDLVT) that doesn't exist in PP/Route library.
+    # Proxy: if the cell type appears 0 times in the PreEco stage netlist, it's not
+    # in the library FM links against for that stage.
+    _stage_gz = {
+        'Synthesize': os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz'),
+        'PrePlace':   os.path.join(args.ref_dir, 'data', 'PreEco', 'PrePlace.v.gz'),
+        'Route':      os.path.join(args.ref_dir, 'data', 'PreEco', 'Route.v.gz'),
+    }
+    _gate_types = ('new_logic_gate', 'new_logic_dff', 'new_logic', 'condition_gate')
+    _checked_ct = {}  # (stage, cell_type) → count
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        gz = _stage_gz.get(stage, '')
+        if not gz or not Path(gz).is_file():
+            continue
+        for e in study.get(stage, []):
+            if e.get('change_type') not in _gate_types:
+                continue
+            ct = e.get('cell_type', '') or e.get('preeco_cell_type', '')
+            if not ct:
+                continue
+            key = (stage, ct)
+            if key not in _checked_ct:
+                try:
+                    r = subprocess.run(
+                        f'zgrep -c "{ct}" {gz}',
+                        shell=True, capture_output=True, text=True, timeout=30
+                    )
+                    _checked_ct[key] = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
+                except Exception:
+                    _checked_ct[key] = -1
+            count = _checked_ct[key]
+            if count == 0:
+                inst = e.get('instance_name') or e.get('cell_name') or '?'
+                issues.append(
+                    f"[CELL_TYPE_STAGE_VALID] {stage}: cell_type {ct!r} for {inst!r} "
+                    f"has 0 occurrences in PreEco {stage} netlist — not in FM library "
+                    f"for this stage → FE-LINK-2 ABORT. Studier must pick a cell type "
+                    f"that exists in the per-stage PreEco netlist (GAP-5).")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

@@ -1523,6 +1523,40 @@ def main():
     results['invalid_wire_decl_syntax'] = 'PASS' if not fails else 'FAIL'
     all_fails.extend(fails)
 
+    # Check 22 — GAP-3: no ECO functional gate with constant input (1'b0 or 1'b1)
+    # A NOR3 with .A3(1'b0) is functionally a NOR2 — constant input disables gating.
+    # DFF scan pins (SE, SI, RN etc.) are exempt — constants are valid there.
+    _DFF_CONST_PINS = {'SE', 'SI', 'RN', 'R', 'SN', 'CK', 'CP', 'CDN', 'SDN'}
+    fails = []
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        gz = os.path.join(args.ref_dir, 'data', 'PostEco', f'{stage}.v.gz')
+        if not os.path.exists(gz):
+            continue
+        try:
+            import subprocess as _sp
+            r = _sp.run(
+                f"zcat {gz} | grep -n \".A.*( 1'b[01] )\" ",
+                shell=True, capture_output=True, text=True, timeout=60
+            )
+            for line in (r.stdout or '').splitlines():
+                if 'eco_' not in line.lower():
+                    continue  # only ECO-inserted cells
+                pin_m = re.search(r'\.([A-Z][A-Z0-9]*)\s*\(\s*1\'b[01]\s*\)', line)
+                if not pin_m:
+                    continue
+                pin = pin_m.group(1)
+                if pin in _DFF_CONST_PINS:
+                    continue
+                lineno = line.split(':')[0]
+                fails.append(
+                    f"[NO_CONSTANT_FUNCTIONAL_INPUTS] {stage}:{lineno} — "
+                    f"ECO gate pin .{pin}(1'b0/1) constant on functional input. "
+                    f"Gate partially disabled — downgrade to fewer-input cell (NOR3→NOR2).")
+        except Exception:
+            pass
+    results['no_constant_functional_inputs'] = 'PASS' if not fails else 'FAIL'
+    all_fails.extend(fails)
+
     passed = len(all_fails) == 0
 
     # ── Write JSON ────────────────────────────────────────────────────────────

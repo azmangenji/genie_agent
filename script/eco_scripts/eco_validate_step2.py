@@ -144,6 +144,18 @@ def main():
     # entry has IDENTICAL strings across all 3 stages (Synth==PP==Route) is suspicious:
     # likely the rename map fell back to "use input name as-is" because FM returned no
     # equivalence data. True stage-stable signals exist but should be the minority.
+    # GAP-1 fix: skip signals that are new_port/port_promotion — they legitimately
+    # have no FM equivalence in PreEco (the port doesn't exist yet), so echo-fallback
+    # is the correct and expected behavior for them.
+    new_port_signal_names = set()
+    if args.rtl_diff and Path(args.rtl_diff).is_file():
+        _rtl = _load_json(args.rtl_diff) or {}
+        for c in _rtl.get('changes', []):
+            if c.get('change_type') in ('new_port', 'port_promotion', 'port_declaration'):
+                sig = c.get('new_token') or c.get('signal_name') or c.get('port_name', '')
+                if sig:
+                    new_port_signal_names.add(sig)
+
     if args.rename_map and Path(args.rename_map).is_file():
         rmap = _load_json(args.rename_map) or {}
         echo_fallbacks = []
@@ -159,12 +171,21 @@ def main():
             if syn == pp == rt == tail and '/' not in syn:
                 echo_fallbacks.append(sig_key)
         if echo_fallbacks:
-            # Filter out known internal-wire signals that FM cannot resolve (expected echo-fallback)
-            # These are handled by eco_netlist_studier via direct gate-level grep
-            known_internal = {'REG_UmcCfgEco_1_', 'RegRdbRspCredits', 'n_eco_9868_mux_sel',
-                              'n_eco_9868_mux_sel', 'BeqCtrlPeSrc'}
+            # Build expected_echo set from rtl_diff — signals that legitimately
+            # have no FM equivalence and echo-fallback is correct behavior:
+            # - new_port / port_promotion (already in new_port_signal_names)
+            # - condition_inputs_to_query (Mode H signals, FM-036 in PP/Route expected)
+            # - any signal explicitly marked PENDING_FM_RESOLUTION in gate chains
+            expected_echo = set(new_port_signal_names)
+            if args.rtl_diff and Path(args.rtl_diff).is_file():
+                _rtl2 = _load_json(args.rtl_diff) or {}
+                for c in _rtl2.get('changes', []):
+                    for ci in (c.get('condition_inputs_to_query') or []):
+                        sig = ci.get('signal', '')
+                        if sig:
+                            expected_echo.add(sig)
             real_fallbacks = [sig for sig in echo_fallbacks
-                              if sig.rsplit('/', 1)[-1] not in known_internal]
+                              if sig.rsplit('/', 1)[-1] not in expected_echo]
             if real_fallbacks:
                 issues.append(
                     f"C6: rename map echo-fallback detected for {len(real_fallbacks)} signal(s): "
