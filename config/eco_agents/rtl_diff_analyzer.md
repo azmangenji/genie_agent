@@ -850,6 +850,13 @@ Record as `new_condition_gate_chain` in the JSON — a flat array of all gates n
 
 **After decomposing all condition gates, verify each input signal — classify as resolvable or unresolvable:**
 
+**Two rules before running V1-V4 on any gate input:**
+
+- **`~X` → INV gate, not PENDING.** Negation is a structural operation — always emit `INV(X) → n_eco_<jira>_c<seq>_inv`. Only the base signal `X` goes through V1-V4. Never write `PENDING_FM_RESOLUTION:X_inv`.
+- **`X[N:M] == K` → bit-decompose into AND/INV/NAND gates, not PENDING.** Each individual bit signal goes through V1-V4. The comparison logic itself is handled as gates.
+
+`PENDING_FM_RESOLUTION` is only for a raw named RTL signal that V3 grep cannot find in PreEco (falls through to V4 FM resolution). It is never for gate operations.
+
 For every input net referenced in `new_condition_gate_chain`:
 
 ```python

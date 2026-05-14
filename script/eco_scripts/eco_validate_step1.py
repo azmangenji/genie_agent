@@ -858,6 +858,34 @@ def main():
                 )
                 overall_pass = False
 
+    # Check: PENDING_FM_RESOLUTION on gate-structural inputs (inverted / comparison)
+    # These should be decomposed as INV/NAND/AND gates, not marked as PENDING.
+    # PENDING is only valid for raw RTL signal names that V3 grep cannot find.
+    pending_structural_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        for fld in ('d_input_gate_chain', 'new_condition_gate_chain'):
+            for g in (c.get(fld) or []):
+                for inp in (g.get('inputs') or []):
+                    if not isinstance(inp, str) or not inp.startswith('PENDING_FM_RESOLUTION:'):
+                        continue
+                    raw = inp[len('PENDING_FM_RESOLUTION:'):]
+                    # Structural patterns that should never be PENDING:
+                    # ~X (inversion), X_inv (inversion suffix), X_neq/eq (comparison)
+                    structural = (
+                        raw.endswith('_inv') or
+                        raw.endswith('_inv1') or raw.endswith('_inv2') or
+                        raw.endswith('_neq01') or raw.endswith('_eq01') or
+                        'bit1_eq' in raw or 'bit0_eq' in raw or
+                        raw.endswith('_bar')
+                    )
+                    if structural:
+                        pending_structural_issues.append(
+                            f"changes[{idx}].{fld}[{g.get('seq','?')}]: "
+                            f"input {inp!r} looks like a gate operation (~X or X==K bit) "
+                            f"that should be decomposed as INV/NAND/AND gate, not PENDING_FM_RESOLUTION. "
+                            f"Only raw RTL signal names that fail V3 grep should be PENDING.")
+                        overall_pass = False
+
     out = {
         'rtl_diff': args.rtl_diff,
         'mux_select_issue_count': len(mux_select_issues),
@@ -889,6 +917,8 @@ def main():
         'chain_compactness_issues':      chain_compact_issues,
         'reset_inclusion_issue_count':   len(reset_inclusion_issues),
         'reset_inclusion_issues':        reset_inclusion_issues,
+        'pending_structural_issue_count': len(pending_structural_issues),
+        'pending_structural_issues':      pending_structural_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
