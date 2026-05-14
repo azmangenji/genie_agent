@@ -1358,6 +1358,92 @@ def main():
                         f"{type(ex).__name__}: {ex}"
                     )
 
+    # ── 28. ROUTE-MUST-BE-BRIDGE-PORT (G1) ─────────────────────────────────
+    # Route-stage scan wires are CTS-rebalanced, so neighbor_dff in Route is
+    # non-deterministic across PreEco/PostEco — FM cones diverge by chance
+    # of which CTS clone the picked wire lives on. Bridge_port creates a
+    # stable Verilog port boundary that survives CTS unchanged.
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            if not (e.get('mode_S_applied') or e.get('requires_scan_stitching')):
+                continue
+            inst = e.get('instance_name', '?')
+            strat = (e.get('mode_S_strategy_per_stage') or {})
+            rt = strat.get('Route')
+            if rt and rt not in ('bridge_port', 'BLOCKED_NO_RENAME_MAP'):
+                issues.append(
+                    f"HIGH/28-ROUTE-MUST-BE-BRIDGE-PORT: DFF {inst} entry in {stage} "
+                    f"declares mode_S_strategy_per_stage.Route={rt!r}. Route MUST be "
+                    f"'bridge_port' for any DFF requiring scan stitching — neighbor_dff "
+                    f"is non-deterministic in Route because CTS rebalances scan wires "
+                    f"into multiple clones. Re-pick strategy and emit full bridge "
+                    f"plumbing for Route via eco_emit_bridge_plumbing.py.")
+
+    # ── 29. PP-MUST-MATCH-ROUTE-WHEN-BRIDGE (G1) ──────────────────────────
+    # When Route uses bridge_port, PP must also use bridge_port. Mixing
+    # PP=neighbor_dff with Route=bridge_port produces stage-divergent cone
+    # reach — FM cones converge only by accident.
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            if not (e.get('mode_S_applied') or e.get('requires_scan_stitching')):
+                continue
+            inst = e.get('instance_name', '?')
+            strat = (e.get('mode_S_strategy_per_stage') or {})
+            pp = strat.get('PrePlace')
+            rt = strat.get('Route')
+            if rt == 'bridge_port' and pp and pp not in ('bridge_port', 'BLOCKED_NO_RENAME_MAP'):
+                issues.append(
+                    f"HIGH/29-PP-MUST-MATCH-ROUTE: DFF {inst} entry in {stage} has "
+                    f"Route='bridge_port' but PrePlace={pp!r}. Mixing strategies "
+                    f"across PP and Route causes stage-divergent cone reach into the "
+                    f"bridge buffer (the cone walks past the port boundary into the "
+                    f"parent and meets different physical wires per stage). PP MUST "
+                    f"also use 'bridge_port' when Route does.")
+
+    # ── 30. CONSTANT-ZERO-ONLY-WHEN-NO-DFFS (G2) ──────────────────────────
+    # Mode S constant_zero (SE/SI tied to 1'b0) is permitted ONLY when the
+    # host module has zero pre-existing DFFs in the same clock domain. Any
+    # other use creates a scan-isolated DFF island that fails FM via cross-
+    # DFF cone interference.
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            inst = e.get('instance_name', '?')
+            strat = (e.get('mode_S_strategy_per_stage') or {})
+            for chk in ('PrePlace', 'Route'):
+                if strat.get(chk) != 'constant_zero':
+                    continue
+                # constant_zero declared for PP/Route — verify host module has
+                # no pre-existing DFF in the same clock domain. The studier is
+                # expected to record host_module_dff_count_same_clock on the
+                # entry when constant_zero is the chosen fallback.
+                host_dff_count = e.get('host_module_dff_count_same_clock')
+                exempt_reason  = e.get('scan_stitching_skipped_reason', '')
+                if host_dff_count is None:
+                    issues.append(
+                        f"HIGH/30-CONSTANT-ZERO-UNJUSTIFIED: DFF {inst} entry in "
+                        f"{stage} declares mode_S_strategy_per_stage.{chk}="
+                        f"'constant_zero' but does NOT record "
+                        f"'host_module_dff_count_same_clock'. constant_zero is "
+                        f"forbidden unless the host module has zero pre-existing "
+                        f"DFFs in the same clock domain — the studier MUST count "
+                        f"them and record the count on the entry to justify "
+                        f"constant_zero, otherwise fall back to 'bridge_port'.")
+                elif int(host_dff_count) > 0 and 'wrp_clk' not in exempt_reason:
+                    issues.append(
+                        f"HIGH/30-CONSTANT-ZERO-FORBIDDEN: DFF {inst} entry in "
+                        f"{stage} uses constant_zero for {chk} but the host module "
+                        f"has {host_dff_count} pre-existing DFF(s) in the same "
+                        f"clock domain. constant_zero creates a scan-isolated "
+                        f"island that fails FM via cross-DFF cone interference. "
+                        f"Re-strategy to 'bridge_port' (default) and emit full "
+                        f"bridge plumbing.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

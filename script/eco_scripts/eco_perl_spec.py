@@ -566,6 +566,29 @@ def main():
                 })
                 statuses.append({'name': bus_inst, 'status':'QUEUED',
                                  'reason': f'bus_bit_replace {orig}→{named} on {bus_inst}.{ur.get("port_bus_name","")}'})
+            else:
+                # G4 — HARD ERROR instead of silent skip. Per-stage edit dispatch
+                # for unconnected_rewires MUST resolve to a bus_inst + original
+                # net for every stage. A missing per-stage value silently
+                # produces a stage-divergent netlist (one stage rewired, the
+                # others not) — FM sees cone divergence on apparently-unrelated
+                # DFFs because cone walk reaches the now-connected bit only in
+                # the rewired stage.
+                missing = []
+                if not bus_inst:        missing.append('port_bus_instance')
+                if not orig_this_stage: missing.append('original_unconnected')
+                statuses.append({
+                    'name':   ur.get('port_bus_instance','?') + '.' + ur.get('port_bus_name',''),
+                    'status': 'VERIFY_FAILED',
+                    'reason': f'unconnected_rewires: missing per-stage value(s) '
+                              f'{missing} for stage {args.stage} (named={named!r}, '
+                              f'orig={orig!r}). Studier MUST emit '
+                              f'original_per_stage and port_bus_instance_per_stage '
+                              f'for ALL 3 stages — silent skip produces stage-'
+                              f'divergent netlist that breaks FM. Step 4 validator '
+                              f'Check 10 catches this; pre-FM check structurally '
+                              f'verifies the rewire applied identically per stage.',
+                })
 
         # ── undo_instance — remove previously-inserted gate from PostEco ────────
         # Used when eco_fm_analyzer replaces a gate strategy (e.g., MUX2→OA12).

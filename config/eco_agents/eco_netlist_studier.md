@@ -298,23 +298,33 @@ This avoids widening the FM cone with a new INV AND preserves the polarity of th
 
 **GAP-14 — Wire declaration flag:** For each new gate whose output net does not exist in PreEco (`grep -cw "<output_net>" /tmp/eco_study_<TAG>_Synthesize.v` = 0), set `needs_explicit_wire_decl: true`. **Output net ONLY — never set for input nets.**
 
+### 0b-CLOCK — Per-stage CP wire selection (MANDATORY root-token verification)
+
+For every new DFF, when picking `port_connections_per_stage[<stage>].CP`, verify all 3 stages' wires trace to the **same root clock token** (e.g. `UCLK*`, `wrp_clk_*`, project-specific clock prefix). Procedure:
+
+1. Extract the clock token from each stage's chosen CP wire name. CTS-introduced wires (`ant_fix_net_*`, `FxCts_*`, `*_clkbuf_*`, `FxOptCts_*`) embed the root token within their name — extract it.
+2. If the Synth/PP/Route tokens disagree → re-pick. The new DFF must clock on the same logical clock across all 3 PostEco stages; mismatch = different clock domain in one stage = FM logical mismatch on the DFF.
+3. When a Route candidate is a CTS-introduced wire, trace through the antenna/CTS chain to confirm root match with PP. If trace is ambiguous, pick a different neighbor whose CP is a flat clock root or has a single deterministic CTS hop.
+
+Step 3 validator Check 27 (`HIGH/27-CLOCK-STAGE-MISMATCH`) HARD FAILs any new DFF whose per-stage CP wires do not share a common root clock token. The orchestrator's Step 3 gate blocks Phase A handoff on any HIGH issue.
+
 ### 0b-MODE-S — Scan stitching for new ECO DFFs in P&R (ASYMMETRIC, per-stage)
 
 A new DFF inserted in a clock domain that reaches the scan chain (anything reachable from `tile_dfx/scan_cntl`) must be **integrated with the existing scan signal network**. Tying SE/SI to `1'b0` in P&R isolates the new DFF from scan → FM sees "globally unmatched SE pin" → stage fails.
 
-**Engineer's actual pattern is ASYMMETRIC per stage** — not uniform Mode S in PP+Route. Pick the SIMPLEST strategy that works per stage:
+**Per-stage strategy table:**
 
-| Stage | Strategy default | When | Action |
-|---|---|---|---|
-| Synthesize | `constant_zero` | Always | `SE=1'b0`, `SI=1'b0` (RTL has no scan pins) |
-| PrePlace | `neighbor_dff` | Host module already has DFFs whose SE/SI net we can borrow | Pick a nearby DFF's `.SI(<X>)` and `.SE(<Y>)`, copy those nets verbatim |
-| PrePlace | `bridge_port` | Top-level module with no good neighbor (e.g. umccmd directly contains submodule instantiations, few flat DFFs) | Add Mode S bridge port + drive at parent (see below) |
-| Route | `neighbor_dff` | Same — host module has DFFs with valid Route-stage SE/SI we can copy | Pick a nearby DFF's nets per Route stage |
-| Route | `bridge_port` | Same fallback | Mode S bridge with parent-side driver |
+| Stage | Strategy | Action |
+|---|---|---|
+| Synthesize | `constant_zero` | `SE=1'b0`, `SI=1'b0` (RTL has no scan pins) |
+| PrePlace | `bridge_port` (default) or `neighbor_dff` | See rule below |
+| Route | `bridge_port` (MANDATORY) | Mode S bridge with parent-side driver |
 
-**`neighbor_dff` is the default. `bridge_port` is the fallback when no neighbor exists.** Engineer's NeedFreqAdj uses `neighbor_dff` in PP and `bridge_port` in Route; EcoUseSdpOutstRdCnt uses `bridge_port` in both because there's no neighbor at top scope.
+**Route MUST be `bridge_port`.** Route-stage scan wires are CTS-rebalanced, so `neighbor_dff` is non-deterministic across PreEco/PostEco. Step 3 validator Check 28 HARD FAILs any other Route strategy.
 
-**MANDATORY — CTS-touched Route scan wires force `bridge_port` for Route.** If the candidate `neighbor_dff` SE or SI **for the Route stage** matches `FxOptCts_*`, `FxCts_*`, `*_CLKBUF_*`, or `*_CTSBUF_*`, the wire lives on the CTS-rebalanced scan tree — PreEco and PostEco CTS topology differ when a new DFF changes loading, so FM cones diverge. Switch Route to `bridge_port`. PrePlace HFSNET (`FxPrePlace_HFSNET_*`) is NOT in this list: HFS is deterministic so PP=`neighbor_dff` with HFSNET is FM-safe. Step 3 validator Check 22 fails the run otherwise.
+**PrePlace MUST also be `bridge_port` whenever Route is `bridge_port`.** Mixing PP=`neighbor_dff` with Route=`bridge_port` produces stage-divergent cone reach into the bridge buffer — FM cones converge only by luck. Step 3 validator Check 29 HARD FAILs the asymmetric combination.
+
+`neighbor_dff` for PP is permitted ONLY when Route also resolved to `neighbor_dff` (rare — host module has scan-clean DFFs whose Route-stage SE/SI wires never crossed CTS boundaries). When in doubt, use `bridge_port` for both PP and Route.
 
 **Required field on every new_logic_dff entry:**
 
@@ -323,8 +333,8 @@ A new DFF inserted in a clock domain that reaches the scan chain (anything reach
   "instance_name": "<DFF_reg>",
   "mode_S_strategy_per_stage": {
     "Synthesize": "constant_zero",
-    "PrePlace":   "neighbor_dff",   // or "bridge_port"
-    "Route":      "neighbor_dff"    // or "bridge_port"
+    "PrePlace":   "bridge_port",    // MUST match Route when Route=bridge_port
+    "Route":      "bridge_port"     // MANDATORY — Check 28 HARD FAIL otherwise
   }
 }
 ```
@@ -398,7 +408,7 @@ python3 script/eco_scripts/eco_emit_bridge_plumbing.py \
 ```
 Selection heuristic: pick N existing DFFs in the sibling module whose current `.SE` net is the same shared scan-en wire (most-common `.SE` net wins). The applier rewrites those DFFs' `.SE` to the new bridge wire. Module-scope-aware — won't affect other modules with same DFF instance names. Skipped in Synth.
 
-**MANDATORY minimum cluster size.** `consolidation_target_dffs` MUST contain at least 10 DFF instances. Smaller lists indicate the picker found a weak/sparse scan-en cluster — the bridge will not be a meaningful scan path participant and FM cone matching is unstable. If `eco_pick_bridge_dffs.py` returns fewer than 10, set `requires_scan_stitching: false` (or fall back to `neighbor_dff` strategy) — do NOT emit a 1-DFF "consolidation" that exists only on paper.
+**MANDATORY minimum cluster size.** `consolidation_target_dffs` MUST contain at least 10 DFF instances. Smaller lists indicate the picker found a weak/sparse scan-en cluster — the bridge will not be a meaningful scan path participant and FM cone matching is unstable. If `eco_pick_bridge_dffs.py` returns fewer than 10, fall back to `neighbor_dff` strategy. **`constant_zero` is FORBIDDEN unless the host module has zero pre-existing DFFs in the same clock domain (extremely rare — wrapper-clock DFFs only). Step 3 validator Check 30 HARD FAILs constant_zero when neighboring DFFs exist.** When choosing constant_zero, record `host_module_dff_count_same_clock: 0` on the entry so the validator can audit.
 
 **Real bridge stitching umbrella.** A complete `bridge_port` Mode-S strategy emits the following set of entries per new ECO DFF (engineer pattern). All carry `bridge_port_role` so the applier auto-skips them in Synth:
 
@@ -612,6 +622,15 @@ Verify output pin by examining an actual instance from PreEco — always authori
 - Expression uses `~(A[1] == 1 & A[0] == 0)` = `~(A[1] & ~A[0])` → NAND2 of (A[1], ~A[0])
 
 Verify: `polarity_matches = (chosen_gate_function.output_is_inverting == rtl_expression_is_inverted)`. If mismatch → log `POLARITY_MISMATCH: chosen {gate_function} but RTL requires {correct_function}` and correct gate_function before writing study JSON.
+
+**CHAIN-LEVEL POLARITY (MANDATORY when chain has ≥2 cells):** Picking each cell with the right local polarity is necessary but NOT sufficient — the COMPOSED Boolean across the whole chain must equal `d_input_expected_function` from the RTL diff. Two failure modes the per-cell rule cannot catch:
+
+1. A downstream inverting cell (NR/NAND) flips the polarity of an upstream input — choosing the un-inverted form for that input makes the cumulative function carry the wrong polarity, even when each individual cell is correct.
+2. The RTL Boolean has an input in inverted form (`~SIG`); picking `SIG` directly into a non-inverting cell silently drops the inversion.
+
+**Rule:** Do NOT hand-decompose multi-cell chains. Invoke `eco_synth_chain.py` (per §0c-SYNTH) — it derives cell types AND input polarities from `d_input_expected_function` so the composed function is correct by construction. Step 3 validator Check 31 hard-fails any topology mismatch between the emitted chain and what `eco_synth_chain` produces from the same Boolean.
+
+When an input must enter a non-inverting cell as `~SIG`, search the host module for an existing INV whose output is `~SIG` and use its output net as the input wire — do NOT instantiate a redundant INV.
 
 ### 0c-SCOPE — Use preferred_insertion_scope when set (MANDATORY check)
 

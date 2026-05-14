@@ -184,6 +184,58 @@ def main():
                 f"SVR-4 + SVR-64 + FM-599 → ABORT in PreVerify. Likely cause: "
                 f"applier auto-sanitize bypassed OR netlist manually edited.")
 
+    # ── 10. CROSS-STAGE-EDIT-PARITY (G4) ─────────────────────────────────────
+    # For high-risk per-stage edit types (unconnected_rewires, port_connection,
+    # wire_swap, port_promotion), the same logical edit MUST be applied to all
+    # 3 stages. Silent stage-skip produces a stage-divergent netlist where the
+    # rewired bit creates a real cone path in only one stage — FM cones diverge
+    # on apparently-unrelated DFFs that walk through the modified region.
+    HIGH_RISK_TYPES = {'unconnected_rewires', 'port_connection',
+                       'wire_swap', 'port_promotion', 'bus_rename'}
+    # Build per-edit per-stage success map. Use change_index from study (or
+    # name if change_index missing) as the edit identity.
+    def _edit_key(e):
+        ci = e.get('change_index')
+        if ci is not None:
+            return f"#{ci}"
+        return (e.get('instance_name') or e.get('cell_name') or
+                e.get('signal_name') or e.get('name') or '?')
+
+    def _is_success(status):
+        return status in ('APPLIED', 'INSERTED', 'QUEUED', 'AUTO_SANITIZED')
+
+    per_edit = {}  # key → { stage → status }
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in applied.get(stage, []):
+            ct = e.get('change_type', '')
+            # Also catch carried-with-other-types entries: any entry whose
+            # reason mentions bus_bit_replace or unconnected_rewires.
+            reason = e.get('reason', '')
+            looks_like_high_risk = (
+                ct in HIGH_RISK_TYPES or
+                'unconnected_rewires' in reason or
+                'bus_bit_replace' in reason or
+                'bus_rename' in reason
+            )
+            if not looks_like_high_risk:
+                continue
+            key = _edit_key(e)
+            per_edit.setdefault(key, {})[stage] = e.get('status', '?')
+
+    for key, by_stage in per_edit.items():
+        success_stages = {s for s, st in by_stage.items() if _is_success(st)}
+        failed_stages  = {s: st for s, st in by_stage.items() if not _is_success(st)}
+        # If the edit succeeded in some stages but not all 3 → cross-stage divergence
+        if 0 < len(success_stages) < 3:
+            missing = sorted({'Synthesize','PrePlace','Route'} - success_stages)
+            issues.append(
+                f"CRITICAL/10-CROSS-STAGE-EDIT-PARITY: edit {key!r} (high-risk "
+                f"per-stage type) applied successfully in {sorted(success_stages)} "
+                f"but missing/failed in {missing}. by_stage_status={by_stage}. "
+                f"Stage-divergent edits cause FM cone walks to reach different "
+                f"physical wires per stage on apparently-unrelated DFFs. The "
+                f"applier MUST apply the same edit to all 3 stages or HARD ERROR.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': tag, 'round': args.round, 'passed': passed, 'issues': issues}

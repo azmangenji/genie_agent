@@ -91,6 +91,12 @@ def check_stage_consistency(applied):
     """
     FAIL if an ECO gate is INSERTED in some stages but SKIPPED in others.
     Each new_logic_gate/dff must appear in all 3 stages.
+
+    G4 extension: also flag stage-divergent application of high-risk per-stage
+    edit types (unconnected_rewires, port_connection, wire_swap, port_promotion,
+    bus_rename). These edits modify shared logical instances; per-stage divergence
+    produces silent stage-divergent netlists that fail FM on apparently-
+    unrelated DFFs whose cone walks through the modified region.
     """
     gate_types = ('new_logic_gate', 'new_logic_dff', 'new_logic')
     per_stage = {}
@@ -106,25 +112,59 @@ def check_stage_consistency(applied):
         per_stage[stage] = {'inserted': inserted, 'skipped': skipped}
 
     stages = [s for s in per_stage if per_stage[s]['inserted'] or per_stage[s]['skipped']]
-    if len(stages) < 2:
-        return []
-
-    all_gates = set()
-    for s in stages:
-        all_gates |= per_stage[s]['inserted'] | per_stage[s]['skipped']
-
     failures = []
-    for gate in sorted(all_gates):
-        stage_results = {}
+    if len(stages) >= 2:
+        all_gates = set()
         for s in stages:
-            if gate in per_stage[s]['inserted']:
-                stage_results[s] = 'INSERTED'
-            elif gate in per_stage[s]['skipped']:
-                stage_results[s] = 'SKIPPED'
-            else:
-                stage_results[s] = 'MISSING'
-        if len(set(stage_results.values())) > 1:
-            failures.append(f'{gate}: {stage_results}')
+            all_gates |= per_stage[s]['inserted'] | per_stage[s]['skipped']
+        for gate in sorted(all_gates):
+            stage_results = {}
+            for s in stages:
+                if gate in per_stage[s]['inserted']:
+                    stage_results[s] = 'INSERTED'
+                elif gate in per_stage[s]['skipped']:
+                    stage_results[s] = 'SKIPPED'
+                else:
+                    stage_results[s] = 'MISSING'
+            if len(set(stage_results.values())) > 1:
+                failures.append(f'{gate}: {stage_results}')
+
+    # G4 — high-risk per-stage edit parity
+    HIGH_RISK_TYPES = {'unconnected_rewires', 'port_connection',
+                       'wire_swap', 'port_promotion', 'bus_rename'}
+    SUCCESS_STATUS = {'APPLIED', 'INSERTED', 'QUEUED', 'AUTO_SANITIZED'}
+
+    def _edit_key(e):
+        ci = e.get('change_index')
+        if ci is not None:
+            return f'#{ci}'
+        return (e.get('instance_name') or e.get('cell_name') or
+                e.get('signal_name') or e.get('name') or '?')
+
+    per_edit = {}
+    for stage, entries in applied.items():
+        if not isinstance(entries, list):
+            continue
+        if stage not in ('Synthesize', 'PrePlace', 'Route'):
+            continue
+        for e in entries:
+            ct = e.get('change_type', '')
+            reason = e.get('reason', '')
+            if not (ct in HIGH_RISK_TYPES or
+                    'unconnected_rewires' in reason or
+                    'bus_bit_replace' in reason or
+                    'bus_rename' in reason):
+                continue
+            per_edit.setdefault(_edit_key(e), {})[stage] = e.get('status', '?')
+
+    for key, by_stage in per_edit.items():
+        succeeded = {s for s, st in by_stage.items() if st in SUCCESS_STATUS}
+        if 0 < len(succeeded) < 3:
+            missing = sorted({'Synthesize','PrePlace','Route'} - succeeded)
+            failures.append(
+                f'high-risk-edit {key!r} stage-divergent: succeeded in '
+                f'{sorted(succeeded)}, missing/failed in {missing}, '
+                f'by_stage={by_stage}')
     return failures
 
 

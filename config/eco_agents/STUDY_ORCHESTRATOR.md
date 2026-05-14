@@ -747,6 +747,8 @@ python3 script/eco_scripts/eco_validate_step3.py \
     --tag      <TAG> \
     --output   data/<TAG>_eco_validate_step3.json
 ```
+**HARD GATE.** Any `passed: false` from Step 3 validator BLOCKS Phase A handoff — every issue (HIGH or CRITICAL) must be resolved before writing `phase_a_handoff.json`. Do NOT proceed with HIGH-only issues unaddressed; HIGH severity is non-negotiable for this gate. If issues cannot be resolved after re-spawning eco_netlist_studier with the appropriate hint, write `phase_a_handoff.json` with `phase_a_status: "BLOCKED_STEP3_VALIDATOR"` and EXIT.
+
 If exit code = 1 → issues found → fix before proceeding. Read `data/<TAG>_eco_validate_step3.json` for specific issues. Common fixes:
 - Incomplete chain entries → re-run `eco_expand_chains.py`
 - Missing fields (module_name, port_connections_per_stage, etc.) → re-spawn `eco_netlist_studier`
