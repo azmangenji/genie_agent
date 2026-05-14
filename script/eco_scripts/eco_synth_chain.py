@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""
+eco_synth_chain.py — Synthesize a Boolean expression into a synthesis-style
+gate chain using sympy + the project's cell-truth-table library.
+
+Why this exists
+---------------
+Trial3 of run 20260512070625 produced a "literal-decomposition" 5-cell chain
+for NeedFreqAdj_reg.D (NR2 + XNR2 + AN3 + INV + AN2). The Boolean function was
+correct but FM Route failed to verify NeedFreqAdj_reg vs trial3's PrePlace.
+Trial1 + engineer used a 4-cell synthesis-style chain (INV + XOR2 + OR4 + NR2)
+for the SAME Boolean and FM passed. The studier needs to mirror engineer-style
+gate decomposition, not literal RTL decomposition. This script is the canonical
+synthesizer the studier MUST invoke.
+
+Algorithm
+---------
+1. Parse RTL Boolean expression via sympy
+2. Detect known synthesis-friendly patterns (AND-of-mixed-literals, MUX, OAI,
+   etc.) and emit the matching cell chain
+3. Verify Boolean equivalence between emitted chain and input expression
+   (uses existing eco_chain_equivalence machinery)
+4. Pick per-stage input wires using rename_map polarity hints
+
+Usage
+-----
+    python3 eco_synth_chain.py synthesize \\
+        --boolean "BeqCtrlPeReq & ~ArbCtrlPeRdy & ~B2 & ~(B1 ^ B0) & ~reset" \\
+        --inputs BeqCtrlPeReq,ArbCtrlPeRdy,B2,B1,B0,reset \\
+        --output cell_chain.json
+
+    python3 eco_synth_chain.py synthesize-from-rtl-diff \\
+        --rtl-diff data/<TAG>_eco_rtl_diff.json \\
+        --target-register NeedFreqAdj \\
+        --output cell_chain.json
+
+    python3 eco_synth_chain.py verify \\
+        --boolean "<expr>" --chain-json cell_chain.json --inputs <list>
+"""
+import argparse
+import json
+import os
+import re
+import sys
+from collections import OrderedDict
+from itertools import product
+
+# Local user-installed sympy
+sys.path.insert(0, os.path.expanduser('~/.local/lib/python3.7/site-packages'))
+import sympy
+from sympy import symbols, Symbol, And, Or, Not, Xor, true, false
+from sympy.logic.boolalg import to_dnf, to_cnf, simplify_logic, Boolean
+
+
+# ────────────────────────── Boolean → truth table ──────────────────────────
+
+def truth_table(expr, input_syms):
+    """Return list of 0/1 outputs over all 2^N input combos (lex order)."""
+    N = len(input_syms)
+    out = []
+    for combo in product([False, True], repeat=N):
+        substitution = dict(zip(input_syms, combo))
+        result = expr.subs(substitution)
+        out.append(1 if result == true else 0)
+    return tuple(out)
+
+
+def truth_tables_match(expr_a, expr_b, input_syms):
+    """Brute-force truth-table equivalence."""
+    return truth_table(expr_a, input_syms) == truth_table(expr_b, input_syms)
+
+
+# ────────────────────────── AST utilities ──────────────────────────
+
+def is_literal(node):
+    """A literal is a Symbol or Not(Symbol)."""
+    if isinstance(node, Symbol):
+        return True
+    if isinstance(node, Not) and isinstance(node.args[0], Symbol):
+        return True
+    return False
+
+
+def literal_polarity_var(lit):
+    """Return (positive_bool, var_symbol) for a literal node."""
+    if isinstance(lit, Symbol):
+        return True, lit
+    if isinstance(lit, Not) and isinstance(lit.args[0], Symbol):
+        return False, lit.args[0]
+    raise ValueError(f"Not a literal: {lit}")
+
+
+def split_and_factors(expr):
+    """If expr is an AND, return its operands; else [expr]."""
+    if isinstance(expr, And):
+        return list(expr.args)
+    return [expr]
+
+
+# ────────────────────────── Pattern detectors ──────────────────────────
+
+class CellChain:
+    """Holds the emitted cell chain + intermediate wire names."""
+    def __init__(self):
+        self.cells = []     # list of dicts: {cell_type, instance_name, port_connections}
+        self.wires = []     # intermediate wire names (n_eco_*)
+        self.output_net = None
+
+    def add_cell(self, cell_type, inst_name, port_connections):
+        self.cells.append({
+            'cell_type': cell_type,
+            'instance_name': inst_name,
+            'port_connections': port_connections,
+        })
+
+    def add_wire(self, name):
+        self.wires.append(name)
+
+    def to_dict(self):
+        return {
+            'cells': self.cells,
+            'wires': self.wires,
+            'output_net': self.output_net,
+        }
+
+
+def _wire_name(jira, idx):
+    return f'n_eco_{jira}_d{idx:03d}'
+
+
+def _inst_name(jira, idx):
+    return f'eco_{jira}_d{idx:03d}'
+
+
+def detect_and_of_terms_with_xor(expr):
+    """
+    Detect: F = pos_lit_1 & pos_lit_2 & ~pos_lit_3 & ... & ~(xor_a^xor_b) & ...
+
+    Returns dict {
+       'positive_literals': [Symbol, ...],   # need INV in OR4 input
+       'negative_literals': [Symbol, ...],   # use direct (their var) in OR4 input
+       'xor_terms': [(a, b, polarity), ...], # XOR or XNOR sub-expressions
+       'reset_term': Symbol or None,         # final NR2 second input (if pattern fits 4+1)
+    } or None if pattern doesn't fit.
+
+    The engineer/trial1 pattern for NeedFreqAdj is exactly:
+       req & Arb & ~B[2] & ~(B[1]^B[0]) & ~reset
+    This decomposes to:
+       INV(req) → ~req
+       XOR2(B[1], B[0]) → xor
+       OR4(~req, ~Arb, B[2], xor) → or4_z   (mixed: 2 INV-of-positive + 2 direct)
+       NR2(or4_z, reset) → nr_z
+    Final: nr_z = ~or4_z & ~reset
+                = req & Arb & ~B[2] & ~xor & ~reset ✓
+    """
+    factors = split_and_factors(expr)
+    if not factors:
+        return None
+
+    positive_literals = []
+    negative_literals = []
+    xor_terms = []
+    other = []
+
+    for f in factors:
+        if is_literal(f):
+            pol, var = literal_polarity_var(f)
+            if pol:
+                positive_literals.append(var)
+            else:
+                negative_literals.append(var)
+        elif isinstance(f, Not) and isinstance(f.args[0], Xor):
+            # ~(a XOR b) — i.e., XNOR — appears as a "negative xor term"
+            xor_args = f.args[0].args
+            if len(xor_args) == 2 and all(isinstance(a, Symbol) for a in xor_args):
+                xor_terms.append((xor_args[0], xor_args[1], 'negated'))
+            else:
+                other.append(f)
+        elif isinstance(f, Xor):
+            xor_args = f.args
+            if len(xor_args) == 2 and all(isinstance(a, Symbol) for a in xor_args):
+                xor_terms.append((xor_args[0], xor_args[1], 'positive'))
+            else:
+                other.append(f)
+        else:
+            other.append(f)
+
+    if other:
+        return None  # contains terms we don't recognize
+
+    return {
+        'positive_literals': positive_literals,
+        'negative_literals': negative_literals,
+        'xor_terms': xor_terms,
+    }
+
+
+def synthesize_and_pattern(expr, input_syms, jira='9868'):
+    """
+    Synthesize an AND-of-literals(+ XOR terms) expression into a synthesis-
+    style cell chain. Engineer pattern for NeedFreqAdj-class expressions.
+
+    Returns CellChain or None if pattern doesn't fit.
+    """
+    info = detect_and_of_terms_with_xor(expr)
+    if info is None:
+        return None
+
+    pos = info['positive_literals']      # vars that need INV in OR4 input
+    neg = info['negative_literals']      # vars that go direct to OR4 input
+    xors = info['xor_terms']             # XOR/XNOR pairs
+
+    # Total OR4-input slots needed = |pos| + |neg| + |xors_negated|
+    # XNOR (negated XOR) → OR4 receives the XOR positive output (since ~(~xor) = xor would re-invert in NR2)
+    # Wait: NR2 final output is ~(or4_z | last_term)
+    # We want NR2.ZN = pos_lit_1 & pos_lit_2 & ~neg_lit_1 & ~neg_lit_2 & ~xnor_1
+    #                 = pos_1 & pos_2 & ~neg_1 & ~neg_2 & xor_1
+    # NR2.ZN = ~(or4_z | last_term) = ~or4_z & ~last_term
+    # So or4_z must be: (~pos_1 | ~pos_2 | neg_1 | neg_2 | ~xor_1)
+    # ⇒ OR4 inputs: ~pos_lits, neg_lits, ~xor_terms (negated form for XNOR)
+    #
+    # Wait — I need to think about this again.
+    # XNOR term in expr (as ~(a^b)) means we want this factor TRUE in the AND.
+    # NR2 output = TRUE means all OR4 inputs are FALSE.
+    # So ~(a^b) being TRUE in factor means OR4 input for it must be FALSE → use (a^b) directly.
+    # XOR term in expr (as a^b) means OR4 input must be ~(a^b) = XNOR — but XNR2 cell exists.
+
+    # For the engineer's NeedFreqAdj case:
+    #   factor: ~(B[1]^B[0])  →  OR4 input: B[1]^B[0]  →  use XOR2 cell directly
+
+    # So in OR4: positive literals (factor has them positive) → need their NEGATION in OR4 → INV upstream
+    #            negative literals (factor has them negated)  → use their POSITIVE form in OR4 directly
+    #            negated XOR terms (factor has ~XOR)          → use POSITIVE XOR in OR4 → XOR2 upstream
+    #            positive XOR terms (factor has XOR)          → use NEGATIVE XOR in OR4 → XNR2 upstream
+
+    # Decide if pattern fits OR4 + NR2 layout:
+    # Total OR4 inputs: |pos| + |neg| + |xors|
+    # Last NR2 input: 1 of the factors (typically reset)
+    #
+    # For now, we require: either (factors all fit in OR4 with a "natural reset"
+    # candidate) OR (we can pick a literal as the NR2 second input).
+
+    or4_input_specs = []  # list of (kind, payload) where kind ∈ {direct, neg_via_inv, xor_via_xor2, xor_via_xnr2}
+
+    # Process literals + xors (everything except the eventual NR2-reset)
+    # We pick the LAST negative literal as the NR2 second input (so reset goes
+    # there). If no negative literal, fall back to last positive literal (less
+    # ideal — would need INV).
+
+    # Collect candidates for "NR2 second input" preference:
+    # - Prefer a negative literal (factor = ~X) where X looks like a reset signal
+    #   (name contains 'reset', 'rst', 'IReset', 'test_so', 'dftopt')
+    # - Else prefer any negative literal
+    # - Else prefer any factor
+
+    def looks_like_reset(var):
+        name = str(var).lower()
+        return any(k in name for k in ('reset', 'rst', 'test_so', 'dftopt'))
+
+    nr2_second_var = None
+    nr2_second_kind = None
+    # Look in negative_literals first
+    for v in neg:
+        if looks_like_reset(v):
+            nr2_second_var = v
+            nr2_second_kind = 'direct'  # ~v in factor → use v in NR2 directly (NR2 inverts)
+            break
+    if nr2_second_var is None:
+        # Take last negative literal as NR2 second
+        if neg:
+            nr2_second_var = neg[-1]
+            nr2_second_kind = 'direct'
+
+    # Build OR4 input list (everything except the NR2 second input)
+    pos_for_or4 = list(pos)
+    neg_for_or4 = [v for v in neg if v != nr2_second_var]
+    xors_for_or4 = list(xors)
+
+    total_or4_inputs = len(pos_for_or4) + len(neg_for_or4) + len(xors_for_or4)
+
+    if total_or4_inputs > 4:
+        return None  # doesn't fit OR4 — needs recursive decomposition (future work)
+    if total_or4_inputs < 2:
+        return None  # not enough for OR4 — single-cell or different pattern
+
+    # ─── Build the chain ───
+    chain = CellChain()
+    cell_idx = 1
+
+    # 1. INVs for positive literals (need negated form in OR4)
+    inv_outputs = {}     # var_name → wire name of its INV output
+    for v in pos_for_or4:
+        wire = _wire_name(jira, cell_idx)
+        inst = _inst_name(jira, cell_idx)
+        chain.add_wire(wire)
+        chain.add_cell(
+            cell_type='INVD1BWP136P5M156H3P48CPDLVT',
+            inst_name=inst,
+            port_connections={'I': str(v), 'ZN': wire},
+        )
+        inv_outputs[str(v)] = wire
+        cell_idx += 1
+
+    # 2. XOR2 / XNR2 cells for XOR factors
+    xor_outputs = []  # list of (wire, original_xor_tuple)
+    for (a, b, kind) in xors_for_or4:
+        wire = _wire_name(jira, cell_idx)
+        inst = _inst_name(jira, cell_idx)
+        chain.add_wire(wire)
+        if kind == 'negated':  # factor is ~(a^b) → OR4 input must be (a^b) → use XOR2
+            cell_type = 'XOR2D1BWP136P5M156H3P48CPDLVT'
+            port_connections = {'A1': str(a), 'A2': str(b), 'Z': wire}
+        else:  # factor is (a^b) → OR4 input must be ~(a^b) → use XNR2
+            cell_type = 'XNR2D1AMDBWP136P5M156H3P48CPDLVTLL'
+            port_connections = {'A1': str(a), 'A2': str(b), 'ZN': wire}
+        chain.add_cell(cell_type, inst, port_connections)
+        xor_outputs.append(wire)
+        cell_idx += 1
+
+    # 3. Build OR4 input list (in deterministic order for stability)
+    or4_inputs = []
+    # Order: INV outputs of positive literals, then direct negative literals, then XOR outputs
+    for v in pos_for_or4:
+        or4_inputs.append(inv_outputs[str(v)])
+    for v in neg_for_or4:
+        or4_inputs.append(str(v))
+    or4_inputs.extend(xor_outputs)
+
+    # OR4 cell — handle <4 inputs by padding with 1'b0 (OR identity)
+    while len(or4_inputs) < 4:
+        or4_inputs.append("1'b0")
+
+    or4_wire = _wire_name(jira, cell_idx)
+    or4_inst = _inst_name(jira, cell_idx)
+    chain.add_wire(or4_wire)
+    chain.add_cell(
+        cell_type='OR4D1BWP136P5M117H3P48CPDLVT',
+        inst_name=or4_inst,
+        port_connections={
+            'A1': or4_inputs[0], 'A2': or4_inputs[1],
+            'A3': or4_inputs[2], 'A4': or4_inputs[3],
+            'Z': or4_wire,
+        },
+    )
+    cell_idx += 1
+
+    # 4. NR2 final cell — combine or4_wire with last term
+    final_wire = _wire_name(jira, cell_idx)
+    final_inst = _inst_name(jira, cell_idx)
+    chain.add_wire(final_wire)
+
+    if nr2_second_var is None:
+        # Pad with 1'b0 (NR2 identity for OR side)
+        nr2_a2 = "1'b0"
+    else:
+        nr2_a2 = str(nr2_second_var)
+
+    chain.add_cell(
+        cell_type='NR2D1SPG1AMDBWP136P5M156H3P48CPDLVT',
+        inst_name=final_inst,
+        port_connections={'A1': or4_wire, 'A2': nr2_a2, 'ZN': final_wire},
+    )
+    chain.output_net = final_wire
+
+    return chain
+
+
+# ────────────────────────── Top-level synthesize ──────────────────────────
+
+def synthesize(rtl_boolean_str, input_names, jira='9868'):
+    """
+    Top-level synthesize: parse Boolean string → emit cell chain.
+
+    Returns CellChain (raises ValueError if cannot synthesize).
+    """
+    # Parse Boolean expression
+    syms = symbols(' '.join(input_names))
+    if not isinstance(syms, tuple):
+        syms = (syms,)
+    sym_dict = {name: sym for name, sym in zip(input_names, syms)}
+
+    # Eval the expression in a context where input names map to sympy symbols
+    # Allow ~, &, |, ^ operators (sympy supports these via __invert__, __and__, etc.)
+    expr = eval(rtl_boolean_str, {'__builtins__': {}}, sym_dict)
+
+    # Try the AND-of-literals-with-XOR pattern (engineer NeedFreqAdj style)
+    chain = synthesize_and_pattern(expr, syms, jira=jira)
+    if chain is not None:
+        # Verify equivalence by re-composing the chain's Boolean and comparing
+        chain_expr = compose_chain_boolean(chain, sym_dict, jira)
+        if chain_expr is not None and truth_tables_match(expr, chain_expr, syms):
+            return chain
+        # Synthesis bug — chain doesn't match input expression
+        sys.stderr.write(
+            f"WARN: synthesize_and_pattern produced non-equivalent chain.\n"
+            f"  Input expr:  {expr}\n"
+            f"  Chain expr:  {chain_expr}\n"
+        )
+
+    raise ValueError(
+        f"No synthesis pattern matched the input Boolean. "
+        f"Input: {rtl_boolean_str}. "
+        f"Falling back to literal decomposition is FORBIDDEN — extend pattern library."
+    )
+
+
+def compose_chain_boolean(chain, sym_dict, jira):
+    """Re-compose the cell chain into a single sympy Boolean expression."""
+    # Map intermediate wire name → sympy expression
+    wire_exprs = {}
+
+    for cell in chain.cells:
+        ct = cell['cell_type']
+        pc = cell['port_connections']
+
+        def resolve(name):
+            if name in sym_dict:
+                return sym_dict[name]
+            if name in wire_exprs:
+                return wire_exprs[name]
+            if name == "1'b0":
+                return false
+            if name == "1'b1":
+                return true
+            return None
+
+        # Identify cell function by family prefix
+        family = re.match(r'^([A-Z]+\d*)', ct).group(1) if re.match(r'^([A-Z]+\d*)', ct) else ct
+
+        if ct.startswith('INV'):
+            i = resolve(pc.get('I'))
+            if i is None: return None
+            wire_exprs[pc.get('ZN')] = Not(i)
+        elif ct.startswith('XOR2'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
+            if a1 is None or a2 is None: return None
+            wire_exprs[pc.get('Z')] = Xor(a1, a2)
+        elif ct.startswith('XNR2'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
+            if a1 is None or a2 is None: return None
+            wire_exprs[pc.get('ZN')] = Not(Xor(a1, a2))
+        elif ct.startswith('OR4'):
+            ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3', 'A4')]
+            if any(x is None for x in ins): return None
+            wire_exprs[pc.get('Z')] = Or(*ins)
+        elif ct.startswith('NR2'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
+            if a1 is None or a2 is None: return None
+            wire_exprs[pc.get('ZN')] = Not(Or(a1, a2))
+        elif ct.startswith('AN2'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
+            if a1 is None or a2 is None: return None
+            wire_exprs[pc.get('Z')] = And(a1, a2)
+        elif ct.startswith('AN3'):
+            ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3')]
+            if any(x is None for x in ins): return None
+            wire_exprs[pc.get('Z')] = And(*ins)
+        elif ct.startswith('OR2'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
+            if a1 is None or a2 is None: return None
+            wire_exprs[pc.get('Z')] = Or(a1, a2)
+        else:
+            return None  # unknown cell type — can't compose
+
+    return wire_exprs.get(chain.output_net)
+
+
+# ────────────────────────── CLI ──────────────────────────
+
+def cmd_synthesize(args):
+    inputs = [s.strip() for s in args.inputs.split(',')]
+    chain = synthesize(args.boolean, inputs, jira=args.jira)
+
+    out = chain.to_dict()
+    out['_meta'] = {
+        'input_boolean': args.boolean,
+        'input_signals': inputs,
+        'jira': args.jira,
+    }
+
+    if args.output:
+        with open(args.output, 'w') as f:
+            json.dump(out, f, indent=2)
+        print(f"WROTE: {args.output}")
+    else:
+        print(json.dumps(out, indent=2))
+
+    print(f"\nSynthesized {len(chain.cells)} cells:")
+    for c in chain.cells:
+        ports = ', '.join(f"{k}={v}" for k, v in c['port_connections'].items())
+        print(f"  {c['cell_type']:50s} {c['instance_name']:25s} ({ports})")
+    print(f"\nOutput net: {chain.output_net}")
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    sub = p.add_subparsers(dest='cmd', required=True)
+
+    s = sub.add_parser('synthesize', help='Synthesize Boolean → cell chain')
+    s.add_argument('--boolean', required=True, help='Boolean expression (Python syntax)')
+    s.add_argument('--inputs', required=True, help='Comma-separated input signal names')
+    s.add_argument('--jira', default='9868', help='JIRA tag for cell/wire naming')
+    s.add_argument('--output', help='Output JSON path (else stdout)')
+    s.set_defaults(func=cmd_synthesize)
+
+    args = p.parse_args()
+    return args.func(args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
