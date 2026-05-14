@@ -36,15 +36,101 @@ Usage:
         --new-dff-instance NeedFreqAdj_reg \\
         --output         data/<TAG>_eco_bridge_plumbing_<DFF>.json
 """
-import argparse, json, re, sys
+import argparse, gzip, json, re, subprocess, sys
 from pathlib import Path
 
-# Default buffer cell types — engineer 9868 used these specific cells. Override
-# via flags if a different library mandates different cell families. The applier
-# does not care about cell type as long as the cell exists in the library; FM
-# elaboration also does not care.
-DEFAULT_SI_BUFFER_CELL = "BUFFSKFD4AMDBWP136P5M156H3P48CPDLVT"
-DEFAULT_SE_BUFFER_CELL = "BUFFLLKGD3AMDBWP136P5M156H3P48CPDLVT"
+# Buffer cell types are NOT defaulted — they MUST be discovered from the actual
+# PreEco library per stage via discover_buf_cell() below. Hardcoded defaults are
+# brittle: a cell that exists in one tile/library may be missing from another,
+# causing FE-LINK-2 + FM-234 + FM-156 ABORT. The discovery routine greps each
+# stage's PreEco netlist for any single-input single-output BUF instance.
+
+
+def _stage_netlist(ref_dir, stage):
+    """Path to PreEco netlist for a stage (gzipped)."""
+    return Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
+
+
+def resolve_module_name(base_name, ref_dir, stage):
+    """Find the actual module name in PostEco for `stage` — handles
+    P&R-stage uniquification (`_0`, `_1`, ...). Returns base_name on no match.
+
+    P&R uniquifies modules instantiated multiple times: `ddrss_umccmd_t_umcarb`
+    becomes `ddrss_umccmd_t_umcarb_0` in Route. Without this resolution, bridge
+    wire decls + instance hookups land in a non-existent module name → FM
+    BRIDGE_PARENT_MISSING ABORT.
+
+    Search order: exact match first; then `<base>_<n>` for n in 0..15. Returns
+    the first match found via `^module <name>\\b` grep on the PostEco netlist
+    (PreEco for fallback when PostEco missing).
+    """
+    for root in ('PostEco', 'PreEco'):
+        gz = Path(ref_dir) / 'data' / root / f'{stage}.v.gz'
+        if not gz.is_file():
+            continue
+        try:
+            r = subprocess.run(
+                f"zcat {gz} | grep -oE '^module {re.escape(base_name)}(_[0-9]+)?\\b'",
+                shell=True, capture_output=True, text=True, timeout=180)
+            names = [ln.split()[1] for ln in (r.stdout or '').splitlines() if ln.startswith('module ')]
+        except Exception:
+            names = []
+        # Exact match wins (engineer/Synth/PP usually); else first uniquified
+        if base_name in names:
+            return base_name
+        if names:
+            return sorted(names)[0]
+    return base_name  # nothing found — fall back to caller's value (caller validates)
+
+
+def discover_buf_cell(ref_dir, stage):
+    """Grep PreEco netlist for an actually-existing BUF cell. Returns the cell
+    type name, or None if no BUF found. Never returns a hardcoded guess.
+
+    Strategy: scan PreEco netlist for cell instances whose name starts with
+    `BUF` (TSMC short-form for Buffer). Any such cell is a single-input
+    single-output buffer suitable for driving the bridge wires. Returns the
+    most-frequently-instantiated BUF cell (most likely to be in P&R-friendly
+    drive strength).
+    """
+    gz = _stage_netlist(ref_dir, stage)
+    if not gz.is_file():
+        return None
+    try:
+        r = subprocess.run(
+            f"zcat {gz} | grep -oE '^[ \\t]*BUF[A-Z0-9_]+\\b' | sort | uniq -c | sort -rn | head -10",
+            shell=True, capture_output=True, text=True, timeout=180)
+    except Exception:
+        return None
+    for line in (r.stdout or '').splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and parts[1].startswith('BUF'):
+            return parts[1]
+    return None
+
+
+def discover_buf_pins(ref_dir, stage, cell_type):
+    """Grep PreEco for an instance of `cell_type` and read its pin names.
+    Returns (input_pin, output_pin) — usually ('I', 'Z') but some libraries
+    use ('A', 'Z') or ('I', 'ZN'). Returns ('I', 'Z') on failure (TSMC default).
+    """
+    gz = _stage_netlist(ref_dir, stage)
+    if not (gz.is_file() and cell_type):
+        return ('I', 'Z')
+    try:
+        r = subprocess.run(
+            f"zcat {gz} | grep -m1 -A2 '^[ \\t]*{re.escape(cell_type)}\\b'",
+            shell=True, capture_output=True, text=True, timeout=60)
+    except Exception:
+        return ('I', 'Z')
+    text = r.stdout or ''
+    pins = re.findall(r'\.(\w+)\s*\(', text)
+    if not pins:
+        return ('I', 'Z')
+    OUTPUT_PINS = {'Z', 'ZN', 'Q', 'QN'}
+    out_pin = next((p for p in pins if p in OUTPUT_PINS), 'Z')
+    in_pin = next((p for p in pins if p not in OUTPUT_PINS), 'I')
+    return (in_pin, out_pin)
 
 
 def _ctx(reason, source):
@@ -58,7 +144,22 @@ def _ctx(reason, source):
 
 
 def emit(pick, jira, host_mod, sib_mod, parent_mod, host_inst, sib_inst, new_dff_inst,
-         si_buffer_cell=DEFAULT_SI_BUFFER_CELL, se_buffer_cell=DEFAULT_SE_BUFFER_CELL):
+         ref_dir, si_buffer_cell=None, se_buffer_cell=None):
+    """Emit per-stage bridge plumbing artifacts.
+
+    `host_mod`, `sib_mod`, `parent_mod` are BASE module names (without `_0`/
+    `_1`/... uniquification suffixes). The emitter resolves the actual per-stage
+    module name via resolve_module_name() so the wire/instance entries land in
+    the right module under each stage's PostEco.
+
+    `si_buffer_cell` / `se_buffer_cell`: when None (default), discovered per
+    stage via discover_buf_cell(). When provided, used verbatim (caller
+    accepts responsibility that the cell exists in PreEco).
+    """
+    # Per-stage module name resolution (P&R uniquification)
+    host_per_stage   = {s: resolve_module_name(host_mod,   ref_dir, s) for s in ('Synthesize','PrePlace','Route')}
+    sib_per_stage    = {s: resolve_module_name(sib_mod,    ref_dir, s) for s in ('Synthesize','PrePlace','Route')}
+    parent_per_stage = {s: resolve_module_name(parent_mod, ref_dir, s) for s in ('Synthesize','PrePlace','Route')}
     # Per-DFF prefix prevents collisions when a single ECO delivery has multiple
     # bridge_port DFFs (engineer 9868 has TWO: NeedFreqAdj_reg → ECO_905_*,
     # EcoUseSdpOutstRdCnt_reg → eco906_*). Without the DFF prefix, both would
@@ -239,14 +340,23 @@ def emit(pick, jira, host_mod, sib_mod, parent_mod, host_inst, sib_inst, new_dff
     }
 
     # ── 7. Buffer cells in sibling module (Route stage only) ───────────────
+    # cell_type is per-stage (Route in particular may use a different cell
+    # variant than Synth/PP). When `si_buffer_cell`/`se_buffer_cell` is None,
+    # auto-discover a real BUF cell from PreEco — never hardcode a default
+    # that may not exist in this technology library.
+    si_buf_route = si_buffer_cell or discover_buf_cell(ref_dir, 'Route') or 'BUF_PLACEHOLDER'
+    se_buf_route = se_buffer_cell or discover_buf_cell(ref_dir, 'Route') or 'BUF_PLACEHOLDER'
+    in_pin_si, out_pin_si = discover_buf_pins(ref_dir, 'Route', si_buf_route)
+    in_pin_se, out_pin_se = discover_buf_pins(ref_dir, 'Route', se_buf_route)
+
     si_buffer = {
         'change_type':      'new_logic',
-        'module_name':      sib_mod,
-        'cell_type':        si_buffer_cell,
+        'module_name':      sib_mod,           # rewritten per-stage below
+        'cell_type':        si_buf_route,
         'gate_function':    'BUF',
         'instance_name':    f'eco{jira}_si_buffer',
         'output_net':       si_out,
-        'port_connections': {'I': pick.get('candidate_bridge_source_si'), 'Z': si_out},
+        'port_connections': {in_pin_si: pick.get('candidate_bridge_source_si'), out_pin_si: si_out},
         'needs_explicit_wire_decl': False,
         'is_mode_s_stitch': True,
         'bridge_port_role': 'sibling_si_driver',
@@ -257,11 +367,11 @@ def emit(pick, jira, host_mod, sib_mod, parent_mod, host_inst, sib_inst, new_dff
     se_buffer = {
         'change_type':      'new_logic',
         'module_name':      sib_mod,
-        'cell_type':        se_buffer_cell,
+        'cell_type':        se_buf_route,
         'gate_function':    'BUF',
         'instance_name':    f'eco{jira}_se_buffer',
         'output_net':       se_out,
-        'port_connections': {'I': pick.get('candidate_bridge_source_se'), 'Z': se_out},
+        'port_connections': {in_pin_se: pick.get('candidate_bridge_source_se'), out_pin_se: se_out},
         'needs_explicit_wire_decl': False,
         'is_mode_s_stitch': True,
         'bridge_port_role': 'sibling_se_driver',
@@ -270,14 +380,42 @@ def emit(pick, jira, host_mod, sib_mod, parent_mod, host_inst, sib_inst, new_dff
                'eco_emit_bridge_plumbing.py'),
     }
 
-    # ── Stage routing ───────────────────────────────────────────────────────
-    # Synthesize: port_declarations on host AND sibling (so RTL elaborates with
-    # the new ports). Synth has NO scan-en network — buffers, consolidation, and
-    # Q-closure are P&R-only artifacts (the applier strips bridge_port_role
-    # tagged entries from Synth automatically per studier MD §314).
-    synth_entries = host_port_decls + sib_port_decls + bridge_wires + instance_hookups
-    pp_entries    = host_port_decls + sib_port_decls + bridge_wires + instance_hookups + [consolidation, q_closure]
-    route_entries = host_port_decls + sib_port_decls + bridge_wires + instance_hookups + [consolidation, q_closure, si_buffer, se_buffer]
+    # ── Stage routing with per-stage module name rewrite ────────────────────
+    # Synth: port_declarations on host AND sibling (so RTL elaborates with the
+    # new ports); buffers, consolidation, Q-closure are P&R-only (applier strips
+    # bridge_port_role tagged entries from Synth automatically per studier MD
+    # §314). For each stage, rewrite module_name / child_module_name /
+    # sibling_module fields with the stage-resolved (uniquification-aware) name
+    # so wire decls and instance hookups land in the actual PostEco module.
+    import copy as _copy
+    def _rewrite_stage(entries, stage):
+        h, s, p = host_per_stage[stage], sib_per_stage[stage], parent_per_stage[stage]
+        out = []
+        for e in entries:
+            ne = _copy.deepcopy(e)
+            mn  = ne.get('module_name')
+            cmn = ne.get('child_module_name')
+            sm  = ne.get('sibling_module')
+            # module_name: rewrite per role
+            if mn == host_mod:   ne['module_name'] = h
+            elif mn == sib_mod:  ne['module_name'] = s
+            elif mn == parent_mod: ne['module_name'] = p
+            # child_module_name (port_connection entries point at child instance type)
+            if cmn == host_mod:   ne['child_module_name'] = h
+            elif cmn == sib_mod:  ne['child_module_name'] = s
+            elif cmn == parent_mod: ne['child_module_name'] = p
+            # sibling_module field on consolidation / si_consumer_replace
+            if sm == sib_mod:    ne['sibling_module'] = s
+            elif sm == host_mod: ne['sibling_module'] = h
+            elif sm == parent_mod: ne['sibling_module'] = p
+            ne['stage_resolved'] = True
+            out.append(ne)
+        return out
+
+    base_p_and_h = host_port_decls + sib_port_decls + bridge_wires + instance_hookups
+    synth_entries = _rewrite_stage(base_p_and_h, 'Synthesize')
+    pp_entries    = _rewrite_stage(base_p_and_h + [consolidation, q_closure], 'PrePlace')
+    route_entries = _rewrite_stage(base_p_and_h + [consolidation, q_closure, si_buffer, se_buffer], 'Route')
     return {'Synthesize': synth_entries, 'PrePlace': pp_entries, 'Route': route_entries}
 
 
@@ -303,10 +441,17 @@ def main():
                    help='Name of the new ECO DFF (e.g. NeedFreqAdj_reg) — tags '
                         'every emitted entry with for_dff so multiple bridges can '
                         'coexist without collision.')
-    p.add_argument('--si-buffer-cell',   default=DEFAULT_SI_BUFFER_CELL,
-                   help='Cell type for SI bridge buffer (default: %(default)s)')
-    p.add_argument('--se-buffer-cell',   default=DEFAULT_SE_BUFFER_CELL,
-                   help='Cell type for SE bridge buffer (default: %(default)s)')
+    p.add_argument('--ref-dir',          required=True,
+                   help='Reference directory containing data/PreEco and data/PostEco — '
+                        'used to (1) auto-discover BUF cells from PreEco library and '
+                        '(2) resolve P&R-uniquified module names per stage (e.g. '
+                        '`<base>_0` in Route).')
+    p.add_argument('--si-buffer-cell',   default=None,
+                   help='Cell type for SI bridge buffer. Default: auto-discover from '
+                        'PreEco/Route.v.gz via `BUF*` grep (see discover_buf_cell).')
+    p.add_argument('--se-buffer-cell',   default=None,
+                   help='Cell type for SE bridge buffer. Default: auto-discover from '
+                        'PreEco/Route.v.gz via `BUF*` grep (see discover_buf_cell).')
     p.add_argument('--output',          required=True,
                    help='Output JSON path (per-stage artifact lists).')
     args = p.parse_args()
@@ -341,7 +486,7 @@ def main():
 
     out = emit(pick, args.jira, args.host_module, args.sibling_module,
                args.parent_module, args.host_inst, args.sibling_inst,
-               args.new_dff_instance,
+               args.new_dff_instance, args.ref_dir,
                si_buffer_cell=args.si_buffer_cell,
                se_buffer_cell=args.se_buffer_cell)
     Path(args.output).write_text(json.dumps(out, indent=2))
