@@ -629,6 +629,58 @@ def main():
             statuses.append({'name': sig, 'status':'APPLIED',
                              'reason': f'remove_wire_decl added to Perl wire_removes'})
 
+        # ── wire_declaration ─────────────────────────────────────────────────
+        # Used by Mode-S bridge plumbing (parent_wire role) for the parent-scope
+        # bridge wires (e.g. `eco<jira>_si_bridge` declared inside the parent
+        # module that instantiates host + sibling). Same 5-layer dedup as the
+        # unconnected_rewires wire-decl path to prevent SVR-9 duplicate.
+        # `bridge_port_role`-tagged entries are auto-skipped in Synth (Synth
+        # has no scan plumbing — see eco_passes_2_4.py).
+        elif ct == 'wire_declaration':
+            sig = e.get('signal_name','') or e.get('net_name','')
+            # Synth-skip for bridge plumbing per the auto-skip contract
+            if e.get('bridge_port_role') and args.stage == 'Synthesize':
+                statuses.append({'name': sig, 'status': 'SKIPPED',
+                                 'reason': f"GAP-3: bridge_port_role={e.get('bridge_port_role')} "
+                                           f"wire_decl skipped in Synth (no scan plumbing)"})
+            elif sig and mod:
+                if mod not in changes:
+                    changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': []}
+                # Same 5-layer dedup as unconnected_rewires wire_decl path
+                if sig in rewire_new_nets:
+                    statuses.append({'name': sig, 'status': 'INFO',
+                                     'reason': f'wire_decl SKIPPED for {sig}: referenced by Pass 4 '
+                                               f'rewire → implicit decl (SVR-9 prevention)'})
+                else:
+                    existing_post = zgrep_count(sig, posteco)
+                    existing_pre  = zgrep_count(sig, preeco)
+                    already_queued = sig in changes[mod]['wire_decls']
+                    has_port_use_in_post = False
+                    try:
+                        import subprocess as _sp
+                        _grep = _sp.run(['zgrep', '-c', f'\\.[A-Za-z0-9_]\\+ *( *{sig} *)', posteco],
+                                        capture_output=True, text=True, timeout=60)
+                        has_port_use_in_post = int((_grep.stdout or '0').strip() or '0') > 0
+                    except Exception:
+                        pass
+                    if existing_post == 0 and existing_pre == 0 and not already_queued and not has_port_use_in_post:
+                        changes[mod]['wire_decls'].append(sig)
+                        statuses.append({'name': sig, 'status': 'QUEUED',
+                                         'reason': f'wire_decl queued for Perl Pass 1 in {mod} '
+                                                   f'(role={e.get("bridge_port_role","?")})'})
+                    else:
+                        why = []
+                        if existing_post > 0:    why.append(f'PostEco refs={existing_post}')
+                        if existing_pre  > 0:    why.append(f'PreEco refs={existing_pre}')
+                        if already_queued:       why.append('already queued in batch')
+                        if has_port_use_in_post: why.append('used as .PORT(net) in PostEco → implicit wire exists')
+                        statuses.append({'name': sig, 'status': 'INFO',
+                                         'reason': f'wire_decl SKIPPED for {sig}: ' +
+                                                   ', '.join(why) + ' — SVR-9 prevention'})
+            else:
+                statuses.append({'name': sig, 'status': 'SKIPPED',
+                                 'reason': f'wire_declaration missing signal_name or module_name'})
+
         # ── port_declaration / port_promotion (Pass 2) ───────────────────────────
         elif ct in ('port_declaration', 'port_promotion'):
             sig = e.get('signal_name', '')
@@ -678,7 +730,7 @@ def main():
         # status as both INSERTED and UNHANDLED — pollutes the merged
         # applied JSON and trips Step 5 `no_unhandled` check.
         elif ct in ('new_logic_gate', 'new_logic_dff', 'new_logic',
-                    'assign', 'rewire', 'remove_wire_decl',
+                    'assign', 'rewire', 'remove_wire_decl', 'wire_declaration',
                     'port_declaration', 'port_promotion'):
             pass
         else:
