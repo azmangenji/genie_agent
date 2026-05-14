@@ -318,135 +318,83 @@ For every new DFF, when picking `port_connections_per_stage[<stage>].CP`, verify
 
 Step 3 validator Check 27 (`HIGH/27-CLOCK-STAGE-MISMATCH`) HARD FAILs any new DFF whose per-stage CP wires do not share a common root clock token. The orchestrator's Step 3 gate blocks Phase A handoff on any HIGH issue.
 
-### 0b-MODE-S — Scan stitching for new ECO DFFs in P&R
+### 0b-DFF — One-shot DFF entry assembly via `eco_emit_dff_entry.py` (MANDATORY)
 
-A new DFF in a scan-reachable clock domain (anything reachable from `tile_dfx/scan_cntl`) MUST integrate with the existing scan network. Tying SE/SI to `1'b0` in P&R isolates the DFF → FM "globally unmatched SE pin" → stage fails.
+For EVERY `new_logic` change in `eco_rtl_diff.json` representing a new DFF, invoke `eco_emit_dff_entry.py` ONCE and splice its per-stage output verbatim into `eco_preeco_study.json`. Do NOT manually call the underlying scripts (`eco_pick_sibling.py`, `eco_pick_bridge_dffs.py`, `eco_emit_bridge_plumbing.py`, `eco_synth_chain.py`) — the wrapper orchestrates them.
 
-**Per-stage strategy table:**
-
-| Stage | Strategy | Notes |
-|---|---|---|
-| Synthesize | `constant_zero` | Always — RTL has no scan pins |
-| PrePlace | `bridge_port` (default) | `neighbor_dff` ONLY when Route also = `neighbor_dff` |
-| Route | `bridge_port` (MANDATORY) | CTS rebalances scan wires → `neighbor_dff` non-deterministic |
-
-Validator HARD FAILs (gate Step 4): **Check 28** (Route≠bridge_port), **Check 29** (PP=neighbor_dff while Route=bridge_port), **Check 30** (constant_zero with neighboring DFFs in same clock domain), **Check 32** (strategy↔connection inconsistency — see below).
-
-**STRATEGY ↔ CONNECTION INVARIANT (Check 32 HARD FAIL).** Strategy field and `port_connections_per_stage[<stage>].SE/SI` MUST agree per stage:
-- `constant_zero` ⇔ `SE=SI='1'b0'`
-- `neighbor_dff` ⇔ `SE/SI` are real neighbor wires
-- `bridge_port` ⇔ `SE/SI` are `ECO_<jira>_*_in` bridge ports
-
-Plugging real wires while declaring `constant_zero` is FORBIDDEN — the metadata lies about what the netlist will actually do.
-
-**SIBLING ESCALATION (MANDATORY before falling to constant_zero).** When the default `eco_pick_sibling.py` invocation returns `recommended_pick: null`, escalate in order:
-
-1. **`--host-scope=down`** — search host's CHILDREN instead of parent's other children. Use this whenever host is tile-top OR when no parent-scope peer has a viable cluster.
-   ```bash
-   python3 script/eco_scripts/eco_pick_sibling.py \
-       --netlist <REF_DIR>/data/PreEco/PrePlace.v.gz \
-       --host-module <host_module> --host-scope down \
-       --tile-module <ddrss_<tile>_t> \
-       --output data/<TAG>_eco_sibling_pick_<dff>_down.json
-   ```
-
-2. **`--min-cluster=5`** (combine with `--host-scope=down`) — relax the default ≥10 threshold to ≥5 if step 1 still returns null.
-   ```bash
-   python3 script/eco_scripts/eco_pick_sibling.py \
-       --netlist <REF_DIR>/data/PreEco/PrePlace.v.gz \
-       --host-module <host_module> --host-scope down --min-cluster 5 \
-       --tile-module <ddrss_<tile>_t> \
-       --output data/<TAG>_eco_sibling_pick_<dff>_min5.json
-   ```
-
-3. Only if BOTH escalations return null may you fall back to `constant_zero`. Record the full escalation chain in `scan_stitching_skipped_reason` (e.g. `"parent_scope=null, host-scope=down=null, min-cluster=5=null — true wrapper-clock scope"`).
-
-When `--host-scope=down` returns a viable child as recommended pick, the bridge is built **inside host scope**: `parent_module = host_module` (host instantiates the chosen child), `sibling_module = <child_module>`. Pass these to `eco_emit_bridge_plumbing.py` accordingly.
-
-**`host_module_dff_count_same_clock` MUST be computed by grep, not asserted.** Validator Check 30 re-verifies — lying triggers HARD FAIL.
 ```bash
-awk '/^module <host>\b/,/^endmodule/' /tmp/eco_study_<TAG>_Synthesize.v | grep -cE '\.CP\(\s*<dff_clock>\b'
+# Extract a single change to a temp file (or pipe via stdin with --rtl-change -)
+python3 -c "import json; d=json.load(open('data/<TAG>_eco_rtl_diff.json')); \
+    print(json.dumps([c for c in d['changes'] if c.get('target_register')=='<TARGET_REG>'][0]))" \
+    > /tmp/<TARGET_REG>_change.json
+
+python3 script/eco_scripts/eco_emit_dff_entry.py \
+    --rtl-change   /tmp/<TARGET_REG>_change.json \
+    --ref-dir      <REF_DIR> \
+    --rename-map   data/<TAG>_eco_fenets_rename_map.json \
+    --tag <TAG> --jira <JIRA> --tile-module ddrss_<tile>_t \
+    --base-dir <BASE_DIR> \
+    --output data/<TAG>_eco_dff_entry_<TARGET_REG>.json
 ```
 
-**Required field on every new_logic_dff entry:**
-```json
-"mode_S_strategy_per_stage": {"Synthesize": "constant_zero", "PrePlace": "bridge_port", "Route": "bridge_port"}
-```
-Bridge plumbing entries (port_declaration, port_connection, etc.) MUST carry `"bridge_port_role": "<sibling_si|sibling_se|sibling_q|host_si|host_se|host_q>"` so the applier skips them in Synth.
+The wrapper handles ALL Mode-S decisions automatically:
+- Sibling pick + escalation (parent → `--host-scope=down` → `--min-cluster=5`)
+- Strategy choice (`bridge_port` / `neighbor_dff` / `constant_zero` / `BLOCKED`)
+- Bridge plumbing emission with per-stage module-name resolution (Route `_0` uniquification handled)
+- Buffer cell auto-discovery from PreEco library
+- D-input chain via `eco_synth_chain.py` from `d_input_expected_function`
+- Per-stage CP/SI/SE resolution from rename map
+- Self-validation against the Step 3 invariants below
 
-**Bridge source wire stage-stability (MANDATORY).** Before picking SI/SE bridge source wires, verify each wire's parent-level driver is the same logical net in PP and Route via `data/<TAG>_eco_fenets_rename_map.json` lookup keyed `<sibling_scope>/<anchor_dff>/<SE|SI>`. Compare PP and Route values:
-- Match → record `bridge_source_pp_route_match: {si: true, se: true}` on the new_logic_dff entry
-- Mismatch → CTS-renamed; reject this anchor and pick another
-
-**HARD RULE — no rename_map fallback.** If the candidate anchor has NO entry in the rename map, set `mode_S_strategy_per_stage[<stage>]: "BLOCKED_NO_RENAME_MAP"` and let Check 23 fail the round. DO NOT scan PP/Route netlists directly to "guess" — that bypasses FM and produces silently wrong stage hookups.
-
-**Deterministic picker + emitter (BOTH MANDATORY when `bridge_port` chosen).** Manual derivation of bridge artifacts is FORBIDDEN — Check 24 (BRIDGE-ARTIFACT-SET-COMPLETE) fails on missing items. Invoke both helpers and SPLICE their JSON output verbatim into `eco_preeco_study.json`:
-```bash
-python3 script/eco_scripts/eco_pick_bridge_dffs.py \
-    --netlist <REF_DIR>/data/PreEco/PrePlace.v.gz \
-    --sibling-mod <sibling_module> --output data/<TAG>_eco_bridge_pick_<dff>.json
-
-python3 script/eco_scripts/eco_emit_bridge_plumbing.py \
-    --bridge-pick data/<TAG>_eco_bridge_pick_<dff>.json \
-    --jira <jira> --ref-dir <REF_DIR> \
-    --host-module <host_base> --sibling-module <sib_base> \
-    --parent-module <parent_base> --host-inst <inst> --sibling-inst <inst> \
-    --new-dff-instance <DFF> --output data/<TAG>_eco_bridge_plumbing_<dff>.json
+Splice into study (per-stage):
+```python
+out = json.load(open(f'data/{TAG}_eco_dff_entry_{target}.json'))
+for stage in ('Synthesize', 'PrePlace', 'Route'):
+    study[stage].extend(out[stage])  # entries are pre-validated
 ```
 
-Pass BASE module names (no `_0`/`_1` suffix) for `--host/sibling/parent-module`. The emitter auto-resolves the per-stage uniquified name (e.g. `<base>_0` in Route) by greping each PostEco netlist via `--ref-dir`. Buffer cell types are auto-discovered from PreEco (`BUF*` grep) — `--si-buffer-cell` / `--se-buffer-cell` are optional overrides. Output lands in the right module name per stage so FM doesn't see `BRIDGE_PARENT_MISSING`.
+If the wrapper exits with `strategy: BLOCKED` → engineer escalation needed (host has DFFs in same clock domain but no viable bridge target). Read `diagnostics.strategy_info.escalation_chain` for the full picker history. Do NOT fall back to manual emission — it will fail Step 3 validator.
 
-**MANDATORY minimum cluster size: `consolidation_target_dffs` ≥ 10 DFFs** (use SIBLING ESCALATION above when picker can't reach 10). Smaller clusters mean the bridge isn't a meaningful scan path participant → FM cone matching unstable.
+### Validator invariants the wrapper guarantees (informational — see `eco_validate_step3.py`)
 
-**Bridge artifact umbrella** (per new ECO DFF — all carry `bridge_port_role`):
+| Check | What it enforces |
+|---|---|
+| 17 | Bridge port consumed by expected consumer (DFF.SI/SE for `host_*`, buffer for `sibling_*`, si_consumer_replace for `sibling_q`) |
+| 19 | Per-stage SI/SE wire exists in stage netlist (skips bridge ports created by applier) |
+| 23 | Bridge source has rename_map entry (no PP/Route guess fallback) |
+| 24 | Bridge artifact set complete (umbrella below) |
+| 27 | Per-stage CP shares the same clock-root token (decorator-strip aware) |
+| 28 | Route MUST be `bridge_port` for any DFF requiring scan stitching |
+| 29 | PP MUST also be `bridge_port` when Route is |
+| 30 | `constant_zero` forbidden when host has DFFs in same clock domain (grep-verified) |
+| 31 | Chain topology matches `eco_synth_chain.synthesize()` cell-type multiset |
+| 32 | Strategy field ↔ port_connections SE/SI agreement (no lying entries) |
 
-| Entry | change_type | Stages |
+**Bridge artifact umbrella** (auto-emitted by the wrapper when `strategy: bridge_port`):
+
+| Entry | `change_type` | Stages |
 |---|---|---|
 | Host/sibling SI/SE/Q ports | `port_declaration` | all |
 | Parent-level bridge wires | `wire_declaration` | all |
 | Host/sibling instance hookups | `port_connection` | all |
 | Sibling SE-pin consolidation (≥10 DFFs) | `sibling_pin_consolidation` | PP, Route |
-| Bridge Q closure (1 DFF SI rewrite) | `si_consumer_replace` | PP, Route |
+| Bridge Q closure (1 DFF `.SI` rewrite) | `si_consumer_replace` | PP, Route |
 | SI/SE driver buffers in sibling | `new_logic` | Route |
 
-**Bridge wire is driven through the sibling-side port** (not a parent-scope assign). Each port has exactly ONE expected consumer — Step 3 Check 17 enforces:
+#### Opt-out (skip the wrapper for non-scan DFFs)
 
-| `bridge_port_role` | Expected consumer |
-|---|---|
-| `host_si` / `host_se` | new DFF's `port_connections_per_stage[<stage>].SI/SE` |
-| `host_q` | host module's Q-output (DFF `.Q` output net == port name) |
-| `sibling_si` / `sibling_se` | buffer `new_logic` entry's `output_net` (Route only; PP may dangle — see Step 5 `BRIDGE_OUTPUT_UNDRIVEN`) |
-| `sibling_q` | `si_consumer_replace.new_si_net` |
+When `dff_clock` is a `wrp_clk_*` wrapper clock that doesn't propagate scan_enable, set `requires_scan_stitching: false` + `scan_stitching_skipped_reason: "wrp_clk_<N> wrapper — no scan_enable"` directly on the entry without invoking the wrapper. Validator Checks 28-32 are skipped for entries with `requires_scan_stitching: false`.
 
-`consumer_dff_inst` for Q-closure MUST exist inside `sibling_module` body (module-scoped grep) — silent no-op + FM fail otherwise.
+#### Combinational gates (non-DFF) — chains still use `eco_synth_chain.py`
 
-#### When `mode_S_strategy_per_stage[<stage>]: "neighbor_dff"`
-
-Per-stage independent lookup — read THIS stage's PreEco netlist, pick a neighbor DFF in the host module, post-verify the wire exists in the same stage:
-```python
-for stage in ('Synthesize', 'PrePlace', 'Route'):
-    netlist = f'<REF_DIR>/data/PreEco/{stage}.v.gz'
-    neighbor = pick_neighbor_dff(host_module, netlist)
-    assert grep_exists(neighbor.SE, netlist) and grep_exists(neighbor.SI, netlist)
-    pcs[stage]["SE"], pcs[stage]["SI"] = neighbor.SE, neighbor.SI
-```
-
-**FORBIDDEN:** reading PP netlist for Route lookup (or vice versa); copying one stage's result to another; skipping post-verification. **Mutually exclusive with bridge_port:** if ANY stage uses `neighbor_dff`, do NOT emit `sibling_pin_consolidation` or `si_consumer_replace` entries.
-
-#### Opt-out (no scan stitching at all)
-
-Set `requires_scan_stitching: false` + `scan_stitching_skipped_reason: "<auditable reason>"`. Valid ONLY when `dff_clock` is a `wrp_clk_*` wrapper clock that doesn't propagate scan_enable.
-
-### 0c-SYNTH — Derive d_input_gate_chain via eco_synth_chain.py (MANDATORY)
-
-For any new DFF with combinational D-input, do NOT hand-decompose the RTL Boolean. Invoke the synthesizer and splice its output verbatim:
+For a `new_logic_gate` change WITHOUT an associated new DFF (rare — usually `wire_swap` and-term), invoke `eco_synth_chain.py` directly with the Boolean and splice the output. Same library + DeMorgan + topology guarantees as the wrapper uses internally:
 
 ```bash
 python3 script/eco_scripts/eco_synth_chain.py synthesize \
     --boolean "<RTL_BOOLEAN>" --inputs "<comma-separated names>" --jira <JIRA>
 ```
 
-If the synthesizer raises an error, the Boolean doesn't match any known pattern — extend `eco_synth_chain.py` with a new pattern (engineer-evidence required). Falling back to literal decomposition is FORBIDDEN.
+Hand-decomposition is FORBIDDEN — Check 31 hard-fails any chain whose cell-type multiset differs from the synthesizer's output.
 
 Validator Check 31 (`SYNTH-STYLE-TOPOLOGY`) hard-fails any chain whose cell-type multiset differs from the synthesizer's output, even when the Boolean is equivalent.
 
@@ -529,7 +477,7 @@ Verify: `polarity_matches = (chosen_gate_function.output_is_inverting == rtl_exp
 1. A downstream inverting cell (NR/NAND) flips the polarity of an upstream input — choosing the un-inverted form for that input makes the cumulative function carry the wrong polarity, even when each individual cell is correct.
 2. The RTL Boolean has an input in inverted form (`~SIG`); picking `SIG` directly into a non-inverting cell silently drops the inversion.
 
-**Rule:** Do NOT hand-decompose multi-cell chains. Invoke `eco_synth_chain.py` (per §0c-SYNTH) — it derives cell types AND input polarities from `d_input_expected_function` so the composed function is correct by construction. Step 3 validator Check 31 hard-fails any topology mismatch between the emitted chain and what `eco_synth_chain` produces from the same Boolean.
+**Rule:** Do NOT hand-decompose multi-cell chains. The DFF wrapper §0b-DFF invokes `eco_synth_chain.py` automatically; for standalone gate chains use the wrapper or call `eco_synth_chain.py` directly per §0b-DFF "Combinational gates" subsection. The synthesizer derives cell types AND input polarities from `d_input_expected_function` so the composed function is correct by construction. Step 3 validator Check 31 hard-fails any topology mismatch.
 
 When an input must enter a non-inverting cell as `~SIG`, search the host module for an existing INV whose output is `~SIG` and use its output net as the input wire — do NOT instantiate a redundant INV.
 
