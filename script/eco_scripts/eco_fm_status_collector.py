@@ -156,30 +156,58 @@ def parse_dat_run_status(ref_dir, target):
 
 def parse_failing_points(ref_dir, target):
     """Read <target>__failing_points.rpt.gz; return list of failing point paths
-    or empty list if FM hadn't reached the verify phase / file missing."""
+    or empty list if FM hadn't reached the verify phase / file missing.
+
+    Formality reports failing points as consecutive line PAIRS:
+      Ref  DFF   r:/FMWORK_REF_.../DFF_name
+      Impl DFF   i:/FMWORK_IMPL_.../DFF_name
+    Each path is on a SEPARATE line — never on the same line. The old check
+    ('i:/' in ln and 'r:/' in ln) would NEVER match, causing all failing
+    reports to appear as 0 failing points → incorrect PASS verdict.
+    """
     rpt = Path(ref_dir) / 'rpts' / target / f'{target}__failing_points.rpt.gz'
     if not rpt.is_file():
         return []
     points = []
-    # Header lines like "Reference : r:/FMWORK_REF_..." and
-    # "Implementation : i:/FMWORK_IMPL_..." appear in every report and contain
-    # exactly ONE of i:/ or r:/ — they are NOT failing points. Real failing
-    # points have BOTH on the same line (the compare pair). Also skip the
-    # explicit "No failing compare points." sentinel.
     HEADER_RE = re.compile(r'^\s*(Reference|Implementation|Version|Date|Report)\s*:')
     NONE_SENTINEL = re.compile(r'No failing compare points\.?$')
+    # Count summary line: "N Failing compare points"
+    COUNT_RE = re.compile(r'^\s*(\d+)\s+Failing compare points')
     try:
         with gzip.open(rpt, 'rt', errors='replace') as f:
-            for ln in f:
-                if HEADER_RE.match(ln):
-                    continue
-                if NONE_SENTINEL.search(ln):
-                    return []  # explicit zero — done
-                if 'i:/' in ln and 'r:/' in ln:
-                    # Real failing-point line carries BOTH paths
-                    points.append(ln.strip())
+            lines = f.readlines()
     except Exception:
         return []
+
+    # Fast path: check for explicit "No failing" sentinel or count=0
+    for ln in lines:
+        if NONE_SENTINEL.search(ln):
+            return []
+        m = COUNT_RE.match(ln)
+        if m and int(m.group(1)) == 0:
+            return []
+
+    # Parse paired lines: "  Ref  <type>  r:/..." followed by "  Impl <type>  i:/..."
+    prev_ref = None
+    for ln in lines:
+        if HEADER_RE.match(ln):
+            continue
+        ln_s = ln.strip()
+        if ln_s.startswith('Ref ') and 'r:/' in ln_s:
+            prev_ref = ln_s
+        elif ln_s.startswith('Impl ') and 'i:/' in ln_s and prev_ref:
+            # Pair complete — record the ref path as the failing point identifier
+            points.append(prev_ref)
+            prev_ref = None
+        else:
+            prev_ref = None  # reset on non-matching line
+
+    # Fallback: also catch any single-line format with both i:/ and r:/
+    if not points:
+        for ln in lines:
+            if 'i:/' in ln and 'r:/' in ln and not HEADER_RE.match(ln):
+                points.append(ln.strip())
+
     return points
 
 
