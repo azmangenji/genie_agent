@@ -1563,6 +1563,32 @@ def main():
                     f"for this stage → FE-LINK-2 ABORT. Studier must pick a cell type "
                     f"that exists in the per-stage PreEco netlist (GAP-5).")
 
+    # ── wire_swap + intermediate_net_insertion gate chain check ──────────────
+    # When a wire_swap change has fallback_strategy=intermediate_net_insertion
+    # AND new_condition_gate_chain, the studier MUST emit new_logic_gate study
+    # entries for the gate chain. Without them the applier skips insertion and
+    # the pivot net becomes undriven → thousands of FM failing compare points.
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'wire_swap':
+            continue
+        if c.get('fallback_strategy') != 'intermediate_net_insertion':
+            continue
+        chain = c.get('new_condition_gate_chain') or []
+        if not chain:
+            continue
+        # Verify study has new_logic_gate entries for this chain
+        pivot_net = chain[-1].get('output_net', '') if chain else ''
+        for stage in ['Synthesize', 'PrePlace', 'Route']:
+            gate_entries = [e for e in study.get(stage, [])
+                           if e.get('change_type') in ('new_logic_gate', 'condition_gate_chain', 'new_logic')]
+            if not gate_entries:
+                issues.append(
+                    f"CRITICAL: {stage} wire_swap changes[{idx}] has fallback_strategy="
+                    f"intermediate_net_insertion with {len(chain)}-gate new_condition_gate_chain, "
+                    f"but study has NO new_logic_gate entries. Studier Phase 1 must emit gate chain "
+                    f"entries same as Phase 0 — without them the pivot net '{pivot_net}' is undriven "
+                    f"after rename and FM will fail with thousands of compare points.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

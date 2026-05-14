@@ -299,6 +299,50 @@ def main():
                     f"trigger FE-LINK-7 ABORT or SVR-8 in FM. eco_passes_2_4.py must "
                     f"apply port_declaration entries to all 3 stages.")
 
+    # ── 13. wire_swap + intermediate_net_insertion: pivot net must be driven ─
+    # When new_condition_gate_chain was applied, the last gate must drive
+    # <pivot_net> in PostEco. If the chain was skipped, <pivot_net> becomes
+    # undriven (renamed to _orig but nothing drives the original name).
+    try:
+        rtl_diff_path = Path(args.applied).parent / f"{tag}_eco_rtl_diff.json"
+        if rtl_diff_path.exists():
+            rtl_diff_data = json.loads(rtl_diff_path.read_text())
+            for idx, c in enumerate(rtl_diff_data.get('changes', [])):
+                if c.get('change_type') != 'wire_swap': continue
+                if c.get('fallback_strategy') != 'intermediate_net_insertion': continue
+                chain = c.get('new_condition_gate_chain') or []
+                if not chain: continue
+                pivot_net = chain[-1].get('output_net', '')
+                if not pivot_net: continue
+                orig_net = f"{pivot_net}_orig"
+                for stage in ['Synthesize', 'PrePlace', 'Route']:
+                    gz = f"{args.ref_dir}/data/PostEco/{stage}.v.gz"
+                    if not Path(gz).exists(): continue
+                    # orig net must exist (renamed from pivot) AND
+                    # pivot net must still be driven (by the new chain)
+                    try:
+                        r_orig = subprocess.run(f'zgrep -c "{orig_net}" {gz}',
+                            shell=True, capture_output=True, text=True, timeout=30)
+                        r_pivot = subprocess.run(f'zgrep -c "\.ZN\\|\.Z\\|\.Q" {gz} | head -1',
+                            shell=True, capture_output=True, text=True, timeout=30)
+                        orig_count = int(r_orig.stdout.strip()) if r_orig.stdout.strip().isdigit() else 0
+                        # If orig_net exists but pivot_net has no driver → chain missing
+                        r_drv = subprocess.run(
+                            f'zgrep -c "\\.ZN ( {pivot_net} )\\|\\.Z ( {pivot_net} )" {gz}',
+                            shell=True, capture_output=True, text=True, timeout=30)
+                        drv_count = int(r_drv.stdout.strip()) if r_drv.stdout.strip().isdigit() else 0
+                        if orig_count > 0 and drv_count == 0:
+                            issues.append(
+                                f"CRITICAL: {stage} pivot net '{pivot_net}' renamed to '{orig_net}' "
+                                f"but has NO driver in PostEco — condition_gate_chain was NOT inserted. "
+                                f"Studier Phase 1 must emit gate chain entries for "
+                                f"wire_swap+intermediate_net_insertion. Undriven pivot → thousands of "
+                                f"FM failing compare points on downstream DFFs.")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': tag, 'round': args.round, 'passed': passed, 'issues': issues}

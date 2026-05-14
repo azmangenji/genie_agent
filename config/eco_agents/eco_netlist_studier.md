@@ -626,6 +626,19 @@ If `fanout > 10` → **NEVER use this net as gate output**. High-fanout nets hav
 
 For each `wire_swap` change, process FM fenets results per stage.
 
+**MANDATORY PRE-PHASE 1: wire_swap + intermediate_net_insertion gate chain**
+
+Before processing FM results, check if the `wire_swap` change has `fallback_strategy: "intermediate_net_insertion"` AND a non-empty `new_condition_gate_chain`. If so, the gate chain MUST be emitted as study entries — treat it exactly like Phase 0 `and_term`/`new_logic` gate insertion:
+
+1. For each gate in `new_condition_gate_chain`, emit a `new_logic_gate` study entry (instance_name, gate_function, inputs per stage, output_net, instance_scope = CMDARB/declaring module scope)
+2. Resolve PENDING_FM_RESOLUTION inputs using the rename map (condition_inputs_to_query results from Step 2)
+3. Apply Mode H Route fallback rule for unresolvable Route inputs (see P&R alias rule above)
+4. The last gate in the chain (c_mux_final or similar) MUST output to `<pivot_net>` — not to a new `n_eco_*` net
+
+**Without this step, the pivot net is renamed to `<pivot_net>_orig` but nothing drives `<pivot_net>` → undriven D-input on the target DFF → thousands of FM failing compare points cascading through downstream DFFs.**
+
+Log: `CONDITION_GATE_CHAIN: emitting <N> new_logic_gate entries for wire_swap <old_token> intermediate_net_insertion`
+
 **Multi-instance handling:** When `instances` is non-null, process each instance's FM results independently.
 
 ### 1. Read the PreEco netlist (once per stage, reuse across all cells)
