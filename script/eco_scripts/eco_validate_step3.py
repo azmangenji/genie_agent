@@ -1358,16 +1358,63 @@ def main():
                         f"{type(ex).__name__}: {ex}"
                     )
 
+    # ── Helper: detect entries that are doing "real" scan stitching even when
+    #          their mode_S_applied / requires_scan_stitching flags say no.
+    #          A DFF whose port_connections_per_stage[PP|Route].SE/SI hold a
+    #          real wire (not '1'b0' / '1'bz') IS doing scan stitching, full
+    #          stop. The strategy field's claim is irrelevant; the netlist
+    #          will use the real wire. This closes the G1/G2 escape hatch.
+    _CONST_OR_EMPTY = ("1'b0", "1'bz", "")
+    def _scan_active(e):
+        if e.get('mode_S_applied') or e.get('requires_scan_stitching'):
+            return True
+        pcs = e.get('port_connections_per_stage') or {}
+        for s in ('PrePlace', 'Route'):
+            sm = pcs.get(s) or {}
+            if sm.get('SE','') not in _CONST_OR_EMPTY or sm.get('SI','') not in _CONST_OR_EMPTY:
+                return True
+        return False
+
+    # ── Helper: re-grep PreEco netlist to get authoritative DFF count in
+    #          host module on dff_clock — never trust the studier's value.
+    #          Uses /tmp/eco_study_<TAG>_Synthesize.v cached by 0c (or
+    #          falls back to PreEco/Synthesize.v.gz via zcat+awk pipeline).
+    _dff_count_cache = {}
+    def _real_dff_count(host_mod, dff_clock):
+        if not host_mod or not dff_clock:
+            return None
+        key = (host_mod, dff_clock)
+        if key in _dff_count_cache:
+            return _dff_count_cache[key]
+        cached = Path(f'/tmp/eco_study_{args.tag}_Synthesize.v')
+        ref_dir = args.ref_dir
+        if cached.is_file():
+            cmd = (f"awk '/^module {re.escape(host_mod)}\\b/,/^endmodule/' {cached} "
+                   f"| grep -cE '\\.CP\\(\\s*{re.escape(dff_clock)}\\b'")
+        else:
+            gz = Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz'
+            if not gz.is_file():
+                _dff_count_cache[key] = None
+                return None
+            cmd = (f"zcat {gz} | awk '/^module {re.escape(host_mod)}\\b/,/^endmodule/' "
+                   f"| grep -cE '\\.CP\\(\\s*{re.escape(dff_clock)}\\b'")
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+            n = int((r.stdout or '0').strip() or '0')
+        except Exception:
+            n = None
+        _dff_count_cache[key] = n
+        return n
+
     # ── 28. ROUTE-MUST-BE-BRIDGE-PORT (G1) ─────────────────────────────────
     # Route-stage scan wires are CTS-rebalanced, so neighbor_dff in Route is
-    # non-deterministic across PreEco/PostEco — FM cones diverge by chance
-    # of which CTS clone the picked wire lives on. Bridge_port creates a
-    # stable Verilog port boundary that survives CTS unchanged.
+    # non-deterministic. Guard relaxed: also processes entries that have real
+    # PP/Route SE/SI wires regardless of mode_S_applied flag (closes escape).
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
-            if not (e.get('mode_S_applied') or e.get('requires_scan_stitching')):
+            if not _scan_active(e):
                 continue
             inst = e.get('instance_name', '?')
             strat = (e.get('mode_S_strategy_per_stage') or {})
@@ -1382,14 +1429,11 @@ def main():
                     f"plumbing for Route via eco_emit_bridge_plumbing.py.")
 
     # ── 29. PP-MUST-MATCH-ROUTE-WHEN-BRIDGE (G1) ──────────────────────────
-    # When Route uses bridge_port, PP must also use bridge_port. Mixing
-    # PP=neighbor_dff with Route=bridge_port produces stage-divergent cone
-    # reach — FM cones converge only by accident.
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
-            if not (e.get('mode_S_applied') or e.get('requires_scan_stitching')):
+            if not _scan_active(e):
                 continue
             inst = e.get('instance_name', '?')
             strat = (e.get('mode_S_strategy_per_stage') or {})
@@ -1400,15 +1444,14 @@ def main():
                     f"HIGH/29-PP-MUST-MATCH-ROUTE: DFF {inst} entry in {stage} has "
                     f"Route='bridge_port' but PrePlace={pp!r}. Mixing strategies "
                     f"across PP and Route causes stage-divergent cone reach into the "
-                    f"bridge buffer (the cone walks past the port boundary into the "
-                    f"parent and meets different physical wires per stage). PP MUST "
-                    f"also use 'bridge_port' when Route does.")
+                    f"bridge buffer. PP MUST also use 'bridge_port' when Route does.")
 
-    # ── 30. CONSTANT-ZERO-ONLY-WHEN-NO-DFFS (G2) ──────────────────────────
-    # Mode S constant_zero (SE/SI tied to 1'b0) is permitted ONLY when the
-    # host module has zero pre-existing DFFs in the same clock domain. Any
-    # other use creates a scan-isolated DFF island that fails FM via cross-
-    # DFF cone interference.
+    # ── 30. CONSTANT-ZERO-ONLY-WHEN-NO-DFFS (G2) — with grep override ─────
+    # constant_zero is permitted ONLY when host module has zero pre-existing
+    # DFFs in the same clock domain. The studier's declared
+    # host_module_dff_count_same_clock is RE-VERIFIED via netlist grep — a
+    # studier that lies about the count to bypass this check is caught and
+    # overridden. This closes the second G1/G2 escape hatch.
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
@@ -1418,31 +1461,66 @@ def main():
             for chk in ('PrePlace', 'Route'):
                 if strat.get(chk) != 'constant_zero':
                     continue
-                # constant_zero declared for PP/Route — verify host module has
-                # no pre-existing DFF in the same clock domain. The studier is
-                # expected to record host_module_dff_count_same_clock on the
-                # entry when constant_zero is the chosen fallback.
-                host_dff_count = e.get('host_module_dff_count_same_clock')
-                exempt_reason  = e.get('scan_stitching_skipped_reason', '')
-                if host_dff_count is None:
+                declared = e.get('host_module_dff_count_same_clock')
+                exempt_reason = e.get('scan_stitching_skipped_reason', '')
+                host_mod = e.get('module_name', '') or ''
+                clk = e.get('dff_clock', '') or ''
+                actual = _real_dff_count(host_mod, clk)
+                if actual is not None and declared is not None and int(declared) != actual:
+                    issues.append(
+                        f"HIGH/30b-DFF-COUNT-LIE: DFF {inst} entry declares "
+                        f"host_module_dff_count_same_clock={declared} but PreEco grep "
+                        f"counts {actual} DFFs in module {host_mod!r} on clock {clk!r}. "
+                        f"Studier MUST compute this value via grep, not assert it. "
+                        f"Forcing actual={actual} for Check 30 evaluation.")
+                effective = actual if actual is not None else declared
+                if effective is None:
                     issues.append(
                         f"HIGH/30-CONSTANT-ZERO-UNJUSTIFIED: DFF {inst} entry in "
                         f"{stage} declares mode_S_strategy_per_stage.{chk}="
-                        f"'constant_zero' but does NOT record "
-                        f"'host_module_dff_count_same_clock'. constant_zero is "
-                        f"forbidden unless the host module has zero pre-existing "
-                        f"DFFs in the same clock domain — the studier MUST count "
-                        f"them and record the count on the entry to justify "
-                        f"constant_zero, otherwise fall back to 'bridge_port'.")
-                elif int(host_dff_count) > 0 and 'wrp_clk' not in exempt_reason:
+                        f"'constant_zero' but neither studier-declared "
+                        f"'host_module_dff_count_same_clock' nor a working "
+                        f"netlist grep is available. Compute the count and either "
+                        f"justify constant_zero (count==0) or switch to bridge_port.")
+                elif int(effective) > 0 and 'wrp_clk' not in exempt_reason:
                     issues.append(
                         f"HIGH/30-CONSTANT-ZERO-FORBIDDEN: DFF {inst} entry in "
-                        f"{stage} uses constant_zero for {chk} but the host module "
-                        f"has {host_dff_count} pre-existing DFF(s) in the same "
-                        f"clock domain. constant_zero creates a scan-isolated "
-                        f"island that fails FM via cross-DFF cone interference. "
-                        f"Re-strategy to 'bridge_port' (default) and emit full "
-                        f"bridge plumbing.")
+                        f"{stage} uses constant_zero for {chk} but host module "
+                        f"{host_mod!r} has {effective} pre-existing DFF(s) on clock "
+                        f"{clk!r}. constant_zero creates a scan-isolated island that "
+                        f"fails FM via cross-DFF cone interference. Re-strategy to "
+                        f"'bridge_port' (use SIBLING ESCALATION in studier 0b-MODE-S).")
+
+    # ── 32. STRATEGY-CONNECTION-CONSISTENCY (concern B escape closure) ────
+    # When mode_S_strategy_per_stage[<stage>] declares constant_zero, the
+    # port_connections_per_stage[<stage>].SE/SI MUST be '1'b0'. A studier
+    # that writes 'constant_zero' but plugs real neighbor wires produces a
+    # netlist that will USE the real wires (the strategy field is metadata;
+    # port_connections is what gets applied). The PP/Route real wire may be
+    # CTS-rebalanced → FM Route fail despite the entry claiming "no scan".
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            inst = e.get('instance_name', '?')
+            strat = e.get('mode_S_strategy_per_stage') or {}
+            pcs = e.get('port_connections_per_stage') or {}
+            for chk in ('Synthesize', 'PrePlace', 'Route'):
+                if strat.get(chk) != 'constant_zero':
+                    continue
+                pcs_chk = pcs.get(chk) or {}
+                actual_se = pcs_chk.get('SE', '')
+                actual_si = pcs_chk.get('SI', '')
+                if (actual_se not in _CONST_OR_EMPTY) or (actual_si not in _CONST_OR_EMPTY):
+                    issues.append(
+                        f"HIGH/32-STRATEGY-CONNECTION-LIE: DFF {inst} entry in "
+                        f"{stage} declares mode_S_strategy_per_stage.{chk}="
+                        f"'constant_zero' but port_connections_per_stage.{chk} has "
+                        f"SE={actual_se!r}, SI={actual_si!r} (real wires). The "
+                        f"netlist will use the real wires; the strategy field lies. "
+                        f"Either set strategy to 'neighbor_dff'/'bridge_port' (and "
+                        f"satisfy Checks 28/29) OR set SE/SI to '1'b0' to actually "
+                        f"be constant_zero.")
 
     # ── GAP-5: [CELL_TYPE_STAGE_VALID] — cell type must exist in per-stage PreEco netlist
     # Prevents FE-LINK-2 ABORT caused by studier picking a Synth-only cell variant

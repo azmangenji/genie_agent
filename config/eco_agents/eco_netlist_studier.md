@@ -318,164 +318,97 @@ For every new DFF, when picking `port_connections_per_stage[<stage>].CP`, verify
 
 Step 3 validator Check 27 (`HIGH/27-CLOCK-STAGE-MISMATCH`) HARD FAILs any new DFF whose per-stage CP wires do not share a common root clock token. The orchestrator's Step 3 gate blocks Phase A handoff on any HIGH issue.
 
-### 0b-MODE-S — Scan stitching for new ECO DFFs in P&R (ASYMMETRIC, per-stage)
+### 0b-MODE-S — Scan stitching for new ECO DFFs in P&R
 
-A new DFF inserted in a clock domain that reaches the scan chain (anything reachable from `tile_dfx/scan_cntl`) must be **integrated with the existing scan signal network**. Tying SE/SI to `1'b0` in P&R isolates the new DFF from scan → FM sees "globally unmatched SE pin" → stage fails.
+A new DFF in a scan-reachable clock domain (anything reachable from `tile_dfx/scan_cntl`) MUST integrate with the existing scan network. Tying SE/SI to `1'b0` in P&R isolates the DFF → FM "globally unmatched SE pin" → stage fails.
 
 **Per-stage strategy table:**
 
-| Stage | Strategy | Action |
+| Stage | Strategy | Notes |
 |---|---|---|
-| Synthesize | `constant_zero` | `SE=1'b0`, `SI=1'b0` (RTL has no scan pins) |
-| PrePlace | `bridge_port` (default) or `neighbor_dff` | See rule below |
-| Route | `bridge_port` (MANDATORY) | Mode S bridge with parent-side driver |
+| Synthesize | `constant_zero` | Always — RTL has no scan pins |
+| PrePlace | `bridge_port` (default) | `neighbor_dff` ONLY when Route also = `neighbor_dff` |
+| Route | `bridge_port` (MANDATORY) | CTS rebalances scan wires → `neighbor_dff` non-deterministic |
 
-**Route MUST be `bridge_port`.** Route-stage scan wires are CTS-rebalanced, so `neighbor_dff` is non-deterministic across PreEco/PostEco. Step 3 validator Check 28 HARD FAILs any other Route strategy.
+Validator HARD FAILs (gate Step 4): **Check 28** (Route≠bridge_port), **Check 29** (PP=neighbor_dff while Route=bridge_port), **Check 30** (constant_zero with neighboring DFFs in same clock domain), **Check 32** (strategy↔connection inconsistency — see below).
 
-**PrePlace MUST also be `bridge_port` whenever Route is `bridge_port`.** Mixing PP=`neighbor_dff` with Route=`bridge_port` produces stage-divergent cone reach into the bridge buffer — FM cones converge only by luck. Step 3 validator Check 29 HARD FAILs the asymmetric combination.
+**STRATEGY ↔ CONNECTION INVARIANT (Check 32 HARD FAIL).** Strategy field and `port_connections_per_stage[<stage>].SE/SI` MUST agree per stage:
+- `constant_zero` ⇔ `SE=SI='1'b0'`
+- `neighbor_dff` ⇔ `SE/SI` are real neighbor wires
+- `bridge_port` ⇔ `SE/SI` are `ECO_<jira>_*_in` bridge ports
 
-`neighbor_dff` for PP is permitted ONLY when Route also resolved to `neighbor_dff` (rare — host module has scan-clean DFFs whose Route-stage SE/SI wires never crossed CTS boundaries). When in doubt, use `bridge_port` for both PP and Route.
+Plugging real wires while declaring `constant_zero` is FORBIDDEN — the metadata lies about what the netlist will actually do.
+
+**SIBLING ESCALATION (MANDATORY before falling to constant_zero).** When `eco_pick_sibling.py` returns null at parent-of-host scope:
+1. If host is tile-top (no parent above), re-invoke with `--host-scope=down` to search host's CHILDREN for a viable bridge target.
+2. If still null, re-invoke with `--min-cluster=5` (relaxed from default 10).
+3. Only if BOTH escalations return null may you fall back to `constant_zero`.
+
+Record the escalation chain in `scan_stitching_skipped_reason`.
+
+**`host_module_dff_count_same_clock` MUST be computed by grep, not asserted.** Validator Check 30 re-verifies — lying triggers HARD FAIL.
+```bash
+awk '/^module <host>\b/,/^endmodule/' /tmp/eco_study_<TAG>_Synthesize.v | grep -cE '\.CP\(\s*<dff_clock>\b'
+```
 
 **Required field on every new_logic_dff entry:**
-
 ```json
-{
-  "instance_name": "<DFF_reg>",
-  "mode_S_strategy_per_stage": {
-    "Synthesize": "constant_zero",
-    "PrePlace":   "bridge_port",    // MUST match Route when Route=bridge_port
-    "Route":      "bridge_port"     // MANDATORY — Check 28 HARD FAIL otherwise
-  }
-}
+"mode_S_strategy_per_stage": {"Synthesize": "constant_zero", "PrePlace": "bridge_port", "Route": "bridge_port"}
 ```
+Bridge plumbing entries (port_declaration, port_connection, etc.) MUST carry `"bridge_port_role": "<sibling_si|sibling_se|sibling_q|host_si|host_se|host_q>"` so the applier skips them in Synth.
 
-This makes per-stage decisions explicit and traceable.
+**Bridge source wire stage-stability (MANDATORY).** Before picking SI/SE bridge source wires, verify each wire's parent-level driver is the same logical net in PP and Route via `data/<TAG>_eco_fenets_rename_map.json` lookup keyed `<sibling_scope>/<anchor_dff>/<SE|SI>`. Compare PP and Route values:
+- Match → record `bridge_source_pp_route_match: {si: true, se: true}` on the new_logic_dff entry
+- Mismatch → CTS-renamed; reject this anchor and pick another
 
-**Synth ALWAYS uses `constant_zero`.** When emitting bridge port/connection entries (port_declaration, port_connection on the bridge ports), tag each with `"bridge_port_role": "<sibling_si|sibling_se|sibling_q|host_si|host_se|host_q>"`. The applier skips tagged entries in Synth so Synth doesn't get wasted bridge plumbing.
+**HARD RULE — no rename_map fallback.** If the candidate anchor has NO entry in the rename map, set `mode_S_strategy_per_stage[<stage>]: "BLOCKED_NO_RENAME_MAP"` and let Check 23 fail the round. DO NOT scan PP/Route netlists directly to "guess" — that bypasses FM and produces silently wrong stage hookups.
 
-**Bridge source wire — verify stage-stable parent driver.** Before picking SI/SE bridge buffer source wires, verify each wire's PARENT-LEVEL driver is the SAME logical net in both PP and Route. Procedure:
-
-1. Read `data/<TAG>_eco_fenets_rename_map.json` produced by Step 2.
-2. Look up the candidate bridge source wire (e.g. picked by `eco_pick_bridge_dffs.py`) using its anchor key — `<sibling_scope>/<anchor_dff>/SE` for SE pin, `<sibling_scope>/<anchor_dff>/SI` for SI pin.
-3. Each map entry has fields `Synthesize`, `PrePlace`, `Route`. Compare:
-   - PP-resolved net == Route-resolved net → `true` (stage-stable; safe to use as bridge source)
-   - PP-resolved net != Route-resolved net → `false` (CTS-renamed; would cause cone divergence — pick a different anchor or reject this DFF)
-4. Apply both checks (SI and SE). Record on the new_logic_dff study entry:
-```json
-"bridge_source_pp_route_match": { "si": true, "se": true }
-```
-Step 3 validator FAILs handoff if either is missing/false.
-
-**HARD RULE — no rename_map fallback.** If the candidate anchor wire has NO entry in `eco_fenets_rename_map.json`, that means FM returned no per-stage equivalence (almost certainly FM-036). DO NOT fall back to direct PP/Route netlist scan to "guess" the per-stage name — that bypasses FM and produces silently wrong stage hookups. Instead, set `mode_S_strategy_per_stage[<stage>]: "BLOCKED_NO_RENAME_MAP"` and let Step 3 validator Check 23 fail the round; orchestrator must re-run Step 1 to fix `mode_s_anchor.fm_scope` and re-run Step 2.
-
-**Bridge Q closure.** When `bridge_port` strategy is chosen, the `ECO_<jira>_Q_in` port must be consumed at the sibling module's scan chain. Emit ONE `change_type: "si_consumer_replace"` entry:
-```json
-{
-  "change_type": "si_consumer_replace",
-  "sibling_module": "<module_name>",
-  "consumer_dff_inst": "<existing_dff>",
-  "new_si_net": "ECO_<jira>_Q_in"
-}
-```
-Selection heuristic: pick a DFF already in the SE-consolidation list (its original `.SI` becomes redundant after consolidation). The applier rewrites `.SI` from old net to bridge Q_in. Skipped in Synth.
-
-**MANDATORY structural verification.** `consumer_dff_inst` MUST be an instance that EXISTS inside `sibling_module`'s body. Verify with a module-scoped grep before emitting:
-```bash
-zcat <REF_DIR>/data/PreEco/PrePlace.v.gz | \
-  awk '/^module .*<sibling_module>/,/^endmodule/' | \
-  grep -c "<consumer_dff_inst>"
-# Must be ≥ 1, otherwise the consumer DFF lives elsewhere — applier will fail to rewire.
-```
-Picking a consumer that lives outside the named sibling produces a silent applier no-op and downstream FM cone error.
-
-**Deterministic bridge picker (MANDATORY when `bridge_port` chosen).** Run the helper to get the consolidation list, anchor DFF, Q-consumer, and bridge source wires — no manual selection:
+**Deterministic picker + emitter (BOTH MANDATORY when `bridge_port` chosen).** Manual derivation of bridge artifacts is FORBIDDEN — Check 24 (BRIDGE-ARTIFACT-SET-COMPLETE) fails on missing items. Invoke both helpers and SPLICE their JSON output verbatim into `eco_preeco_study.json`:
 ```bash
 python3 script/eco_scripts/eco_pick_bridge_dffs.py \
-    --netlist     <REF_DIR>/data/PreEco/PrePlace.v.gz \
-    --sibling-mod <module_name_from_mode_s_anchor.sibling_module> \
-    --output      data/<TAG>_eco_bridge_pick_<dff>.json
-```
-Output JSON populates the entries below directly: `consolidation_target_dffs`, `consumer_dff_inst`, candidate bridge source wires (cross-check with fenets rename map for stage-stability before assigning).
+    --netlist <REF_DIR>/data/PreEco/PrePlace.v.gz \
+    --sibling-mod <sibling_module> --output data/<TAG>_eco_bridge_pick_<dff>.json
 
-**Deterministic plumbing emitter (MANDATORY when `bridge_port` chosen).** After running the picker, MUST invoke `eco_emit_bridge_plumbing.py` and SPLICE its per-stage output (`Synthesize`/`PrePlace`/`Route` lists) verbatim into the corresponding sections of `eco_preeco_study.json`. Manual derivation of bridge port_declarations / wire_declarations / port_connections / sibling_pin_consolidation / si_consumer_replace / buffer cells is FORBIDDEN — Step 3 Check 24 (BRIDGE-ARTIFACT-SET-COMPLETE) fails the round if any of the ~17 required artifacts is missing. Invocation:
-```bash
 python3 script/eco_scripts/eco_emit_bridge_plumbing.py \
-    --bridge-pick    data/<TAG>_eco_bridge_pick_<dff>.json \
+    --bridge-pick data/<TAG>_eco_bridge_pick_<dff>.json \
     --jira <jira> --host-module <host> --sibling-module <sib> \
     --parent-module <parent> --host-inst <inst> --sibling-inst <inst> \
     --new-dff-instance <DFF> --output data/<TAG>_eco_bridge_plumbing_<dff>.json
 ```
 
-**Sibling SE-pin consolidation.** When `bridge_port` strategy is chosen for any stage, also emit ONE `change_type: "sibling_pin_consolidation"` entry per pin (SE and SI as needed):
-```json
-{
-  "change_type": "sibling_pin_consolidation",
-  "sibling_module": "<module_name>",
-  "pin_name": "SE",
-  "new_net": "ECO_<jira>_SE_out",
-  "consolidation_target_dffs": ["<inst1>", "<inst2>", ...]
-}
-```
-Selection heuristic: pick N existing DFFs in the sibling module whose current `.SE` net is the same shared scan-en wire (most-common `.SE` net wins). The applier rewrites those DFFs' `.SE` to the new bridge wire. Module-scope-aware — won't affect other modules with same DFF instance names. Skipped in Synth.
+**MANDATORY minimum cluster size: `consolidation_target_dffs` ≥ 10 DFFs** (use SIBLING ESCALATION above when picker can't reach 10). Smaller clusters mean the bridge isn't a meaningful scan path participant → FM cone matching unstable.
 
-**MANDATORY minimum cluster size.** `consolidation_target_dffs` MUST contain at least 10 DFF instances. Smaller lists indicate the picker found a weak/sparse scan-en cluster — the bridge will not be a meaningful scan path participant and FM cone matching is unstable. If `eco_pick_bridge_dffs.py` returns fewer than 10, fall back to `neighbor_dff` strategy. **`constant_zero` is FORBIDDEN unless the host module has zero pre-existing DFFs in the same clock domain (extremely rare — wrapper-clock DFFs only). Step 3 validator Check 30 HARD FAILs constant_zero when neighboring DFFs exist.** When choosing constant_zero, record `host_module_dff_count_same_clock: 0` on the entry so the validator can audit.
+**Bridge artifact umbrella** (per new ECO DFF — all carry `bridge_port_role`, Synth-skipped):
 
-**Real bridge stitching umbrella.** A complete `bridge_port` Mode-S strategy emits the following set of entries per new ECO DFF (engineer pattern). All carry `bridge_port_role` so the applier auto-skips them in Synth:
-
-| Entry | change_type | bridge_port_role |
+| Entry | change_type | role tag |
 |---|---|---|
-| Sibling-module SI/SE/Q ports | `port_declaration` | `sibling_si`, `sibling_se`, `sibling_q` |
-| Host-module SI/SE/Q ports | `port_declaration` | `host_si`, `host_se`, `host_q` |
-| Parent-level bridge wires | `assign` | (no role tag — same in all stages but only PP/Route have driver) |
-| Sibling instance hookup | `port_connection` | `sibling_si`/`sibling_se`/`sibling_q` |
-| Host instance hookup | `port_connection` | `host_si`/`host_se`/`host_q` |
-| Sibling SE-pin consolidation | `sibling_pin_consolidation` | (skipped in Synth automatically) |
-| Bridge Q closure | `si_consumer_replace` | (skipped in Synth automatically) |
+| Sibling-module SI/SE/Q ports | `port_declaration` | `sibling_<si\|se\|q>` |
+| Host-module SI/SE/Q ports | `port_declaration` | `host_<si\|se\|q>` |
+| Parent-level bridge wires | `assign` | (no tag — driven only in PP/Route) |
+| Sibling/Host instance hookups | `port_connection` | `sibling_*` / `host_*` |
+| Sibling SE-pin consolidation (≥10 DFFs) | `sibling_pin_consolidation` | (auto-skipped) |
+| Bridge Q closure (one DFF SI rewrite) | `si_consumer_replace` | (auto-skipped) |
 
-Plus on the new_logic_dff entry itself: `bridge_source_pp_route_match: { si: true, se: true }` (verified via fenets rename map) and consumed candidates from `eco_bridge_candidates.json` (Cat 8 fenets queries).
+Sibling SE-pin consolidation: pick N existing DFFs in `sibling_module` sharing the most-common `.SE` net; applier rewrites their `.SE` to `ECO_<jira>_SE_out`. Q-closure: pick a DFF already in the SE-consolidation list (its original `.SI` is now redundant); applier rewrites its `.SI` to `ECO_<jira>_Q_in`. **Verify `consumer_dff_inst` exists inside `sibling_module` body via module-scoped grep** — picking a consumer outside the named sibling produces silent applier no-op + FM failure.
 
-#### When `mode_S_strategy_per_stage[<stage>]: "neighbor_dff"` (default)
+**Bridge wire MUST be driven** at parent scope (`assign eco<jira>_<si|se>_bridge = <parent_neighbor_net>`); undriven wire dangles → FM globally unmatched. Step 3 Check 3c + Step 5 Check 17 enforce.
 
-In `port_connections_per_stage[<stage>]`, set SE/SI to the chosen neighbor DFF's exact SE/SI nets per stage. NO bridge port_decls or assigns needed for that stage.
+#### When `mode_S_strategy_per_stage[<stage>]: "neighbor_dff"`
 
-**MANDATORY per-stage independent lookup:**
-
+Per-stage independent lookup — read THIS stage's PreEco netlist, pick a neighbor DFF in the host module, post-verify the wire exists in the same stage:
 ```python
 for stage in ('Synthesize', 'PrePlace', 'Route'):
-    netlist = f'<REF_DIR>/data/PreEco/{stage}.v.gz'   # stage-specific file
-    neighbor = pick_neighbor_dff(host_module, netlist)  # walk THIS stage's body
-    se_wire, si_wire = neighbor.SE, neighbor.SI
-    # MANDATORY post-pick verification: wire MUST exist in this stage's netlist
-    assert grep_exists(se_wire, netlist) and grep_exists(si_wire, netlist)
-    dff_entry["port_connections_per_stage"][stage]["SE"] = se_wire
-    dff_entry["port_connections_per_stage"][stage]["SI"] = si_wire
+    netlist = f'<REF_DIR>/data/PreEco/{stage}.v.gz'
+    neighbor = pick_neighbor_dff(host_module, netlist)
+    assert grep_exists(neighbor.SE, netlist) and grep_exists(neighbor.SI, netlist)
+    pcs[stage]["SE"], pcs[stage]["SI"] = neighbor.SE, neighbor.SI
 ```
 
-**FORBIDDEN:**
-- Reading `PreEco/PrePlace.v.gz` for the Route lookup (or vice versa) — stages have CTS-renamed wires that exist in one stage and not the other
-- Copying the result of one stage's lookup to another — wire names that exist in PP often disappear in Route after CTS optimization
-- Skipping the post-pick verification — silently writing a non-existent wire produces an undriven pin and FM cone divergence
+**FORBIDDEN:** reading PP netlist for Route lookup (or vice versa); copying one stage's result to another; skipping post-verification. **Mutually exclusive with bridge_port:** if ANY stage uses `neighbor_dff`, do NOT emit `sibling_pin_consolidation` or `si_consumer_replace` entries.
 
-**Mutual exclusion with bridge_port:** If ANY stage uses `neighbor_dff`, you MUST NOT emit `sibling_pin_consolidation` or `si_consumer_replace` entries — those belong to the `bridge_port` strategy only. Mixing strategies and bridge artifacts produces inconsistent study output that the applier handles incorrectly.
+#### Opt-out (no scan stitching at all)
 
-#### When `mode_S_strategy_per_stage[<stage>]: "bridge_port"` (fallback)
-
-Emit the entries listed in the bridge stitching umbrella table below. Critical invariants:
-- DFF entry's `port_connections_per_stage[<stage>]` must reference the bridge ports (`ECO_<jira>_SI_in`, `ECO_<jira>_SE_in`) and set `mode_S_applied: true` for the stage
-- Bridge wire MUST be driven at parent scope via an `assign eco<jira>_<si|se>_bridge = <parent_neighbor_net>` (without this the wire dangles — the 9868 R1 bug class)
-- Walk up the hierarchy from host module to umccmd, emitting `port_connection` entries at each level so the bridge wire propagates correctly
-
-#### Per-stage strategy is INDEPENDENT — no consistency requirement
-
-Each stage's `port_connections_per_stage[<stage>]` is decided per `mode_S_strategy_per_stage[<stage>]`. PP using `neighbor_dff` and Route using `bridge_port` (or vice-versa) is correct and matches engineer's pattern. The Step 3 validator allows asymmetry — no longer enforces "all 3 stages identical".
-
-#### Bridge wire MUST be driven (when bridge_port strategy is chosen)
-
-A declared `eco<jira>_si_bridge` / `se_bridge` wire that no `assign` / `_SI_out` / `_SE_out` source drives is a **flow bug** that produces undriven SE/SI at the new DFF → FM globally unmatched. Step 3 Check 3c verifies the driver assign exists; Step 5 Check 17 verifies the bridge wire is reachable from a real neighbor scan net at parent scope.
-
-#### Opt-out (no scan stitching needed at all)
-
-Set `requires_scan_stitching: false` + `scan_stitching_skipped_reason: "<auditable reason>"` on the entry. Valid only when `dff_clock` is a `wrp_clk_*` wrapper clock that doesn't propagate scan_enable.
+Set `requires_scan_stitching: false` + `scan_stitching_skipped_reason: "<auditable reason>"`. Valid ONLY when `dff_clock` is a `wrp_clk_*` wrapper clock that doesn't propagate scan_enable.
 
 ### 0c-SYNTH — Derive d_input_gate_chain via eco_synth_chain.py (MANDATORY)
 
@@ -494,119 +427,50 @@ Validator Check 31 (`SYNTH-STYLE-TOPOLOGY`) hard-fails any chain whose cell-type
 
 ### 0c — Find suitable cell type from PreEco netlist
 
-**For DFF with `has_sync_reset: true` — try reset-pin cell FIRST (preferred):**
-
-**Generic discovery — no hardcoded cell names or pin names.** The library's reset-capable DFF is found by searching for existing DFFs in the module that ALREADY connect to `reset_signal`:
-
-```python
-def find_reset_capable_dff(module_scope_lines, reset_signal):
-    """
-    Find a DFF in module scope that uses reset_signal on one of its pins.
-    Returns (cell_type, reset_pin_name) — both discovered from the netlist,
-    no hardcoded cell prefixes or pin names.
-    """
-    import re
-    for i, line in enumerate(module_scope_lines):
-        # Check if this line references reset_signal as a port connection
-        if re.search(rf'\.\w+\s*\(\s*{re.escape(reset_signal)}\s*\)', line):
-            # Find the start of this cell instance block (scan back to cell declaration line)
-            inst_start = i
-            while inst_start > 0:
-                prev = module_scope_lines[inst_start - 1]
-                if re.search(r';\s*$', prev) or re.match(r'^\s*$', prev):
-                    break
-                inst_start -= 1
-            inst_block = ' '.join(module_scope_lines[inst_start : i + 10])
-            # Verify this is a DFF (has a Q output pin — generic DFF signature)
-            if re.search(r'\.Q\s*\(', inst_block):
-                # Extract cell_type: first uppercase token on instance declaration line
-                cell_line = module_scope_lines[inst_start].strip()
-                m = re.match(r'^([A-Z]\S+)', cell_line)
-                if m:
-                    cell_type = m.group(1)
-                    # Extract which pin connects to reset_signal — this IS the reset pin
-                    pin_m = re.search(
-                        rf'\.(\w+)\s*\(\s*{re.escape(reset_signal)}\s*\)', inst_block
-                    )
-                    if pin_m:
-                        return cell_type, pin_m.group(1)   # e.g. ("SDFQD4...", "RN")
-    return None, None  # No reset-capable DFF found in this scope
-```
-
-Run against module scope from PreEco Synthesize:
+**Generic discovery — no hardcoded cell names or pin names.** Read module scope from PreEco Synthesize:
 ```bash
-awk '/^module <declaring_module>/,/^endmodule/' \
-    /tmp/eco_study_<TAG>_Synthesize.v > /tmp/eco_module_scope.v
+awk '/^module <declaring_module>/,/^endmodule/' /tmp/eco_study_<TAG>_Synthesize.v > /tmp/eco_module_scope.v
 ```
-Then call `find_reset_capable_dff(module_scope_lines, reset_signal)`.
 
-**If `(cell_type, reset_pin_name)` found:**
-1. Use `cell_type` as the DFF cell — same library cell as existing DFFs that use the reset signal
-2. Set `reset_pin_used: true`, `reset_pin_name: <discovered_pin>`, `reset_signal: <from rtl_diff>`
-3. Connect `reset_signal` to `<discovered_pin>` in `port_connections`
-4. **Remove reset term from `d_input_gate_chain`** — functional gates only; no reset INV gate
-5. DFF `port_connections.D` = last functional gate output (not the reset AND gate)
+#### DFF with `has_sync_reset: true` — try reset-pin cell FIRST (preferred)
+
+**Algorithm — `find_reset_capable_dff(scope_lines, reset_signal)`:**
+1. Scan `scope_lines` for any line `\.<pin>\(\s*<reset_signal>\s*\)` — this is a cell pin connected to the reset.
+2. Walk back to the start of the cell instance block (until previous line ends with `;` or is blank).
+3. If the block contains `\.Q\(` → it's a DFF.
+4. Extract `cell_type` = first uppercase token on the instance declaration line; `reset_pin_name` = the pin in step 1.
+5. Return `(cell_type, reset_pin_name)`, e.g. `("SDFQD4...", "RN")`. None on no match.
+
+**If found:** use `cell_type` as the DFF, set `reset_pin_used: true`, `reset_pin_name: <discovered>`, connect `reset_signal` to that pin, **remove the reset term from `d_input_gate_chain`** (DFF `.D` = last functional gate output, no reset gate).
 
 ```json
-{
-  "dff_cell_type": "<discovered from PreEco>",
-  "reset_pin_used": true,
-  "reset_pin_name": "<discovered from PreEco — not hardcoded>",
-  "reset_signal": "<rst_signal from rtl_diff>",
-  "port_connections": {
-    "<data_pin>":  "n_eco_<jira>_d<last_functional_gate>",
-    "<clk_pin>":   "<clk_net>",
-    "<reset_pin>": "<rst_signal>",
-    "<q_pin>":     "<target_register>"
-  }
-}
+{"dff_cell_type": "<discovered>", "reset_pin_used": true,
+ "reset_pin_name": "<discovered>", "reset_signal": "<rst>",
+ "port_connections": {"<data>": "n_eco_<jira>_d<last>", "<clk>": "<clk_net>",
+                      "<reset>": "<rst>", "<q>": "<target_register>"}}
 ```
 
-**If `None` returned (no existing DFF in scope uses reset_signal):**
-Fall back — bake reset into D-input gate chain. Set `reset_pin_used: false`. Log: `"RESET_PIN_FALLBACK: no DFF found in scope <module> using <reset_signal> — baking reset into D-input (GAP-CTS-2 risk in Route)"`.
+**If None — bake reset into D-input chain.** Set `reset_pin_used: false`; log `RESET_PIN_FALLBACK: no DFF in scope <mod> using <reset> — baking into D-input (GAP-CTS-2 risk in Route)`.
 
-**MANDATORY chain creation OR extension when `reset_pin_used: false`:** rtl_diff_analyzer Step E removes the reset term from `d_input_gate_chain` so it can be baked in here. The studier MUST guarantee the DFF .D is driven by reset-gated logic. Two cases:
+**MANDATORY chain extension when `reset_pin_used: false`:** rtl_diff_analyzer Step E strips the reset term so it can be baked in here. Two cases:
+- **Chain non-empty** → append reset-gating tail to existing chain.
+- **Chain empty** (`d_input_resolved_net` set, e.g. direct-wire `REG_X[i]`) → CREATE chain from scratch using `d_input_resolved_net` (and per-stage UNCONNECTED variants) as the AND2 source. NEVER invent an undriven `n_eco_*` placeholder.
 
-- **Step 1 chain is non-empty** → append the reset-gating tail (steps below).
-- **Step 1 chain is empty** (`d_input_gate_chain: []` with `d_input_resolved_net` set, e.g. for direct-wire D-inputs like `REG_X[i]`) → CREATE the chain from scratch using `d_input_resolved_net` as the source. Do NOT wire DFF `.D` to a placeholder net like `n_eco_<jira>_<reg>` with no driver — that produces an undriven D pin and FM fails. **Use `d_input_resolved_net` (Synthesize) and the per-stage UNCONNECTED variants directly as the AND2 source input — do NOT invent a fresh `n_eco_*` placeholder for it.**
+Tail gates: `INV(<reset>)` → output `n_eco_<jira>_d<N+1>`; final combiner producing `chain_tail & ~<reset>` (active_high) or `chain_tail & <reset>` (active_low) using AND2+INV / NR2 / equivalent (cell type from PreEco, not hardcoded). Update `d_input_net` to the combiner's output, wire to DFF `.D`. Same tail across all 3 stages; per-stage resolution via 0b-ALIAS / RULE 32.
 
-1. Let `<chain_tail>` = current final gate output (`d_input_net` from Step 1, e.g. `n_eco_<jira>_d<N>`).
-2. Append two new gates with the next available `eco_<jira>_d<seq>` indices:
-   - `INV` of `<reset_signal>` → output `n_eco_<jira>_d<N+1>` (or reuse `<reset_signal>` directly via a NOR-style combiner — choose whichever cell type the library prefers; discover from PreEco like the rest of the chain).
-   - Final combiner that produces `chain_tail & ~<reset_signal>` (active_high reset) or `chain_tail & <reset_signal>` (active_low). Use AND2 + INV, or NR2 with the un-inverted reset, or any equivalent — the choice depends on what cell types exist in PreEco for this module.
-3. Update `d_input_net` to the final combiner's output net and connect that to the DFF `.D` pin.
-4. The same two-gate tail is reused across all 3 stages (per-stage net resolution still applies for the reset signal and intermediate nets via 0b-ALIAS / RULE 32).
+**Self-check:** `has_sync_reset && !reset_pin_used && no chain references <reset>` → bake-in was skipped → fix before writing JSON. DFF must NEVER be left without a reset path.
 
-**Self-check (MANDATORY):** if `has_sync_reset == true` AND `reset_pin_used == false` AND no chain entry references `<reset_signal>` → the bake-in was NOT performed → fix the chain before writing the study JSON. The DFF must NEVER be left without a reset path.
+**Why reset-pin is preferred:** CTS heavily replicates reset signals in Route; baked into the D-cone, FM cannot trace through CTS-merged BBNet drivers → DFF non-equivalent (GAP-CTS-2). Using the DFF reset pin bypasses the combinational cone entirely.
 
-**Why this is strongly preferred:** Reset signals are heavily replicated by CTS in Route. When baked into the D-input cone, FM cannot trace through CTS-merged BBNet drivers → DFF non-equivalent in Route (GAP-CTS-2) → MANUAL_ONLY. Using the DFF reset pin bypasses the combinational cone entirely — immune to CTS restructuring.
+#### DFF without sync reset (or fallback) — find any DFF in scope
 
-**For DFF without sync reset (or fallback) — also generic:**
-```python
-def find_neighbour_dff(module_scope_lines):
-    """Find any DFF cell in scope — identified by .Q( pin, not by cell name prefix."""
-    for i, line in enumerate(module_scope_lines):
-        if re.search(r'\.Q\s*\(', line):
-            inst_start = i
-            while inst_start > 0:
-                prev = module_scope_lines[inst_start - 1]
-                if re.search(r';\s*$', prev) or re.match(r'^\s*$', prev):
-                    break
-                inst_start -= 1
-            cell_line = module_scope_lines[inst_start].strip()
-            m = re.match(r'^([A-Z]\S+)', cell_line)
-            if m:
-                return m.group(1)   # cell_type, e.g. "SDFQD4AMDBWP..."
-    return None
-```
+`find_neighbour_dff(scope_lines)`: scan for a line containing `\.Q\(`, walk back to instance start (prev line ends with `;` or blank), return first uppercase token from the declaration line as `cell_type` (e.g. `SDFQD4AMDBWP...`).
 
-**For combinational gate:** Determine function from RTL expression (`A & B` → AND2, `~A` → INV, etc.), then search PreEco for matching cell pattern.
+#### Combinational gate
 
-**MANDATORY — extract actual pin names from PreEco instance (ALL pins):**
-```bash
-grep -m1 "<cell_type>" /tmp/eco_study_<TAG>_<Stage>.v
-```
-Parse every `.<PIN>(` — these are the ONLY valid pin names. Never assume pin names from the gate function name.
+Determine function from RTL expression (`A & B` → AND2, `~A` → INV, …), then search PreEco for matching cell pattern.
+
+**MANDATORY — extract actual pin names from PreEco instance (ALL pins):** `grep -m1 "<cell_type>" /tmp/eco_study_<TAG>_<Stage>.v`. Parse every `.<PIN>(` — these are the ONLY valid pin names. Never assume pin names from the gate function name.
 
 ### CELL OUTPUT PIN TABLE — MANDATORY REFERENCE
 
