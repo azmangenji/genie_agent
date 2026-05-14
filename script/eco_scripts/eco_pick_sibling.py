@@ -39,6 +39,37 @@ MOD_END_RE  = re.compile(r'^\s*endmodule')
 INST_RE     = re.compile(r'^\s*([A-Za-z_]\w+)\s+([A-Za-z_]\w+)\s*\(')
 
 
+def find_module_children(lines, host_module):
+    """Find host_module's body and list all submodule instantiations INSIDE it
+    (children, not siblings). Used by --host-scope=down to escalate sibling
+    pick when no peer at parent scope has a viable scan-en cluster but the
+    host's own children might (e.g. tile-top umccmd → ARB/DCQARB which has
+    hundreds of DFFs).
+
+    Returns (host_module_name_actual, host_start, host_end, list_of_child_instantiations).
+    Returns (None, None, None, []) if host body not found."""
+    cur_mod = None
+    cur_start = None
+    # Match host_module exactly OR with _0/_1 uniquification suffix
+    host_re = re.compile(rf'^module\s+{re.escape(host_module)}(_\d+)?\s*[(\s]')
+    for i, line in enumerate(lines):
+        m = MOD_DEF_RE.match(line)
+        if m and host_re.match(line):
+            cur_mod = m.group(1)
+            cur_start = i
+            # Walk forward to find this host's endmodule
+            depth = 0
+            for j in range(cur_start, len(lines)):
+                if MOD_DEF_RE.match(lines[j]):
+                    depth += 1
+                elif MOD_END_RE.match(lines[j]):
+                    depth -= 1
+                    if depth == 0:
+                        return cur_mod, cur_start, j, _list_instantiations(lines[cur_start:j+1])
+            break
+    return None, None, None, []
+
+
 def find_module_instantiations_in_parent(lines, host_module):
     """Find any module body that instantiates host_module (or a _0/_1/prefix variant).
     Returns (parent_module_name, parent_start_line, parent_end_line, list_of_instantiated_modules).
@@ -412,8 +443,17 @@ def main():
     p.add_argument('--output', required=True)
     p.add_argument('--top', type=int, default=5,
                    help='report top N candidates (default 5)')
-    p.add_argument('--min-dffs', type=int, default=10,
-                   help='minimum SE-cluster size for a peer to be considered viable (default 10)')
+    p.add_argument('--min-dffs', '--min-cluster', dest='min_dffs', type=int, default=10,
+                   help='minimum SE-cluster size for a peer to be considered viable (default 10). '
+                        'Studier MD §0b-MODE-S SIBLING ESCALATION: re-invoke with --min-cluster=5 '
+                        'when default returns no viable peer.')
+    p.add_argument('--host-scope', choices=('parent', 'down'), default='parent',
+                   help='Search scope for candidates. "parent" (default): search peer modules under '
+                        'the parent that instantiates host (engineer pattern). "down": search '
+                        'host\'s OWN children — escalation when host is tile-top and no parent-scope '
+                        'peer has a viable scan-en cluster (e.g. umccmd → ARB/FEI/REGCMD children, '
+                        'each containing hundreds of DFFs). Studier MD §0b-MODE-S SIBLING ESCALATION '
+                        'mandates this as step 1 before constant_zero fallback.')
     p.add_argument('--tile-module', default='',
                    help='Tile module (e.g. ddrss_umccmd_t_umccmd or umccmd). Used to compute '
                         'fm_scope (FM-resolvable instance path from tile-internal root down to '
@@ -450,27 +490,46 @@ def main():
             route_lines = None
             route_mod_index = None
 
-    parent_mod, parent_start, parent_end, instantiations = \
-        find_module_instantiations_in_parent(all_lines, args.host_module)
+    if args.host_scope == 'down':
+        # Escalation path: search host's CHILDREN instead of parent's other children.
+        # Useful when host is tile-top (no parent-scope peers) but host's own children
+        # contain large DFF clusters (e.g. umccmd → ARB/DCQARB/FEI/REGCMD).
+        parent_mod, parent_start, parent_end, instantiations = \
+            find_module_children(all_lines, args.host_module)
+        if parent_mod is None:
+            print(f'FAIL: host module {args.host_module!r} body not found for --host-scope=down',
+                  file=sys.stderr)
+            return 1
+        # In down scope, "peers" = direct children of host (no host-self filtering needed)
+        peer_modules = []
+        seen_mods = set()
+        for mod_type, inst_name in instantiations:
+            if mod_type in seen_mods:
+                continue
+            seen_mods.add(mod_type)
+            peer_modules.append((mod_type, inst_name))
+    else:
+        parent_mod, parent_start, parent_end, instantiations = \
+            find_module_instantiations_in_parent(all_lines, args.host_module)
 
-    if parent_mod is None:
-        print(f'FAIL: host module {args.host_module!r} not instantiated in any module body',
-              file=sys.stderr)
-        return 1
+        if parent_mod is None:
+            print(f'FAIL: host module {args.host_module!r} not instantiated in any module body',
+                  file=sys.stderr)
+            return 1
 
-    # Filter out host instantiations
-    peer_modules = []
-    seen_mods = set()
-    for mod_type, inst_name in instantiations:
-        # Strip _0/_1 suffix for comparison
-        base = re.sub(r'_\d+$', '', mod_type)
-        host_base = re.sub(r'_\d+$', '', args.host_module)
-        if base == host_base or base.endswith('_' + host_base) or host_base.endswith('_' + base):
-            continue
-        if mod_type in seen_mods:
-            continue
-        seen_mods.add(mod_type)
-        peer_modules.append((mod_type, inst_name))
+        # Filter out host instantiations (peer scope only — children of parent, minus host)
+        peer_modules = []
+        seen_mods = set()
+        for mod_type, inst_name in instantiations:
+            # Strip _0/_1 suffix for comparison
+            base = re.sub(r'_\d+$', '', mod_type)
+            host_base = re.sub(r'_\d+$', '', args.host_module)
+            if base == host_base or base.endswith('_' + host_base) or host_base.endswith('_' + base):
+                continue
+            if mod_type in seen_mods:
+                continue
+            seen_mods.add(mod_type)
+            peer_modules.append((mod_type, inst_name))
 
     # Analyze each peer
     candidates = []

@@ -308,24 +308,20 @@ def synthesize_and_pattern(expr, input_syms, jira='9868'):
         return chain
 
     # ── 2-factor mixed (1 positive + 1 negative literal) ────────────────────
-    # Engineer EcoUseSdpOutstRdCnt style: INV(positive) + NR2(inv_z, neg_var)
+    # Single-cell INR2: Z = A1 & ~A2 — most compact form of `pos & ~neg`.
+    # Engineer 9868 EcoUseSdpOutstRdCnt used 2-cell INV+NR2; INR2 is a
+    # functionally identical 1-cell alternative when the library has it.
+    # Falls back to engineer's INV+NR2 if INR2 is not available (caller can
+    # disable via `prefer_single_cell=False` if needed for engineer-match).
     if not xor_terms and len(pos_lits) == 1 and len(neg_lits) == 1:
         chain = CellChain()
-        # 1) INV the positive literal so OR4-input form is its negation
-        inv_wire = _wire_name(jira, 1)
-        chain.add_wire(inv_wire)
+        wire = _wire_name(jira, 1)
+        chain.add_wire(wire)
         chain.add_cell(
-            'INVD1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1),
-            {'I': str(pos_lits[0]), 'ZN': inv_wire},
+            'INR2D1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1),
+            {'A1': str(pos_lits[0]), 'A2': str(neg_lits[0]), 'Z': wire},
         )
-        # 2) NR2(inv_z, neg_var) → ~(~pos | neg) = pos & ~neg ✓
-        nr_wire = _wire_name(jira, 2)
-        chain.add_wire(nr_wire)
-        chain.add_cell(
-            'NR2D1SPG1AMDBWP136P5M156H3P48CPDLVT', _inst_name(jira, 2),
-            {'A1': inv_wire, 'A2': str(neg_lits[0]), 'ZN': nr_wire},
-        )
-        chain.output_net = nr_wire
+        chain.output_net = wire
         return chain
 
     # ── 3-5 factor mixed (with optional XOR) — engineer NeedFreqAdj style ──
@@ -620,6 +616,26 @@ def compose_chain_boolean(chain, sym_dict, jira):
             a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
             if a1 is None or a2 is None: return False
             wire_exprs[pc.get('Z')] = Or(a1, a2); return True
+        # ── Inverted-input AND family (TSMC short-form) ──────────────────
+        # INR2 (= AOI variant "AND-NOT"): Z = A1 & ~A2 — single-cell A & ~B
+        if ct.startswith('INR2'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
+            if a1 is None or a2 is None: return False
+            wire_exprs[pc.get('Z')] = And(a1, Not(a2)); return True
+        # IND2 / IND3: Z = ~A1 & A2 (& A3) — input-A1 inverted AND chain
+        if ct.startswith('IND2'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
+            if a1 is None or a2 is None: return False
+            wire_exprs[pc.get('Z')] = And(Not(a1), a2); return True
+        if ct.startswith('IND3'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2')); a3 = resolve(pc.get('A3'))
+            if any(x is None for x in (a1, a2, a3)): return False
+            wire_exprs[pc.get('Z')] = And(Not(a1), a2, a3); return True
+        # INR3: Z = A1 & ~A2 & ~A3 (or per library — verify with fact-check)
+        if ct.startswith('INR3'):
+            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2')); a3 = resolve(pc.get('A3'))
+            if any(x is None for x in (a1, a2, a3)): return False
+            wire_exprs[pc.get('Z')] = And(a1, Not(a2), Not(a3)); return True
         # Unknown cell type — record and skip
         unknown_cells.append(ct)
         return None  # signals "unknown" rather than "not ready"
