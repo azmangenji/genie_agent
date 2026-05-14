@@ -457,6 +457,21 @@ A declared `eco<jira>_si_bridge` / `se_bridge` wire that no `assign` / `_SI_out`
 
 Set `requires_scan_stitching: false` + `scan_stitching_skipped_reason: "<auditable reason>"` on the entry. Valid only when `dff_clock` is a `wrp_clk_*` wrapper clock that doesn't propagate scan_enable.
 
+### 0c-SYNTH — Derive d_input_gate_chain via eco_synth_chain.py (MANDATORY)
+
+For any new DFF with combinational D-input, do NOT hand-decompose the RTL Boolean. Invoke the synthesizer and splice its output verbatim:
+
+```bash
+python3 script/eco_scripts/eco_synth_chain.py synthesize \
+    --boolean "<RTL_BOOLEAN>" --inputs "<comma-separated names>" --jira <JIRA>
+```
+
+If the synthesizer raises an error, the Boolean doesn't match any known pattern — extend `eco_synth_chain.py` with a new pattern (engineer-evidence required). Falling back to literal decomposition is FORBIDDEN.
+
+Validator Check 31 (`SYNTH-STYLE-TOPOLOGY`) hard-fails any chain whose cell-type multiset differs from the synthesizer's output, even when the Boolean is equivalent.
+
+---
+
 ### 0c — Find suitable cell type from PreEco netlist
 
 **For DFF with `has_sync_reset: true` — try reset-pin cell FIRST (preferred):**
