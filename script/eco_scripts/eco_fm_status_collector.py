@@ -187,15 +187,19 @@ def parse_failing_points(ref_dir, target):
         if m and int(m.group(1)) == 0:
             return []
 
-    # Parse paired lines: "  Ref  <type>  r:/..." followed by "  Impl <type>  i:/..."
+    # Parse paired lines: "  [*]Ref  <type>  r:/..." followed by "  Impl <type>  i:/..."
+    # Formality may prefix the Ref line with '*' when the failure has an undriven signal.
     prev_ref = None
     for ln in lines:
         if HEADER_RE.match(ln):
             continue
         ln_s = ln.strip()
-        if ln_s.startswith('Ref ') and 'r:/' in ln_s:
+        # Match "Ref ..." or "*Ref ..." (asterisk prefix for undriven-related failures)
+        is_ref  = (ln_s.startswith('Ref ') or ln_s.startswith('*Ref ')) and 'r:/' in ln_s
+        is_impl = ln_s.startswith('Impl ') and 'i:/' in ln_s
+        if is_ref:
             prev_ref = ln_s
-        elif ln_s.startswith('Impl ') and 'i:/' in ln_s and prev_ref:
+        elif is_impl and prev_ref:
             # Pair complete — record the ref path as the failing point identifier
             points.append(prev_ref)
             prev_ref = None
