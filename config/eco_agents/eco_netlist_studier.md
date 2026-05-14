@@ -628,7 +628,7 @@ For each `wire_swap` change, process FM fenets results per stage.
 
 **MANDATORY PRE-PHASE 1: wire_swap + intermediate_net_insertion gate chain**
 
-Before processing FM results, check if the `wire_swap` change has `fallback_strategy: "intermediate_net_insertion"` AND a non-empty `new_condition_gate_chain`. If so, the gate chain MUST be emitted as study entries — treat it exactly like Phase 0 `and_term`/`new_logic` gate insertion:
+For each `wire_swap` change, check FIRST (before reading the rename_map for the rewire entry) whether it has `fallback_strategy: "intermediate_net_insertion"` AND a non-empty `new_condition_gate_chain`. If so, the gate chain MUST be emitted as study entries — treat it exactly like Phase 0 `and_term`/`new_logic` gate insertion. Do this step before the standard rename_map lookup that produces the `rewire` entry, so the gate entries appear in the study JSON alongside the rewire entry:
 
 1. For each gate in `new_condition_gate_chain`, emit a `new_logic_gate` study entry (instance_name, gate_function, inputs per stage, output_net, instance_scope = CMDARB/declaring module scope)
 2. Resolve PENDING_FM_RESOLUTION inputs using the rename map (condition_inputs_to_query results from Step 2)
