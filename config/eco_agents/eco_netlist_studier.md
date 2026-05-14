@@ -339,12 +339,29 @@ Validator HARD FAILs (gate Step 4): **Check 28** (Route≠bridge_port), **Check 
 
 Plugging real wires while declaring `constant_zero` is FORBIDDEN — the metadata lies about what the netlist will actually do.
 
-**SIBLING ESCALATION (MANDATORY before falling to constant_zero).** When `eco_pick_sibling.py` returns null at parent-of-host scope:
-1. If host is tile-top (no parent above), re-invoke with `--host-scope=down` to search host's CHILDREN for a viable bridge target.
-2. If still null, re-invoke with `--min-cluster=5` (relaxed from default 10).
-3. Only if BOTH escalations return null may you fall back to `constant_zero`.
+**SIBLING ESCALATION (MANDATORY before falling to constant_zero).** When the default `eco_pick_sibling.py` invocation returns `recommended_pick: null`, escalate in order:
 
-Record the escalation chain in `scan_stitching_skipped_reason`.
+1. **`--host-scope=down`** — search host's CHILDREN instead of parent's other children. Use this whenever host is tile-top OR when no parent-scope peer has a viable cluster.
+   ```bash
+   python3 script/eco_scripts/eco_pick_sibling.py \
+       --netlist <REF_DIR>/data/PreEco/PrePlace.v.gz \
+       --host-module <host_module> --host-scope down \
+       --tile-module <ddrss_<tile>_t> \
+       --output data/<TAG>_eco_sibling_pick_<dff>_down.json
+   ```
+
+2. **`--min-cluster=5`** (combine with `--host-scope=down`) — relax the default ≥10 threshold to ≥5 if step 1 still returns null.
+   ```bash
+   python3 script/eco_scripts/eco_pick_sibling.py \
+       --netlist <REF_DIR>/data/PreEco/PrePlace.v.gz \
+       --host-module <host_module> --host-scope down --min-cluster 5 \
+       --tile-module <ddrss_<tile>_t> \
+       --output data/<TAG>_eco_sibling_pick_<dff>_min5.json
+   ```
+
+3. Only if BOTH escalations return null may you fall back to `constant_zero`. Record the full escalation chain in `scan_stitching_skipped_reason` (e.g. `"parent_scope=null, host-scope=down=null, min-cluster=5=null — true wrapper-clock scope"`).
+
+When `--host-scope=down` returns a viable child as recommended pick, the bridge is built **inside host scope**: `parent_module = host_module` (host instantiates the chosen child), `sibling_module = <child_module>`. Pass these to `eco_emit_bridge_plumbing.py` accordingly.
 
 **`host_module_dff_count_same_clock` MUST be computed by grep, not asserted.** Validator Check 30 re-verifies — lying triggers HARD FAIL.
 ```bash
