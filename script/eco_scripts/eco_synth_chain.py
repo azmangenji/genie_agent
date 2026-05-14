@@ -97,6 +97,38 @@ def split_and_factors(expr):
     return [expr]
 
 
+def _push_nots_to_literals(expr):
+    """Push Not operators down to literals via DeMorgan.
+
+    Converts ~(A | B) → ~A & ~B and ~(A & B) → ~A | ~B recursively, so
+    pattern detectors only see Not(Symbol) literals (or Not(Xor(...))
+    treated as XNOR factor).
+    """
+    if isinstance(expr, Symbol):
+        return expr
+    if isinstance(expr, Not):
+        inner = expr.args[0]
+        if isinstance(inner, Symbol):
+            return expr  # Not(Symbol) is a literal — keep as-is
+        if isinstance(inner, And):
+            # ~(A & B & ...) = ~A | ~B | ...
+            return Or(*[_push_nots_to_literals(Not(a)) for a in inner.args])
+        if isinstance(inner, Or):
+            # ~(A | B | ...) = ~A & ~B & ...
+            return And(*[_push_nots_to_literals(Not(a)) for a in inner.args])
+        if isinstance(inner, Not):
+            return _push_nots_to_literals(inner.args[0])
+        if isinstance(inner, Xor):
+            # ~(A ^ B) — keep as XNOR (pattern detector recognizes this)
+            return Not(Xor(*[_push_nots_to_literals(a) for a in inner.args]))
+        return expr  # unknown inner type
+    if isinstance(expr, (And, Or)):
+        return type(expr)(*[_push_nots_to_literals(a) for a in expr.args])
+    if isinstance(expr, Xor):
+        return Xor(*[_push_nots_to_literals(a) for a in expr.args])
+    return expr
+
+
 # ────────────────────────── Pattern detectors ──────────────────────────
 
 class CellChain:
@@ -383,6 +415,10 @@ def synthesize(rtl_boolean_str, input_names, jira='9868'):
     # Allow ~, &, |, ^ operators (sympy supports these via __invert__, __and__, etc.)
     expr = eval(rtl_boolean_str, {'__builtins__': {}}, sym_dict)
 
+    # Canonicalize via DeMorgan: push negations down to literals (NNF form)
+    # so `~(A | B)` becomes `~A & ~B` and our pattern detector sees flat AND.
+    expr = _push_nots_to_literals(expr)
+
     # Try the AND-of-literals-with-XOR pattern (engineer NeedFreqAdj style)
     chain = synthesize_and_pattern(expr, syms, jira=jira)
     if chain is not None:
@@ -405,63 +441,88 @@ def synthesize(rtl_boolean_str, input_names, jira='9868'):
 
 
 def compose_chain_boolean(chain, sym_dict, jira):
-    """Re-compose the cell chain into a single sympy Boolean expression."""
-    # Map intermediate wire name → sympy expression
-    wire_exprs = {}
+    """Re-compose the cell chain into a single sympy Boolean expression.
 
-    for cell in chain.cells:
+    Iterates the chain in fixed-point order — handles cells given in
+    arbitrary order (e.g., output-first BFS walk). Stops when all cells
+    are processed or no progress is possible (which signals an unknown
+    cell type or unresolvable input).
+    """
+    wire_exprs = {}     # wire_name → sympy expression
+    pending = list(chain.cells)
+    unknown_cells = []  # cell types we couldn't model
+
+    def resolve(name):
+        if name in sym_dict:
+            return sym_dict[name]
+        if name in wire_exprs:
+            return wire_exprs[name]
+        if name == "1'b0":
+            return false
+        if name == "1'b1":
+            return true
+        return None
+
+    def try_compose_cell(cell):
+        """Return True if cell was successfully composed, False if inputs not
+        ready. Adds entry to wire_exprs on success."""
         ct = cell['cell_type']
         pc = cell['port_connections']
-
-        def resolve(name):
-            if name in sym_dict:
-                return sym_dict[name]
-            if name in wire_exprs:
-                return wire_exprs[name]
-            if name == "1'b0":
-                return false
-            if name == "1'b1":
-                return true
-            return None
-
-        # Identify cell function by family prefix
-        family = re.match(r'^([A-Z]+\d*)', ct).group(1) if re.match(r'^([A-Z]+\d*)', ct) else ct
-
+        # Each cell type: (family_prefix, output_pin, input_pins, builder)
         if ct.startswith('INV'):
             i = resolve(pc.get('I'))
-            if i is None: return None
-            wire_exprs[pc.get('ZN')] = Not(i)
-        elif ct.startswith('XOR2'):
+            if i is None: return False
+            wire_exprs[pc.get('ZN')] = Not(i); return True
+        if ct.startswith('XOR2'):
             a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
-            if a1 is None or a2 is None: return None
-            wire_exprs[pc.get('Z')] = Xor(a1, a2)
-        elif ct.startswith('XNR2'):
+            if a1 is None or a2 is None: return False
+            wire_exprs[pc.get('Z')] = Xor(a1, a2); return True
+        if ct.startswith('XNR2'):
             a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
-            if a1 is None or a2 is None: return None
-            wire_exprs[pc.get('ZN')] = Not(Xor(a1, a2))
-        elif ct.startswith('OR4'):
+            if a1 is None or a2 is None: return False
+            wire_exprs[pc.get('ZN')] = Not(Xor(a1, a2)); return True
+        if ct.startswith('OR4'):
             ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3', 'A4')]
-            if any(x is None for x in ins): return None
-            wire_exprs[pc.get('Z')] = Or(*ins)
-        elif ct.startswith('NR2'):
+            if any(x is None for x in ins): return False
+            wire_exprs[pc.get('Z')] = Or(*ins); return True
+        if ct.startswith('NR2'):
             a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
-            if a1 is None or a2 is None: return None
-            wire_exprs[pc.get('ZN')] = Not(Or(a1, a2))
-        elif ct.startswith('AN2'):
+            if a1 is None or a2 is None: return False
+            wire_exprs[pc.get('ZN')] = Not(Or(a1, a2)); return True
+        if ct.startswith('AN2'):
             a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
-            if a1 is None or a2 is None: return None
-            wire_exprs[pc.get('Z')] = And(a1, a2)
-        elif ct.startswith('AN3'):
+            if a1 is None or a2 is None: return False
+            wire_exprs[pc.get('Z')] = And(a1, a2); return True
+        if ct.startswith('AN3'):
             ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3')]
-            if any(x is None for x in ins): return None
-            wire_exprs[pc.get('Z')] = And(*ins)
-        elif ct.startswith('OR2'):
+            if any(x is None for x in ins): return False
+            wire_exprs[pc.get('Z')] = And(*ins); return True
+        if ct.startswith('OR2'):
             a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
-            if a1 is None or a2 is None: return None
-            wire_exprs[pc.get('Z')] = Or(a1, a2)
-        else:
-            return None  # unknown cell type — can't compose
+            if a1 is None or a2 is None: return False
+            wire_exprs[pc.get('Z')] = Or(a1, a2); return True
+        # Unknown cell type — record and skip
+        unknown_cells.append(ct)
+        return None  # signals "unknown" rather than "not ready"
 
+    # Fixed-point iteration: keep passing through pending until no progress
+    while pending:
+        progress = False
+        next_pending = []
+        for cell in pending:
+            r = try_compose_cell(cell)
+            if r is True:
+                progress = True
+            elif r is False:
+                next_pending.append(cell)
+            else:  # None — unknown cell type, skip permanently
+                pass
+        pending = next_pending
+        if not progress:
+            break  # stuck: either unknown cells consumed everything or unresolvable
+
+    if pending:
+        return None  # could not resolve all cells (cycle or unknown input)
     return wire_exprs.get(chain.output_net)
 
 

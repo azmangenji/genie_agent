@@ -1228,6 +1228,136 @@ def main():
                         f"to ensure all 3 belong to the same clock tree (verify by "
                         f"tracing each CP wire's source register's CP recursively).")
 
+    # ── 31. SYNTH-STYLE-TOPOLOGY: every new_logic_dff's d_input_gate_chain
+    # must match what eco_synth_chain.py would produce for the same target
+    # Boolean. The synthesizer enforces engineer-style decomposition (e.g.,
+    # collapse AND-of-mixed-literals into OR4+NR2 instead of literal AN+INV
+    # chains). Mismatch → HARD FAIL.
+    #
+    # Why this matters
+    # ----------------
+    # FM treats different cell topologies as different cones even when the
+    # Boolean is mathematically equivalent. Trial3 of run 20260512070625
+    # produced a 5-cell literal decomposition for NeedFreqAdj_reg.D and FM
+    # Route failed; trial1 + engineer used the synth-style 4-cell chain for
+    # the same Boolean and FM passed. This check ensures the studier emits
+    # the synth-style chain.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import eco_synth_chain as synth
+    except ImportError:
+        synth = None
+    if synth is not None:
+        # Build per-stage gate-by-output-net index for chain walking
+        for stage_key in ('Synthesize',):
+            stage_entries = study.get(stage_key, [])
+            # Index: output_net → gate_entry
+            gates_by_output = {}
+            for e in stage_entries:
+                if e.get('change_type') == 'new_logic_gate':
+                    out = e.get('output_net') or e.get('port_connections', {}).get('Z') \
+                          or e.get('port_connections', {}).get('ZN')
+                    if out:
+                        gates_by_output[out] = e
+
+            # For each new_logic_dff, walk the chain
+            for dff in stage_entries:
+                if dff.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                    continue
+                inst = dff.get('instance_name') or dff.get('dff_instance_name') \
+                       or dff.get('signal_name') or '?'
+                d_net = (dff.get('port_connections') or {}).get('D')
+                if not d_net or not d_net.startswith('n_eco_'):
+                    # D is a primary signal or constant — no chain to check
+                    continue
+
+                # BFS backward from d_net through n_eco_* nets, collecting gates
+                visited = set()
+                chain_gates = []
+                queue = [d_net]
+                while queue:
+                    net = queue.pop(0)
+                    if net in visited or not net.startswith('n_eco_'):
+                        continue
+                    visited.add(net)
+                    g = gates_by_output.get(net)
+                    if g is None:
+                        continue
+                    chain_gates.append(g)
+                    pc = g.get('port_connections') or {}
+                    for pin, val in pc.items():
+                        if pin in ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S'):
+                            continue  # output pins, skip
+                        if val.startswith('n_eco_'):
+                            queue.append(val)
+
+                if not chain_gates:
+                    continue
+
+                try:
+                    # 1. Compose the emitted chain into Boolean
+                    emitted_chain_obj = synth.CellChain()
+                    for g in chain_gates:
+                        emitted_chain_obj.add_cell(
+                            cell_type=g.get('cell_type', ''),
+                            inst_name=g.get('cell_instance_name', '') or g.get('instance_name', ''),
+                            port_connections=g.get('port_connections', {}),
+                        )
+                    emitted_chain_obj.output_net = d_net
+
+                    # Build sympy symbol map from chain leaf inputs
+                    leaf_inputs = sorted({
+                        v for g in chain_gates
+                        for k, v in (g.get('port_connections') or {}).items()
+                        if k not in ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S')
+                           and not v.startswith(('n_eco_', "1'b", "0'b"))
+                    })
+                    if not leaf_inputs:
+                        continue
+                    from sympy import symbols as _sym
+                    sym_dict = {n: _sym('S_' + re.sub(r'[^A-Za-z0-9_]', '_', n))
+                                for n in leaf_inputs}
+                    emitted_boolean = synth.compose_chain_boolean(
+                        emitted_chain_obj, sym_dict, jira='check'
+                    )
+                    if emitted_boolean is None:
+                        issues.append(
+                            f"WARN/31-SYNTH-TOPOLOGY: ECO DFF {inst} chain contains "
+                            f"cell types not modelled by eco_synth_chain.compose. "
+                            f"Cannot verify topology."
+                        )
+                        continue
+                    # 2. Canonicalize via DeMorgan, then re-synthesize
+                    canonical = synth._push_nots_to_literals(emitted_boolean)
+                    expected_chain = synth.synthesize_and_pattern(
+                        canonical, tuple(sym_dict.values()), jira='check'
+                    )
+                    if expected_chain is None:
+                        issues.append(
+                            f"WARN/31-SYNTH-TOPOLOGY: ECO DFF {inst} Boolean does not "
+                            f"match any pattern in eco_synth_chain.py. Cannot enforce "
+                            f"topology — add a pattern detector for this case."
+                        )
+                        continue
+                    # 3. Compare cell-type multisets
+                    emitted_types = sorted(g.get('cell_type', '') for g in chain_gates)
+                    expected_types = sorted(c['cell_type'] for c in expected_chain.cells)
+                    if emitted_types != expected_types:
+                        issues.append(
+                            f"HIGH/31-SYNTH-TOPOLOGY: ECO DFF {inst} emitted "
+                            f"{len(emitted_types)} cells {emitted_types} differs from "
+                            f"synth-style {len(expected_types)} cells {expected_types}. "
+                            f"Boolean is equivalent but FM may treat different "
+                            f"topologies as cone-divergent. Studier MUST invoke "
+                            f"eco_synth_chain.py and use its output verbatim — "
+                            f"literal RTL decomposition is FORBIDDEN."
+                        )
+                except Exception as ex:
+                    issues.append(
+                        f"WARN/31-SYNTH-TOPOLOGY: error checking topology for {inst}: "
+                        f"{type(ex).__name__}: {ex}"
+                    )
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
