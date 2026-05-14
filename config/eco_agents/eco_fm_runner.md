@@ -63,7 +63,10 @@ EOF
 ```
 
 - `RUN_SVF_GEN` is always `0`. Never write `ECO_SVF_ENTRIES` — Step 4b (eco_svf_updater) is permanently disabled; a missing SVF file causes post_eco_formality.csh to abort.
-- **`ECO_TARGETS` must always include ALL 3 targets** — never skip a target because it "passed" in a prior round. eco_applier modifies all 3 PostEco stages in every round; a previously-passing stage could silently regress if the applier touched it. If ROUND_ORCHESTRATOR passes fewer than 3 targets, add the missing ones before writing eco_fm_config.
+- **`ECO_TARGETS` policy depends on the caller's invocation context:**
+  - **Initial Round 1 FM (APPLY_ORCHESTRATOR Step 6 first submit) and every ROUND_ORCHESTRATOR re-FM** — `ECO_TARGETS` MUST include ALL 3 targets. Reason: `eco_applier` modifies all 3 PostEco stages in every round; a previously-passing stage could silently regress if the applier touched it.
+  - **APPLY_ORCHESTRATOR Step 6 ABORT inline loop iterations** — caller MAY pass a subset (only the targets the previous `abort_recovery_agent` iteration actually patched). Reason: between inline loop iterations, no `eco_applier` re-run happens — only mechanical/reasoning patches scoped to specific stage netlists. Prior-PASS targets' rpt.gz files remain on disk; `eco_fm_status_collector.py` reads them and reports their PASS verdict unchanged. Saves 30-60 min per untouched target.
+  - When the caller passes fewer than 3 targets, do NOT auto-add the missing ones — trust the caller's scope (it has the per-target ABORT context). If the caller is silent about target list, default to all 3 (safe).
 - Verify the file contains `ECO_TARGETS=` and `RUN_SVF_GEN=0`; abort if not.
 
 ---

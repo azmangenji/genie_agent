@@ -169,9 +169,19 @@ After applying patches (mechanical OR reasoning):
       "yaml_pattern_suggestion": { ... }                    // reasoning mode only
     }
   ],
+  "patched_targets": ["FmEqvEcoSynthesizeVsSynRtl"],          // see below — drives selective rerun
   "next_action": "RESUBMIT_FM" | "ESCALATE_TO_ENGINEER"
 }
 ```
+
+**`patched_targets` — top-level field (MANDATORY for selective FM rerun).** Union of `target` values across `patches_applied[]`. APPLY_ORCHESTRATOR uses this to limit the next FM iteration to the targets it actually touched — prior-PASS targets are NOT re-submitted, saving 30-60 min per untouched target.
+
+Rules:
+- Set ONLY when `status == "PATCH_APPLIED"` (or `PATCH_INCOMPLETE` with at least one successful patch).
+- Each entry MUST be one of `FmEqvEcoSynthesizeVsSynRtl | FmEqvEcoPrePlaceVsEcoSynthesize | FmEqvEcoRouteVsEcoPrePlace`.
+- If a single patch (e.g. `sed_cell_type` on a multi-stage shared cell) had to be applied to multiple stages, list ALL affected targets — orchestrator will rerun every one.
+- If unsure / patch scope was broad (whole-study edit, file-level invariant) → list all 3 targets to force a full rerun (safe fallback).
+- Empty list (`[]`) is treated as "unknown scope → rerun all 3" by the orchestrator.
 
 Save to `<BASE_DIR>/data/<TAG>_abort_recovery_attempt<ATTEMPT>.json`. Print summary. EXIT.
 

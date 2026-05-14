@@ -320,8 +320,27 @@ HANDOFF_PATH = {BASE_DIR}/data/{TAG}_round_handoff.json
     if summary.get('status') != 'PATCH_APPLIED':
         break  # PATCH_INCOMPLETE / PATCH_NOOP / REASONING_REFUSED / etc.
 
+    # ── Selective rerun — only re-submit the targets the recovery agent
+    #    actually patched. Prior-PASS targets keep their rpt.gz files on
+    #    disk; status_collector reads them and reports their PASS verdict
+    #    unchanged. Saves 30-60 min per untouched target.
+    ALL_TARGETS = {'FmEqvEcoSynthesizeVsSynRtl',
+                   'FmEqvEcoPrePlaceVsEcoSynthesize',
+                   'FmEqvEcoRouteVsEcoPrePlace'}
+    patched = set(summary.get('patched_targets') or [])
+    # Always include any target still in ABORT (the patch may have been
+    # cross-target, or recovery agent may have understated scope). Never
+    # rerun targets that were already PASS.
+    aborted_now = {t for t, info in fm.get('per_target', {}).items()
+                   if (info.get('verdict') or '').startswith('ABORT_')}
+    rerun_targets = (patched | aborted_now) & ALL_TARGETS
+    if not rerun_targets:
+        # Defensive fallback — if the agent emitted nothing actionable,
+        # rerun all 3 to avoid silently locking in a stale PASS.
+        rerun_targets = ALL_TARGETS
+
     # Resubmit FM — eco_fm_runner re-invokes status_collector via the csh
-    spawn_eco_fm_runner()
+    spawn_eco_fm_runner(targets=sorted(rerun_targets))
 
 # After loop:
 final = read_json(f'data/{TAG}_eco_fm_verify.json').get('verdict', 'UNKNOWN')
