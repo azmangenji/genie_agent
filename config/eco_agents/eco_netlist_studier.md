@@ -381,20 +381,27 @@ Pass BASE module names (no `_0`/`_1` suffix) for `--host/sibling/parent-module`.
 
 **MANDATORY minimum cluster size: `consolidation_target_dffs` ≥ 10 DFFs** (use SIBLING ESCALATION above when picker can't reach 10). Smaller clusters mean the bridge isn't a meaningful scan path participant → FM cone matching unstable.
 
-**Bridge artifact umbrella** (per new ECO DFF — all carry `bridge_port_role`, Synth-skipped):
+**Bridge artifact umbrella** (per new ECO DFF — all carry `bridge_port_role`):
 
-| Entry | change_type | role tag |
+| Entry | change_type | Stages |
 |---|---|---|
-| Sibling-module SI/SE/Q ports | `port_declaration` | `sibling_<si\|se\|q>` |
-| Host-module SI/SE/Q ports | `port_declaration` | `host_<si\|se\|q>` |
-| Parent-level bridge wires | `assign` | (no tag — driven only in PP/Route) |
-| Sibling/Host instance hookups | `port_connection` | `sibling_*` / `host_*` |
-| Sibling SE-pin consolidation (≥10 DFFs) | `sibling_pin_consolidation` | (auto-skipped) |
-| Bridge Q closure (one DFF SI rewrite) | `si_consumer_replace` | (auto-skipped) |
+| Host/sibling SI/SE/Q ports | `port_declaration` | all |
+| Parent-level bridge wires | `wire_declaration` | all |
+| Host/sibling instance hookups | `port_connection` | all |
+| Sibling SE-pin consolidation (≥10 DFFs) | `sibling_pin_consolidation` | PP, Route |
+| Bridge Q closure (1 DFF SI rewrite) | `si_consumer_replace` | PP, Route |
+| SI/SE driver buffers in sibling | `new_logic` | Route |
 
-Sibling SE-pin consolidation: pick N existing DFFs in `sibling_module` sharing the most-common `.SE` net; applier rewrites their `.SE` to `ECO_<jira>_SE_out`. Q-closure: pick a DFF already in the SE-consolidation list (its original `.SI` is now redundant); applier rewrites its `.SI` to `ECO_<jira>_Q_in`. **Verify `consumer_dff_inst` exists inside `sibling_module` body via module-scoped grep** — picking a consumer outside the named sibling produces silent applier no-op + FM failure.
+**Bridge wire is driven through the sibling-side port** (not a parent-scope assign). Each port has exactly ONE expected consumer — Step 3 Check 17 enforces:
 
-**Bridge wire MUST be driven** at parent scope (`assign eco<jira>_<si|se>_bridge = <parent_neighbor_net>`); undriven wire dangles → FM globally unmatched. Step 3 Check 3c + Step 5 Check 17 enforce.
+| `bridge_port_role` | Expected consumer |
+|---|---|
+| `host_si` / `host_se` | new DFF's `port_connections_per_stage[<stage>].SI/SE` |
+| `host_q` | host module's Q-output (DFF `.Q` output net == port name) |
+| `sibling_si` / `sibling_se` | buffer `new_logic` entry's `output_net` (Route only; PP may dangle — see Step 5 `BRIDGE_OUTPUT_UNDRIVEN`) |
+| `sibling_q` | `si_consumer_replace.new_si_net` |
+
+`consumer_dff_inst` for Q-closure MUST exist inside `sibling_module` body (module-scoped grep) — silent no-op + FM fail otherwise.
 
 #### When `mode_S_strategy_per_stage[<stage>]: "neighbor_dff"`
 

@@ -729,34 +729,55 @@ def main():
                 if net is None or (isinstance(net, str) and not net.strip()):
                     issues.append(f"CRITICAL: chain-injection schema — new_logic_gate {inst}.{pin} in {stage} = {net!r} (empty/null)")
 
-    # ── 17. Strategy/Entry mutual exclusion: bridge plumbing entries
-    #        (sibling_pin_consolidation, si_consumer_replace, port_declaration /
-    #        port_connection with bridge_port_role or is_mode_s_stitch) are valid
-    #        ONLY when the corresponding DFF's PP/Route port_connections_per_stage
-    #        actually consume those bridge port names. Mixing — bridge plumbing
-    #        emitted but DFF SI/SE wired to neighbor wires — leaves the bridge
-    #        ports declared on host with no parent wireup → Step 5 catches it as
-    #        MODE_S_BRIDGE_NOT_WIRED. Catch it here at Step 3 instead.
+    # ── 17. Bridge port consumption (role-aware). Each port has exactly ONE
+    #        expected consumer; check by bridge_port_role (see studier MD
+    #        §0b-MODE-S consumer table). Multi-cell pattern — must NOT just
+    #        check DFF.SI/SE.
     has_neighbor_dff = False
     has_bridge_port  = False
-    dff_pcs_wires = set()  # all SI/SE values used by new DFFs in PP/Route
+    # Collect every "consumed by" set per role across all stages
+    consumed_by_dff_si_se = set()       # for host_si / host_se
+    consumed_by_buffer_output = set()   # for sibling_si / sibling_se (Route)
+    consumed_by_si_consumer = set()     # for sibling_q
+    consumed_by_dff_q = set()           # for host_q (DFF Q net == port name)
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         for e in study.get(stage, []):
-            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
-                continue
-            strat_per_stage = e.get('mode_S_strategy_per_stage') or {}
-            for s in ('PrePlace', 'Route'):
-                v = strat_per_stage.get(s)
-                if v == 'neighbor_dff':
-                    has_neighbor_dff = True
-                elif v == 'bridge_port':
-                    has_bridge_port = True
-                pcs = (e.get('port_connections_per_stage') or {}).get(s) or {}
+            ct = e.get('change_type', '')
+            if ct in ('new_logic_dff', 'new_logic'):
+                strat_per_stage = e.get('mode_S_strategy_per_stage') or {}
+                for s in ('PrePlace', 'Route'):
+                    v = strat_per_stage.get(s)
+                    if v == 'neighbor_dff':   has_neighbor_dff = True
+                    elif v == 'bridge_port':  has_bridge_port = True
+                    pcs = (e.get('port_connections_per_stage') or {}).get(s) or {}
+                    for pin in ('SI', 'SE'):
+                        w = pcs.get(pin)
+                        if isinstance(w, str) and w.strip() not in ("1'b0", "1'b1", ''):
+                            consumed_by_dff_si_se.add(w.strip())
+                    q = pcs.get('Q')
+                    if isinstance(q, str) and q.strip():
+                        consumed_by_dff_q.add(q.strip())
+                # Also check direct port_connections (not stage-keyed) on DFF
+                top_pcs = e.get('port_connections') or {}
                 for pin in ('SI', 'SE'):
-                    w = pcs.get(pin)
+                    w = top_pcs.get(pin)
                     if isinstance(w, str) and w.strip() not in ("1'b0", "1'b1", ''):
-                        dff_pcs_wires.add(w.strip())
+                        consumed_by_dff_si_se.add(w.strip())
+                q = top_pcs.get('Q')
+                if isinstance(q, str) and q.strip():
+                    consumed_by_dff_q.add(q.strip())
+                # If this is a buffer cell, its output_net consumes a sibling_*_out port
+                if e.get('bridge_port_role','').endswith('_driver'):
+                    out = e.get('output_net') or top_pcs.get('Z') or top_pcs.get('ZN')
+                    if isinstance(out, str) and out.strip():
+                        consumed_by_buffer_output.add(out.strip())
+            elif ct == 'si_consumer_replace':
+                ns = e.get('new_si_net')
+                if isinstance(ns, str) and ns.strip():
+                    consumed_by_si_consumer.add(ns.strip())
+
     BRIDGE_TYPES = ('sibling_pin_consolidation', 'si_consumer_replace')
+    seen_port_role = set()  # dedup across stages
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         for e in study.get(stage, []):
             ct = e.get('change_type')
@@ -776,16 +797,44 @@ def main():
                     f"Either switch the DFF's mode_S_strategy_per_stage to bridge_port "
                     f"(and wire SI/SE to the bridge port names), or drop this bridge entry.")
                 continue
-            # No explicit strategy, but bridge port name not actually consumed by any DFF SI/SE
+            # Role-aware consumer check on port_declaration entries only.
+            # Each role has exactly ONE expected consumer (see studier MD §0b-MODE-S).
             if ct == 'port_declaration' and e.get('is_mode_s_stitch'):
                 pn = e.get('port_name', '')
-                if pn and pn not in dff_pcs_wires:
+                role = e.get('bridge_port_role', '')
+                if not pn or not role:
+                    continue
+                # Dedup: same (pn, role) reported once across stages
+                key = (pn, role)
+                if key in seen_port_role:
+                    continue
+                if   role in ('host_si', 'host_se'):
+                    consumed = pn in consumed_by_dff_si_se
+                elif role in ('sibling_si', 'sibling_se'):
+                    # PP/Synth allowed to be undriven (Step 5 BRIDGE_OUTPUT_UNDRIVEN catches);
+                    # only require buffer-driven for Route entries
+                    if stage != 'Route':
+                        continue
+                    consumed = pn in consumed_by_buffer_output
+                elif role == 'sibling_q':
+                    consumed = pn in consumed_by_si_consumer
+                else:
+                    # host_q is auto-wired by applier (assign Q_out = <dff_Q>);
+                    # no study-level proof required.
+                    continue
+                if not consumed:
+                    seen_port_role.add(key)
+                    expected = {
+                        'host_si':    'DFF.SI', 'host_se': 'DFF.SE',
+                        'sibling_si': 'buffer cell (sibling_si_driver) output_net',
+                        'sibling_se': 'buffer cell (sibling_se_driver) output_net',
+                        'sibling_q':  'si_consumer_replace.new_si_net',
+                    }[role]
                     issues.append(
-                        f"HIGH: Bridge port {pn!r} declared in {stage} on module "
-                        f"{e.get('module_name','?')!r} but no new DFF's SI/SE consumes it "
-                        f"in port_connections_per_stage — Step 5 will fail with "
-                        f"MODE_S_BRIDGE_NOT_WIRED. Either wire DFF SI/SE to {pn!r}, "
-                        f"or drop this port_declaration (strategy is neighbor_dff).")
+                        f"HIGH: Bridge port {pn!r} (role={role}) declared on module "
+                        f"{e.get('module_name','?')!r} but NOT consumed by expected "
+                        f"consumer ({expected}). Step 5 will fail with "
+                        f"MODE_S_BRIDGE_NOT_WIRED.")
 
     # ── 18. Q-closure consumer must structurally exist in the named sibling.
     #        si_consumer_replace.consumer_dff_inst MUST appear in sibling_module's
@@ -824,6 +873,15 @@ def main():
     # ── 19. Per-stage wire existence: pcs[stage].SI and .SE MUST exist in the
     #        corresponding stage's PreEco netlist. Catches the PP→Route copy-paste
     #        bug where studier reuses PP wire names that CTS removed in Route.
+    #        Skip bridge ports — they're created by the applier in PostEco, not
+    #        present in PreEco by design (cross-ref study port_declaration entries).
+    bridge_port_names = set()
+    for stg in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stg, []):
+            if e.get('change_type') == 'port_declaration' and (e.get('is_mode_s_stitch') or e.get('bridge_port_role')):
+                pn = e.get('port_name') or e.get('signal_name')
+                if pn:
+                    bridge_port_names.add(pn.strip())
     seen_wire_check = set()
     for stage in ('Synthesize', 'PrePlace', 'Route'):
         netlist = f'{args.ref_dir}/data/PreEco/{stage}.v.gz'
@@ -838,16 +896,19 @@ def main():
                 wire = pcs.get(pin)
                 if not isinstance(wire, str) or not wire:
                     continue
-                # Skip constants and ECO-introduced ports/wires
-                if wire.startswith(("1'b", "0'b", "1'h")) or wire.startswith(('ECO_', 'eco')):
+                w = wire.strip()
+                # Skip constants, ECO-introduced names, and bridge ports declared in the study
+                if w.startswith(("1'b", "0'b", "1'h")) or w.startswith(('ECO_', 'eco')):
                     continue
-                key = (stage, wire)
+                if w in bridge_port_names:
+                    continue
+                key = (stage, w)
                 if key in seen_wire_check:
                     continue
                 seen_wire_check.add(key)
                 try:
                     r = subprocess.run(
-                        f"zgrep -c '\\b{re.escape(wire)}\\b' '{netlist}'",
+                        f"zgrep -c '\\b{re.escape(w)}\\b' '{netlist}'",
                         shell=True, capture_output=True, text=True, timeout=30)
                     count = int(r.stdout.strip() or '0')
                 except Exception:
@@ -855,7 +916,7 @@ def main():
                 if count == 0:
                     issues.append(
                         f"CRITICAL: Per-stage wire missing — DFF {inst} stage={stage} "
-                        f".{pin}={wire!r} does NOT exist in PreEco/{stage}.v.gz "
+                        f".{pin}={w!r} does NOT exist in PreEco/{stage}.v.gz "
                         f"(0 hits). Likely PP→Route copy-paste; studier MUST run "
                         f"per-stage neighbor_dff lookup independently from each stage's netlist.")
 
@@ -1186,18 +1247,31 @@ def main():
     # all share the same <clk_token>. If the tokens disagree, fail.
     CLK_TOKEN_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*?clk[A-Za-z0-9_]*|'
                               r'[A-Z][A-Z0-9]*CLK[A-Z0-9_]*)', re.IGNORECASE)
+    # Decorations that wrap a clock root: clock-gate cells, CTS rebalance,
+    # antenna-fix nets, buffer chains, register suffixes. Stripped (anywhere
+    # in the token, not just suffix) before comparing tokens across stages.
+    _CLK_DECOR_RE = re.compile(
+        r'(_CLK_GATE_[A-Z0-9_]*|_CTS(_[A-Z0-9]+)*|_BUF(_[A-Z0-9]+)*|'
+        r'_INV(_[A-Z0-9]+)*|_GATE(_[A-Z0-9]+)*|_REG(_[A-Z0-9]+)*|'
+        r'^ANT_FIX_NET_\d+_|^UMCCMD_)', re.IGNORECASE)
     def _extract_clock_tokens(cp_value):
-        """Find all clock-like tokens in a CP wire/cell name. Returns set."""
+        """Find all clock-like tokens in a CP wire/cell name. Returns set of
+        decoration-stripped root tokens. Recognizes clock-gate cell names
+        (`*_clk_gate_*_reg`), CTS rebalance (`*_cts_*`), antenna-fix nets
+        (`ant_fix_net_*_<clk>_*`), buffer chains, etc."""
         if not cp_value:
             return set()
         tokens = set()
         for m in CLK_TOKEN_RE.finditer(cp_value):
             tok = m.group(1).upper()
-            # Strip common decorators
-            for suffix in ('_CTS', '_BUF', '_INV', '_GATE'):
-                if tok.endswith(suffix):
-                    tok = tok[:-len(suffix)]
-            tokens.add(tok)
+            # Strip decorations anywhere in the token (not just suffix)
+            prev = None
+            while tok != prev:
+                prev = tok
+                tok = _CLK_DECOR_RE.sub('', tok)
+            tok = tok.strip('_')
+            if tok:
+                tokens.add(tok)
         return tokens
 
     for stage in ('Synthesize', 'PrePlace', 'Route'):

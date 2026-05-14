@@ -376,6 +376,9 @@ Read `data/<TAG>_eco_validate_step2.json` issues list. For each issue, build a t
 - Re-run `eco_fenets_derive_queries.py` + `eco_fenets_sanitize_queries.py` with corrected inputs
 - Re-submit full query batch
 
+**C6 — rename map echo-fallback (rename_map[stage] == input net):**
+For each echo'd signal: if the same name exists as a wire in `PreEco/<stage>.v.gz` (bus-style preserved name) → mark `accepted_echo: true`. Otherwise re-query that signal for the missing stage(s) with `c6_recovery: true`. If still echoes after 1 retry → mark the affected DFF's `mode_S_strategy_per_stage[<stage>]: BLOCKED_NO_RENAME_MAP`.
+
 ### STEP F-3 — Re-submit FM for fix batch (BLOCKING)
 
 ```bash

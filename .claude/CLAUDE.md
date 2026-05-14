@@ -421,6 +421,8 @@ When detected:
 
 **Trigger:** `APPLY_PHASE_READY` block in output AND `<BASE_DIR>/data/<TAG>_study_phase_exited.marker` exists.
 
+**MANDATORY SPAWN-LEVEL GATE — BEFORE spawning APPLY:** read `<BASE_DIR>/data/<TAG>_eco_validate_step3.json`. If `passed != true`, REFUSE to spawn APPLY regardless of what the STUDY orchestrator wrote in `phase_a_status` — say `"STUDY did not pass Step 3 validator (N issues). Refusing to spawn APPLY. Re-spawn STUDY to fix issues."` and STOP. The agent CANNOT override this gate; the validator JSON is the single source of truth.
+
 1. Spawn APPLY agent (background):
    ```
    task_id = Agent(
