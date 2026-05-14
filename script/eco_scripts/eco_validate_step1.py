@@ -869,15 +869,16 @@ def main():
                     if not isinstance(inp, str) or not inp.startswith('PENDING_FM_RESOLUTION:'):
                         continue
                     raw = inp[len('PENDING_FM_RESOLUTION:'):]
-                    # Structural patterns that should never be PENDING:
-                    # ~X (inversion), X_inv (inversion suffix), X_neq/eq (comparison)
-                    structural = (
-                        raw.endswith('_inv') or
-                        raw.endswith('_inv1') or raw.endswith('_inv2') or
-                        raw.endswith('_neq01') or raw.endswith('_eq01') or
-                        'bit1_eq' in raw or 'bit0_eq' in raw or
-                        raw.endswith('_bar')
-                    )
+                    # Structural patterns that should never be PENDING.
+                    # Rule: if the PENDING name itself describes a gate operation
+                    # (~X inversion, X==K comparison) it should be decomposed as
+                    # a gate — not looked up by FM.
+                    # Heuristic: common synthesis suffixes that indicate the signal
+                    # is a derived/inverted/compared form rather than a raw RTL reg.
+                    structural = bool(re.search(
+                        r'(_inv\d*|_bar|_n|_neq\w*|_eq\w*|_not\w*|_inverted)$',
+                        raw, re.IGNORECASE
+                    ))
                     if structural:
                         pending_structural_issues.append(
                             f"changes[{idx}].{fld}[{g.get('seq','?')}]: "
