@@ -353,22 +353,22 @@ FIXER_ROUND=<N>
 
 ## ECO Phase Spawning Pattern
 
-Used for both STUDY (Phase A) and APPLY (Phase B):
+Used for both STUDY (Phase A), APPLY (Phase B), and ROUND (Phase C):
 
 ```python
 task_id = Agent(description=..., prompt=..., run_in_background=True)
-sentinel = f"<BASE_DIR>/data/<TAG>_<phase>_phase_exited.marker"
-for _ in range(360):                        # 360 × 60s = 6h cap
-    sleep(60)
-    if Path(sentinel).exists():
-        TaskStop(task_id)                   # external kill
-        break
-    if task_completed(task_id): break
-if not Path(sentinel).exists():
-    STOP — sentinel missing, do NOT spawn next phase
-verify phase-specific output files
-spawn next phase
+# Sentinel: <BASE_DIR>/data/<TAG>_<phase>_phase_exited.marker
+# The agent itself owns ALL polling — internally, as part of its own task.
+# It spawns its sub-agents (rtl_diff_analyzer, eco_fenets_runner, etc.),
+# polls THEIR sentinels/long-running waits inside its own Bash calls,
+# and writes the phase-exit sentinel as its final action before STOP.
+#
+# The PARENT Claude session does NOT run Bash(sleep N) polling tasks.
+# Background agents auto-notify on completion. Wait for the notification,
+# then verify the sentinel + handoff JSON exist.
 ```
+
+**Hard rule:** Never run `Bash(sleep N && ls <sentinel>)` from the parent session. That blocks the foreground and prevents the user from interacting. Polling belongs INSIDE the spawned agent (in its own Bash calls, which run within the agent's isolated context). Parent reads the sentinel only after the auto-notification arrives.
 
 ---
 
@@ -409,9 +409,9 @@ When detected:
    )
    ```
 
-2. Run the polling loop (per pattern above) — sentinel = `<BASE_DIR>/data/<TAG>_study_phase_exited.marker`.
+2. **Wait for the agent's auto-notification** — do NOT issue `Bash(sleep N)` polling tasks. The agent does its own internal polling (Steps 1-3 sub-spawns + fenets long-wait) within its own context.
 
-3. Verify sentinel + `<TAG>_phase_a_handoff.json` exist. If either missing → STOP.
+3. When notification arrives, verify sentinel `<BASE_DIR>/data/<TAG>_study_phase_exited.marker` + `<TAG>_phase_a_handoff.json` exist. If either missing → STOP.
 
 4. Say only: `"STUDY phase complete. Waiting for APPLY_PHASE_READY signal."`
 
@@ -457,9 +457,9 @@ When detected:
    )
    ```
 
-2. Run the polling loop — sentinel = `<BASE_DIR>/data/<TAG>_apply_phase_exited.marker`.
+2. **Wait for the agent's auto-notification** — do NOT issue `Bash(sleep N)` polling tasks. The APPLY agent owns its own internal polling for Step 4 applier, Step 5 pre-FM, Step 6 FM long-wait + ABORT recovery loop.
 
-3. Verify sentinel + `<TAG>_round_handoff.json` exist. Read `next_phase` field.
+3. When notification arrives, verify sentinel `<BASE_DIR>/data/<TAG>_apply_phase_exited.marker` + `<TAG>_round_handoff.json` exist. Read `next_phase` field.
 
 4. Branch on next_phase:
    - `ROUND` → proceed to ECO Round Mode (below)
@@ -518,9 +518,9 @@ Loop while next_phase = ROUND, max 5 rounds total:
    )
    ```
 
-2. Run the polling loop — sentinel = `<BASE_DIR>/data/<TAG>_round<N>_phase_exited.marker`.
+2. **Wait for the agent's auto-notification** — do NOT issue `Bash(sleep N)` polling tasks. The ROUND agent owns its own internal polling for Step 6d analyzer, re_studier, applier, Step 5, Step 6 FM.
 
-3. Verify sentinel + `<TAG>_round_handoff.json` exist. Read `next_phase`.
+3. When notification arrives, verify sentinel `<BASE_DIR>/data/<TAG>_round<N>_phase_exited.marker` + `<TAG>_round_handoff.json` exist. Read `next_phase`.
 
 4. Branch:
    - `ROUND` AND round_count < 5 → loop, spawn ROUND_<N+1>
