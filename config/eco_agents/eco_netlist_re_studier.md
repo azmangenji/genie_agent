@@ -306,6 +306,15 @@ for change in rtl_diff.get("changes", []):
                     if gate["pin"] in ('SE', 'SI') and stage == 'Synthesize':
                         entry["port_connections_per_stage"][stage][gate["pin"]] = "1'b0"
                     else:
+                        # Mode H Route fallback — if alias still not found in Route,
+                        # check for ECO port substitute before falling back to NEEDS_NAMED_WIRE.
+                        # When `route_substituted_with_eco_port: true` is in the gate entry,
+                        # a prior studier pass already chose a substitute — reuse it.
+                        if stage == 'Route' and not alias:
+                            eco_port_sub = gate.get('route_eco_port_substitute')
+                            if eco_port_sub and zgrep_count(eco_port_sub, preeco_route_gz) > 0:
+                                alias = eco_port_sub
+                                entry["route_substituted_with_eco_port"] = True
                         entry["port_connections_per_stage"][stage][gate["pin"]] = alias or f"NEEDS_NAMED_WIRE:{gate['inputs'][0]}"
                     entry["force_reapply"] = True
 ```

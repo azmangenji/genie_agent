@@ -180,6 +180,16 @@ NEVER force the Synthesize name across all stages — all three resolution paths
 
 Log: `PR_ALIAS: <gate>.<pin> Syn=<net> PP=<alias> Route=<alias>` or `PR_ALIAS_SAME` if identical.
 
+**Mode H Route fallback — condition gate chain inputs unavailable in Route:**
+
+When Path 1 rename_map shows a Route value that is a Synth-only synthesis name (i.e., `zgrep -c "<route_value>" PreEco/Route.v.gz` returns 0), the signal genuinely doesn't exist in Route. Do NOT use the Synth fallback name — it will cause FM FAIL. Instead:
+
+1. **Check ECO ports from the same run** — search `changes[]` for `new_port` or `port_promotion` entries whose signal is logically related to the unresolvable input (same module scope, same functional domain).
+2. **If a substitute ECO port exists in Route** (grep confirms it exists in `PreEco/Route.v.gz`) — use it as the Route value for that gate input. Record `route_substituted_with_eco_port: true` and `original_signal: <unresolvable>` in the gate entry so the validator and Round 2 re_studier know this was a substitution.
+3. **If no ECO port substitute found** — set `confirmed: false` for Route stage entries only. Applier skips Route gate chain. FM will FAIL on Route; ROUND_ORCHESTRATOR Round 2 handles with manual review.
+
+**Do not apply this fallback to Synth or PP** — only Route is affected. PP is already resolved via the fix1 fenets retry (FxPrePlace_ZBUF_* values).
+
 ---
 
 ### 0b-UNCONNECTED — Auto-rename UNCONNECTED_* nets (MANDATORY)
