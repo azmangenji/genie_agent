@@ -143,43 +143,47 @@ if check["passed"]:
     pass
 else:
     # Issues remained after eco_pre_fm_checker inline attempts.
-    # DO NOT escalate yet — attempt self-healing within this round:
+    # DO NOT escalate to ROUND_ORCHESTRATOR for applier-side structural issues —
+    # these are fixable within the same round without wasting a full FM cycle.
+    # Loop until clean or MAX_HEAL iterations exhausted.
     #
-    # Step 5 Self-Healing Loop (one attempt):
-    #   1. Read issues_unresolved from pre_fm_check JSON — these are the gaps
-    #   2. Re-spawn eco_netlist_verifier to re-enrich study JSON addressing the gaps
-    #   3. Re-spawn eco_applier (ROUND=1, force_reapply entries re-applied)
-    #   4. Re-run eco_check8.sh
-    #   5. Re-spawn eco_pre_fm_checker (fresh full attempt)
-    #   6. If passed=true → proceed to Step 6
-    #   7. If still passed=false → set next_phase=ROUND in handoff, emit ROUND_PHASE_READY, EXIT
+    # Step 5 Self-Healing Loop (max 5 iterations):
+    #   Each iteration: verifier → re-apply → check8 → pre_fm_checker
+    #   Escalate to ROUND only when ALL iterations exhausted — never after just one attempt.
 
-    # Step 5a: Re-enrich study JSON with verifier
-    spawn eco_netlist_verifier (same inputs as Step 3b)
+    MAX_HEAL = 5
+    heal_attempt = 0
 
-    # Step 5b: Re-apply with eco_applier (force_reapply entries)
-    spawn eco_applier (ROUND=1, study JSON just re-enriched)
+    while not check["passed"] and heal_attempt < MAX_HEAL:
+        heal_attempt += 1
+        log(f"Step 5 self-heal attempt {heal_attempt}/{MAX_HEAL} — unresolved: {len(check.get('issues_unresolved',[]))}")
 
-    # Step 5c: Re-run eco_check8.sh
-    bash script/eco_scripts/eco_check8.sh <BASE_DIR> <REF_DIR> <TAG> 1 data/<TAG>_eco_applied_round1.json
-    CHECK8_RESULT_PATH=data/<TAG>_eco_check8_round1.json
+        # Step 5a: Re-enrich study JSON with verifier
+        spawn eco_netlist_verifier (same inputs as Step 3b)
 
-    # Step 5d: Re-run eco_pre_fm_checker
-    spawn eco_pre_fm_checker (CHECK8_RESULT_PATH=<rerun_result>)
-    check2 = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
+        # Step 5b: Re-apply with eco_applier (force_reapply entries)
+        spawn eco_applier (ROUND=1, study JSON just re-enriched)
 
-    if check2["passed"]:
+        # Step 5c: Re-run eco_check8.sh
+        bash script/eco_scripts/eco_check8.sh <BASE_DIR> <REF_DIR> <TAG> 1 data/<TAG>_eco_applied_round1.json
+        CHECK8_RESULT_PATH=data/<TAG>_eco_check8_round1.json
+
+        # Step 5d: Re-run eco_pre_fm_checker
+        spawn eco_pre_fm_checker (CHECK8_RESULT_PATH=<rerun_result>)
+        check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
+
+    if check["passed"]:
         pass  # self-healing succeeded → proceed to Step 6
     else:
-        # Self-healing failed — escalate via next_phase=ROUND signal pattern
-        # (see "After Step 6 — Hand off to next phase" below for full handoff schema)
+        # All MAX_HEAL iterations exhausted — deeper re-study needed, not just re-apply.
         write_round_handoff({
             "status": "FM_FAILED",
             "eco_fm_tag": "NOT_RUN_PRE_FM_CHECK_FAILED",
             "pre_fm_check_failed": True,
+            "heal_attempts": heal_attempt,
             "pre_fm_check_path": f"data/{TAG}_eco_pre_fm_check_round1.json",
             "next_phase": "ROUND",
-            "next_phase_reason": "pre_fm_check failed after self-healing — needs Mode A-H re-study"
+            "next_phase_reason": f"pre_fm_check failed after {heal_attempt} self-healing attempts — needs Mode A-H re-study"
         })
         write_eco_fixer_state(round=1)
         emit ROUND_PHASE_READY signal block to SPEC_FILE
