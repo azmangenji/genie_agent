@@ -230,14 +230,117 @@ def detect_and_of_terms_with_xor(expr):
 def synthesize_and_pattern(expr, input_syms, jira='9868'):
     """
     Synthesize an AND-of-literals(+ XOR terms) expression into a synthesis-
-    style cell chain. Engineer pattern for NeedFreqAdj-class expressions.
+    style cell chain. Picks the most-compact engineer-style cell pattern
+    based on factor count and polarity mix:
 
-    Returns CellChain or None if pattern doesn't fit.
+       1 factor (positive literal)              → no chain (alias)
+       1 factor (negative literal)              → INV
+       N positive literals only (N=2,3,4)       → AN_N single cell
+       N negative literals only (N=2,3,4)       → NR_N single cell  [engineer style]
+       2 mixed (1 pos + 1 neg literal)          → INV(pos) + NR2(inv_z, neg_var)
+                                                   [engineer EcoUseSdpOutstRdCnt style]
+       3-5 mixed literals (with optional XOR)   → INV(s) + (XOR2/XNR2) + OR4 + NR2
+                                                   [engineer NeedFreqAdj style]
+
+    Returns CellChain or None if no pattern matches.
     """
     info = detect_and_of_terms_with_xor(expr)
     if info is None:
         return None
 
+    pos_lits = info['positive_literals']
+    neg_lits = info['negative_literals']
+    xor_terms = info['xor_terms']
+
+    # ── Single-literal degenerate cases ─────────────────────────────────────
+    total_terms = len(pos_lits) + len(neg_lits) + len(xor_terms)
+    if total_terms == 0:
+        return None
+    if total_terms == 1 and not xor_terms:
+        chain = CellChain()
+        if pos_lits:  # positive literal: no cell needed (alias)
+            chain.output_net = str(pos_lits[0])
+            return chain
+        # negative literal: single INV
+        v = neg_lits[0]
+        wire = _wire_name(jira, 1)
+        chain.add_wire(wire)
+        chain.add_cell(
+            'INVD1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1),
+            {'I': str(v), 'ZN': wire},
+        )
+        chain.output_net = wire
+        return chain
+
+    # ── Pure all-positive / all-negative AND (no XOR) ──────────────────────
+    if not xor_terms and not neg_lits and 2 <= len(pos_lits) <= 4:
+        # AN_N single cell
+        n = len(pos_lits)
+        cell_type = {
+            2: 'AN2D1BWP136P5M156H3P48CPDLVT',
+            3: 'AN3D1BWP136P5M156H3P48CPDLVT',
+            4: 'AN4D1BWP136P5M156H3P48CPDLVT',
+        }[n]
+        wire = _wire_name(jira, 1)
+        chain = CellChain()
+        chain.add_wire(wire)
+        pc = {f'A{i+1}': str(v) for i, v in enumerate(pos_lits)}
+        pc['Z'] = wire
+        chain.add_cell(cell_type, _inst_name(jira, 1), pc)
+        chain.output_net = wire
+        return chain
+
+    if not xor_terms and not pos_lits and 2 <= len(neg_lits) <= 4:
+        # NR_N single cell (engineer-style collapse for all-negative AND)
+        n = len(neg_lits)
+        cell_type = {
+            2: 'NR2D1SPG1AMDBWP136P5M156H3P48CPDLVT',
+            3: 'NR3D1BWP136P5M156H3P48CPDLVT',
+            4: 'NR4D1BWP136P5M156H3P48CPDLVT',
+        }[n]
+        wire = _wire_name(jira, 1)
+        chain = CellChain()
+        chain.add_wire(wire)
+        pc = {f'A{i+1}': str(v) for i, v in enumerate(neg_lits)}
+        pc['ZN'] = wire
+        chain.add_cell(cell_type, _inst_name(jira, 1), pc)
+        chain.output_net = wire
+        return chain
+
+    # ── 2-factor mixed (1 positive + 1 negative literal) ────────────────────
+    # Engineer EcoUseSdpOutstRdCnt style: INV(positive) + NR2(inv_z, neg_var)
+    if not xor_terms and len(pos_lits) == 1 and len(neg_lits) == 1:
+        chain = CellChain()
+        # 1) INV the positive literal so OR4-input form is its negation
+        inv_wire = _wire_name(jira, 1)
+        chain.add_wire(inv_wire)
+        chain.add_cell(
+            'INVD1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1),
+            {'I': str(pos_lits[0]), 'ZN': inv_wire},
+        )
+        # 2) NR2(inv_z, neg_var) → ~(~pos | neg) = pos & ~neg ✓
+        nr_wire = _wire_name(jira, 2)
+        chain.add_wire(nr_wire)
+        chain.add_cell(
+            'NR2D1SPG1AMDBWP136P5M156H3P48CPDLVT', _inst_name(jira, 2),
+            {'A1': inv_wire, 'A2': str(neg_lits[0]), 'ZN': nr_wire},
+        )
+        chain.output_net = nr_wire
+        return chain
+
+    # ── 3-5 factor mixed (with optional XOR) — engineer NeedFreqAdj style ──
+    # OR4 + NR2 chain; INV any positive literals; XOR2/XNR2 for XOR terms.
+    return _synthesize_or4_nr2_pattern(info, jira)
+
+
+def _synthesize_or4_nr2_pattern(info, jira):
+    """OR4 + NR2 collapse pattern for 3-5 factor mixed AND-with-XOR.
+
+    Engineer NeedFreqAdj_reg pattern. Inputs:
+      - positive_literals: vars that need INV in OR4 input form
+      - negative_literals: vars that go direct to OR4 input
+      - xor_terms: (a, b, polarity) — 'negated' uses XOR2, 'positive' uses XNR2
+    """
     pos = info['positive_literals']      # vars that need INV in OR4 input
     neg = info['negative_literals']      # vars that go direct to OR4 input
     xors = info['xor_terms']             # XOR/XNOR pairs
@@ -497,6 +600,22 @@ def compose_chain_boolean(chain, sym_dict, jira):
             ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3')]
             if any(x is None for x in ins): return False
             wire_exprs[pc.get('Z')] = And(*ins); return True
+        if ct.startswith('AN4'):
+            ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3', 'A4')]
+            if any(x is None for x in ins): return False
+            wire_exprs[pc.get('Z')] = And(*ins); return True
+        if ct.startswith('NR3'):
+            ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3')]
+            if any(x is None for x in ins): return False
+            wire_exprs[pc.get('ZN')] = Not(Or(*ins)); return True
+        if ct.startswith('NR4'):
+            ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3', 'A4')]
+            if any(x is None for x in ins): return False
+            wire_exprs[pc.get('ZN')] = Not(Or(*ins)); return True
+        if ct.startswith('OR3'):
+            ins = [resolve(pc.get(p)) for p in ('A1', 'A2', 'A3')]
+            if any(x is None for x in ins): return False
+            wire_exprs[pc.get('Z')] = Or(*ins); return True
         if ct.startswith('OR2'):
             a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
             if a1 is None or a2 is None: return False
