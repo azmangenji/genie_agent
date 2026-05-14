@@ -230,10 +230,7 @@ def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts):
             elif r['status'] == 'FOUND' and r['positive']:
                 # Prefer a positive net whose path passes through the SAME scope
                 # as the original RTL signal (gives studier a scope-correct alias);
-                # fall back to first positive when no scope match exists. Keep the
-                # last 2 path components so studier sees `<cell>/<pin>` (e.g.
-                # `ArbCtrlPeRdy_reg/Q`) rather than just `Q` — useful for
-                # disambiguating identical pin names across cells.
+                # fall back to first positive when no scope match exists.
                 scope_hint = (q.get('net_path') or '').rsplit('/', 1)[0]
                 pick = None
                 for p in r['positive']:
@@ -241,8 +238,27 @@ def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts):
                         pick = p; break
                 if pick is None:
                     pick = r['positive'][0]
-                parts = pick.rsplit('/', 2)
-                entry[stage] = '/'.join(parts[-2:]) if len(parts) >= 2 else pick
+
+                # CLOCK signals: the FM "equivalent nets" for a clock contain
+                # every register's clock pin (CP / clocked_on / etc.) — picking
+                # the first one returns a misleading `<some_reg>/CP` cell-pin
+                # path instead of the clock WIRE name. Worse, the picked
+                # register differs per stage → Check 27 false-positives a
+                # clock-stage mismatch on what is actually the same UCLK root.
+                # For clock queries, return the bare clock signal name (the
+                # studier/applier resolves the per-stage wire by greping the
+                # actual host module body — see eco_emit_dff_entry.py).
+                is_clock_query = ('dff_clock' in q.get('source', '') or
+                                  re.search(r'(?i)\bclk\b|^[A-Z]+CLK[A-Z0-9_]*$', sig or ''))
+                if is_clock_query:
+                    entry[stage] = sig
+                else:
+                    # Keep the last 2 path components so studier sees
+                    # `<cell>/<pin>` (e.g. `ArbCtrlPeRdy_reg/Q`) rather than
+                    # just `Q` — useful for disambiguating identical pin names
+                    # across cells.
+                    parts = pick.rsplit('/', 2)
+                    entry[stage] = '/'.join(parts[-2:]) if len(parts) >= 2 else pick
             else:
                 entry[stage] = sig
                 had_warning = True
