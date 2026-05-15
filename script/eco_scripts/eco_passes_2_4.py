@@ -273,8 +273,16 @@ def _apply_bus_rename(lines, gz_path, inst_name, port_name, old_net, new_net, bu
         for i, line in enumerate(lines):
             if re.search(rf'\b{re.escape(inst_name)}\s*\(', line):
                 inst_start = i; break
+    # Recovery — try `_0` uniquification suffix (Route stage commonly renames
+    # repeated submodule instances). Then try plain `<inst>(?:_\d+)?` regex.
     if inst_start < 0:
-        return lines, 'SKIPPED', f'bus_rename: instance {inst_name} not found'
+        for cand in (f'{inst_name}_0', f'{inst_name}_1'):
+            for i, line in enumerate(lines):
+                if re.search(rf'\b{re.escape(cand)}\s*\(', line):
+                    inst_start = i; inst_name = cand; break
+            if inst_start >= 0: break
+    if inst_start < 0:
+        return lines, 'SKIPPED', f'bus_rename: instance {inst_name} not found (incl. _0/_1 suffix variants)'
     # Find instance close (depth track)
     depth, inst_close = 0, -1
     for i in range(inst_start, len(lines)):
@@ -675,10 +683,14 @@ def apply_rewire(lines, entry, stage='Synthesize'):
     # (Gap B: UNCONNECTED_* → named wire inside port bus { } concatenation)
     if entry.get('bus_element') and old_net:
         pat_bus = rf'\b{re.escape(old_net)}\b'
-        # Find cell instance start
+        # Find cell instance start — try literal name, then _0/_1 uniquification
         cell_start = next((i for i, l in enumerate(lines) if re.search(rf'\b{re.escape(cell_name)}\b', l)), -1)
         if cell_start < 0:
-            return lines, 'SKIPPED', f'bus_element: cell {cell_name} not found'
+            for cand in (f'{cell_name}_0', f'{cell_name}_1'):
+                cell_start = next((i for i, l in enumerate(lines) if re.search(rf'\b{re.escape(cand)}\b', l)), -1)
+                if cell_start >= 0: cell_name = cand; break
+        if cell_start < 0:
+            return lines, 'SKIPPED', f'bus_element: cell {cell_name} not found (incl. _0/_1 suffix variants)'
         # Find cell block end using depth tracking
         depth, cell_close = 0, cell_start
         for i in range(cell_start, len(lines)):
@@ -706,8 +718,95 @@ def apply_rewire(lines, entry, stage='Synthesize'):
         if re.search(rf'\b{re.escape(cell_name)}\b', line):
             cell_start = i
             break
+
+    # Per-stage cell rename fallback: tool-generated MUX instance names
+    # (ctmi_*, phs_*, FxPrePlace_*) AND cell-type variants (MUX2D2 vs
+    # MUX2EQ2AD1 vs MUX2D1AMD — all MUX2 family, different drive/leakage)
+    # get renamed by CTS/CTS-OPT in PP/Route. The studier is supposed to emit
+    # cell_name_per_stage; when it doesn't, locate the cell by:
+    #   (A) Pin connection to old_net (preferred — old select net is preserved
+    #       across stages even when cell instance + cell type both change)
+    #   (B) Backward-trace from <target_register>_reg.D — for the case where
+    #       even the old_net was renamed
+    # Both produce the per-stage instance name without trusting the Synth label.
     if cell_start < 0:
-        return lines, 'SKIPPED', f'cell {cell_name} not found in {stage}'
+        ct        = entry.get('cell_type', '')
+        target_reg = entry.get('target_register', '') or entry.get('mux_select_target_register', '')
+        # Family prefix from cell_type (MUX2D2BWP… → MUX2; MUX2EQ2AD1AMD… → MUX2EQ2A;
+        # AOI21D1AMD… → AOI21). Used as a SOFT filter — match preferred but optional.
+        ct_family = re.match(r'^([A-Z]+\d*)', ct or '').group(1) if ct else ''
+
+        # (A) pin .<pin>(<old_net>) — find ANY cell whose select pin matches.
+        # Bus nets like ctmn_*/phfnn_* are preserved across stages even when
+        # the consuming cell is renamed by CTS. Walk cell instance blocks
+        # one at a time (bounded by `);` close), match pin INSIDE the block
+        # only — guards against picking up the next cell's pin via a wide
+        # lookahead. Prefer family-matched candidates over any-cell.
+        def _cell_block_end(start):
+            d = 0
+            for k in range(start, min(start + 60, len(lines))):
+                for ch in lines[k].split('//')[0]:
+                    if ch == '(': d += 1
+                    elif ch == ')':
+                        d -= 1
+                        if d == 0: return k
+            return min(start + 30, len(lines) - 1)
+        cand_nets = [old_net]
+        nps = entry.get('net_per_stage', {}) or {}
+        v = nps.get(stage) if isinstance(nps.get(stage), dict) else None
+        if v: cand_nets.append(v.get(pin_name, ''))
+        cand_nets = [n for n in cand_nets if n]
+        family_hits = []   # (line_no, instance_name) — preferred
+        any_hits    = []   # (line_no, instance_name) — fallback
+        i = 0
+        while i < len(lines):
+            m = re.match(r'^\s*([A-Z][A-Z0-9_]+)\s+(\w+)\s*\(', lines[i])
+            if not m:
+                i += 1; continue
+            this_ct, inst_n = m.group(1), m.group(2)
+            end = _cell_block_end(i)
+            blk = ''.join(lines[i:end + 1])
+            for cn in cand_nets:
+                if re.search(rf'\.\s*{re.escape(pin_name)}\s*\(\s*{re.escape(cn)}\s*\)', blk):
+                    if ct_family and this_ct.startswith(ct_family):
+                        family_hits.append((i, inst_n))
+                    else:
+                        any_hits.append((i, inst_n))
+                    break
+            i = end + 1
+        chosen = family_hits or any_hits
+        if chosen:
+            cell_start, cell_name = chosen[0]
+
+        # (B) Backward-trace from <target_register>_reg* — covers the case
+        # where even old_net was renamed by CTS (multibit packs, etc.). Match
+        # the DFF instance by prefix (multibit packs use long _MB_<reg>… names).
+        if cell_start < 0 and target_reg:
+            dff_pat = rf'^\s*\w+\s+({re.escape(target_reg)}_reg\w*)\s*\('
+            dff_line = next((i for i, l in enumerate(lines) if re.match(dff_pat, l)), -1)
+            if dff_line >= 0:
+                # Find .D(<wire>) or .D<bit>(<wire>) within next 60 lines
+                d_wire = None
+                for j in range(dff_line, min(dff_line + 60, len(lines))):
+                    m = re.search(r'\.\s*D\d*\s*\(\s*(\w+)\s*\)', lines[j])
+                    if m:
+                        d_wire = m.group(1); break
+                if d_wire:
+                    # Find the cell driving d_wire — its output pin (Z/ZN) connects to d_wire
+                    drv_pat = rf'\.\s*(Z|ZN|ZN1)\s*\(\s*{re.escape(d_wire)}\s*\)'
+                    for i, line in enumerate(lines):
+                        if not re.search(drv_pat, ''.join(lines[max(0,i-2):i+30])):
+                            continue
+                        blk = ''.join(lines[i:i+30])
+                        if re.search(rf'\.\s*{re.escape(pin_name)}\s*\(', blk):
+                            m2 = re.match(r'^\s*\w+\s+(\w+)\s*\(', line)
+                            if m2:
+                                cell_start = i
+                                cell_name = m2.group(1)
+                                break
+
+    if cell_start < 0:
+        return lines, 'SKIPPED', f'cell {cell_name} not found in {stage} (cell_type+pin grep + backward-trace from {entry.get("target_register","?")}_reg.D both failed)'
 
     # Find cell block end
     depth = 0
@@ -740,15 +839,24 @@ def apply_rewire(lines, entry, stage='Synthesize'):
             found = True
             break
     if not found:
-        # Try without old_net constraint (ambiguous — find pin and replace)
-        pat2 = rf'(\.\s*{re.escape(pin_name)}\s*\()([^)]+)(\))'
+        # Net-rename recovery: P&R may have renamed <old_net> on the pin
+        # (CTS-rebalanced wire / opt-merge). Read the pin's CURRENT net from
+        # the cell block and use it as the effective old_net. This recovers
+        # silent SKIPs caused by stage-divergent net names without trusting
+        # the rtl_diff's Synth-only net label.
+        pat2 = rf'(\.\s*{re.escape(pin_name)}\s*\()\s*([^)]+?)\s*(\))'
+        actual_old = None
         for i in range(cell_start, cell_close+1):
-            if re.search(pat2, lines[i]):
+            m = re.search(pat2, lines[i])
+            if m:
+                actual_old = m.group(2).strip()
                 lines[i] = re.sub(pat2, rf'\g<1>{new_net}\g<3>', lines[i], count=1)
                 found = True
                 break
+        if found:
+            return lines, 'APPLIED', f'{cell_name}.{pin_name}: {actual_old} → {new_net} (net-rename recovery; rtl_diff old_net={old_net!r} not on pin in {stage})'
     if not found:
-        return lines, 'SKIPPED', f'pin .{pin_name}({old_net}) not found in {cell_name} block'
+        return lines, 'SKIPPED', f'pin .{pin_name}({old_net}) not found in {cell_name} block (net-rename recovery also failed)'
 
     return lines, 'APPLIED', f'{cell_name}.{pin_name}: {old_net} → {new_net}'
 

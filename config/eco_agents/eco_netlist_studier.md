@@ -394,6 +394,11 @@ fanout=$(awk '/^module <module>/,/^endmodule/' PreEco/Synthesize.v.gz | grep -c 
 ```
 `fanout > 10` → NEVER reuse — driving a high-fanout net with a new gate cascades FM mismatches across hundreds of DFFs. Use a NEW intermediate wire as the gate output, then rewire the old driver to it. Log `FANOUT_BLOCK: <net> has <N> consumers → using n_eco_<jira>_<seq>`.
 
+**WIRE_SWAP PER-STAGE CELL RESOLUTION (MANDATORY for every rewire entry):** rtl_diff identifies the MUX cell from PreEco Synthesize only — `ctmi_*`/`phs_*`/tool-generated instance prefixes get renamed by CTS in PP/Route. Emit `cell_name_per_stage: {Synthesize, PrePlace, Route}` on every rewire so the applier targets the correct instance per stage. Two-step resolver (use both, prefer A):
+- (A) **Grep PreEco/<stage>** within the declaring module for a cell of the same `cell_type` whose pin (`<pin>`) connects to the per-stage form of `<old_net>` (use `net_per_stage` map if available, else bare `<old_net>`).
+- (B) **Backward-trace** from `<target_register>_reg.D` per stage: locate the DFF instance, follow `.D(<wire>)` upstream until you hit the cell whose `<pin>` drives the chain — that cell's instance name is the per-stage rewire target.
+On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stage[stage]: false` with a reason — the applier will hard-fail rather than silently SKIP.
+
 ### 0g — Process `new_port` changes → `port_declaration` study entries
 
 1. Identify `module_name`, `signal_name` (`new_token`), `declaration_type`, `instance_scope`

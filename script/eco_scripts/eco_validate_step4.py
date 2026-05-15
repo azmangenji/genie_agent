@@ -87,6 +87,38 @@ def main():
     if vf > 0:
         issues.append(f"CRITICAL: {vf} VERIFY_FAILED entries — PostEco netlist may be corrupted; do NOT submit to FM")
 
+    # ── 1b. No unrecoverable SKIPPED entries ─────────────────────────────────
+    # Policy: the applier MUST actively recover from CTS renames / per-stage
+    # cell rename / net rename via cell_type+pin grep, backward-trace from
+    # target_register.D, and _0/_1 uniquification suffix variants. Any SKIP
+    # that escapes recovery means the rewire/insertion did NOT land in this
+    # stage — FM will see PreEco logic on the affected pin. HARD FAIL so the
+    # studier or applier is fixed before FM wastes runtime.
+    #
+    # Intentional skips (allowlist — not a failure):
+    INTENTIONAL_SKIP_SUBSTRINGS = (
+        'implicitly declared by port connections',  # implicit-wire dedup (port_decl)
+        'GAP-3: bridge_port_role',                  # legacy Mode-S Synth skip
+        'GAP-4c: si_consumer_replace',              # legacy Mode-S Synth skip
+        'ALREADY_APPLIED',                          # idempotent re-run
+    )
+    for stage in ['Synthesize', 'PrePlace', 'Route']:
+        for e in applied.get(stage, []):
+            if e.get('status') != 'SKIPPED':
+                continue
+            reason = e.get('reason', '') or ''
+            if any(s in reason for s in INTENTIONAL_SKIP_SUBSTRINGS):
+                continue
+            inst = e.get('instance_name') or e.get('cell_name') or e.get('signal_name','?')
+            ct = e.get('change_type') or e.get('ct') or '?'
+            issues.append(
+                f"HIGH: SKIPPED — {stage} {ct} {inst!r}: {reason}. "
+                f"Applier could not land this change (per-stage cell rename / "
+                f"net rename / instance suffix); FM will see PreEco logic on "
+                f"the affected pin. Studier MUST emit per-stage cell_name + "
+                f"net_per_stage; applier MUST recover via cell_type+pin grep "
+                f"or backward-trace from target_register.D before SKIP.")
+
     # ── 2. eco_perl_spec markers exist for all 3 stages ────────────────────
     data_dir = Path(args.applied).parent
     tag = args.tag
