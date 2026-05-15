@@ -244,17 +244,35 @@ def xstage_section(xstage: dict | None) -> str:
         rows = []
         if d.get("pin_changes"):
             for pc in d["pin_changes"]:
-                stages = " | ".join(f"<b>{esc(s)}</b>={esc(v)}"
-                                    for s, v in pc.get("stages", {}).items())
-                rows.append(f"<tr><td>{esc(pc['pin'])} pin diverges</td><td>{stages}</td></tr>")
-        if d.get("wire_present_per_stage"):
-            for w in d["wire_present_per_stage"][:5]:
-                stages = " | ".join(f"{esc(s)}={esc(w.get(s))}" for s in ("Synthesize", "PrePlace", "Route") if s in w)
-                rows.append(f"<tr><td>wire <code>{esc(w.get('wire'))}</code></td><td>{stages}</td></tr>")
+                if isinstance(pc, str):
+                    # String format: plain description
+                    rows.append(f"<tr><td colspan='2'>{esc(pc)}</td></tr>")
+                elif isinstance(pc, dict):
+                    # Dict format: {pin, stages}
+                    stages = " | ".join(f"<b>{esc(s)}</b>={esc(v)}"
+                                        for s, v in pc.get("stages", {}).items())
+                    rows.append(f"<tr><td>{esc(pc.get('pin','?'))} pin diverges</td><td>{stages}</td></tr>")
+        wps = d.get("wire_present_per_stage", {})
+        if wps:
+            if isinstance(wps, dict):
+                # Dict format: {wire_name: {Synthesize: bool, PrePlace: bool, Route: bool}}
+                for wire, presence in list(wps.items())[:5]:
+                    stages = " | ".join(f"{esc(s)}={'✓' if presence.get(s) else '✗'}"
+                                        for s in ("Synthesize", "PrePlace", "Route"))
+                    rows.append(f"<tr><td>wire <code>{esc(wire)}</code></td><td>{stages}</td></tr>")
+            elif isinstance(wps, list):
+                # List format: [{wire, Synthesize, PrePlace, Route}]
+                for w in wps[:5]:
+                    stages = " | ".join(f"{esc(s)}={esc(w.get(s))}"
+                                        for s in ("Synthesize", "PrePlace", "Route") if s in w)
+                    rows.append(f"<tr><td>wire <code>{esc(w.get('wire'))}</code></td><td>{stages}</td></tr>")
         if d.get("cell_blackboxed"):
             for bb in d["cell_blackboxed"][:5]:
-                rows.append(f"<tr><td>cell <code>{esc(bb.get('cell'))}</code> blackboxed</td>"
-                            f"<td>missing in: {esc(bb.get('missing_in'))}</td></tr>")
+                if isinstance(bb, dict):
+                    rows.append(f"<tr><td>cell <code>{esc(bb.get('cell'))}</code> blackboxed</td>"
+                                f"<td>missing in: {esc(str(bb.get('missing_in')))}</td></tr>")
+                elif isinstance(bb, str):
+                    rows.append(f"<tr><td colspan='2'>blackboxed: {esc(bb)}</td></tr>")
         if not rows:
             blocks.append(f"<h4 style='margin-bottom:4px'><code>{esc(inst)}</code></h4>"
                           f"<p style='color:#616161;font-size:12px;margin:0'><i>No structural deltas (cone match across stages)</i></p>")
