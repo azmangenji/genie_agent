@@ -582,26 +582,12 @@ def main():
                     # Both unknown → uncovered cell; warn so the library JSON can be extended
                     issues.append(f"MEDIUM: ECO {inst} cell_type={cell!r} (family={_ett.family_of(cell)!r}) and gate_function={fn!r} not covered — cannot verify functional correctness. Add to script/eco_scripts/cell_libraries/<your_lib>.json.")
 
-    # ── 13. Scan-bridge SE/SI for new ECO DFFs in P&R: WARN when SE/SI is a
-    # constant in P&R stages. Constants may pass FM if the DFF's clock cone
-    # doesn't cross scan_cntl logic (e.g. CP=wrp_clk_*), but they fail when
-    # CP touches the main clock domain (CP=UCLK*) — the new DFF appears as a
-    # scan-isolated island. MEDIUM (not CRITICAL) because the right answer
-    # depends on the DFF's clock cone depth, which the validator can't fully
-    # determine without simulating FM's cone analysis.
-    for stage in ['PrePlace', 'Route']:
-        for e in study.get(stage, []):
-            if e.get('change_type') not in ('new_logic_dff', 'new_logic'): continue
-            if not e.get('confirmed', True): continue
-            inst = e.get('instance_name', '?')
-            pcs = (e.get('port_connections_per_stage') or {}).get(stage) or e.get('port_connections') or {}
-            cp  = pcs.get('CP', '')
-            for pin in ('SE', 'SI'):
-                v = pcs.get(pin)
-                if isinstance(v, str) and v.strip() in ("1'b0", "1'b1", "0", "1"):
-                    risk = ("HIGH-RISK" if isinstance(cp, str) and cp.upper().startswith(('UCLK','CLK','MCLK'))
-                            else "low-risk")
-                    issues.append(f"MEDIUM: ECO DFF {inst}.{pin} in {stage} = {v!r} (constant) — {risk} of scan-cone divergence (CP={cp!r}). If FM rejects this DFF, hook to a neighboring DFF's per-stage {pin} net (Mode S scan-stitching).")
+    # ── 13. (REMOVED) Scan-bridge SE/SI MEDIUM warnings.
+    # Was: warned when SE/SI = 1'b0 in PP/Route on the assumption the new DFF
+    # would become a scan-isolated island. Under the current policy SE=SI=1'b0
+    # in all 3 stages IS the unconditional default; DFT team owns scan
+    # integration. The warning created false-positive blocks at the spawn-level
+    # gate (passed != true) on every new ECO DFF.
 
     # ── 14. Per-stage CP/SE/SI must come from an existing DFF in the same scope
     # for each stage. Catches "force same-as-Synthesize" anti-pattern and
@@ -1450,10 +1436,22 @@ def main():
                             f"topology — add a pattern detector for this case."
                         )
                         continue
-                    # 3. Compare cell-type multisets
-                    emitted_types = sorted(g.get('cell_type', '') for g in chain_gates)
-                    expected_types = sorted(c['cell_type'] for c in expected_chain.cells)
-                    if emitted_types != expected_types:
+                    # 3. Compare cell-FAMILY multisets (not exact strings).
+                    # The studier picks library variants (drive strength, leakage:
+                    # LL/HVT/SVT/LVT, threshold) from the actual netlist; the
+                    # synth_chain library's choice is a default. FM equivalence
+                    # depends on gate function + pin layout, not the trailing
+                    # variant suffixes. Reduce both to a family token:
+                    #   INR2D1BWP136P5M156H3P48CPDLVTLL -> INR2
+                    #   AN2D1BWP136P5M117H3P48CPDLVT    -> AN2
+                    def _family(ct):
+                        m = re.match(r'^([A-Z]+\d*)', ct or '')
+                        return m.group(1) if m else (ct or '')
+                    emitted_fams  = sorted(_family(g.get('cell_type', '')) for g in chain_gates)
+                    expected_fams = sorted(_family(c['cell_type']) for c in expected_chain.cells)
+                    if emitted_fams != expected_fams:
+                        emitted_types  = sorted(g.get('cell_type', '') for g in chain_gates)
+                        expected_types = sorted(c['cell_type'] for c in expected_chain.cells)
                         issues.append(
                             f"HIGH/31-SYNTH-TOPOLOGY: ECO DFF {inst} emitted "
                             f"{len(emitted_types)} cells {emitted_types} differs from "

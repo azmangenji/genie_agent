@@ -621,26 +621,29 @@ def compose_chain_boolean(chain, sym_dict, jira):
             a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
             if a1 is None or a2 is None: return False
             wire_exprs[pc.get('Z')] = Or(a1, a2); return True
-        # ── Inverted-input AND family (TSMC short-form) ──────────────────
-        # INR2 (= AOI variant "AND-NOT"): Z = A1 & ~A2 — single-cell A & ~B
+        # ── Inverted-input AND family (TSMC short-form, BWP136 library) ──
+        # Truth tables from script/eco_scripts/cell_libraries/tsmc_bwp136.json.
+        # All output on ZN; pin names are A1 + B1[,B2] (NOT A2/A3).
+        # INR2: ZN = A1 & ~B1
         if ct.startswith('INR2'):
-            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
-            if a1 is None or a2 is None: return False
-            wire_exprs[pc.get('Z')] = And(a1, Not(a2)); return True
-        # IND2 / IND3: Z = ~A1 & A2 (& A3) — input-A1 inverted AND chain
+            a1 = resolve(pc.get('A1')); b1 = resolve(pc.get('B1'))
+            if a1 is None or b1 is None: return False
+            wire_exprs[pc.get('ZN')] = And(a1, Not(b1)); return True
+        # IND2: ZN = ~(~A1 & B1) = A1 | ~B1
         if ct.startswith('IND2'):
-            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2'))
-            if a1 is None or a2 is None: return False
-            wire_exprs[pc.get('Z')] = And(Not(a1), a2); return True
+            a1 = resolve(pc.get('A1')); b1 = resolve(pc.get('B1'))
+            if a1 is None or b1 is None: return False
+            wire_exprs[pc.get('ZN')] = Or(a1, Not(b1)); return True
+        # IND3: ZN = ~(A1 & (B1 | B2))
         if ct.startswith('IND3'):
-            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2')); a3 = resolve(pc.get('A3'))
-            if any(x is None for x in (a1, a2, a3)): return False
-            wire_exprs[pc.get('Z')] = And(Not(a1), a2, a3); return True
-        # INR3: Z = A1 & ~A2 & ~A3 (or per library — verify with fact-check)
+            a1 = resolve(pc.get('A1')); b1 = resolve(pc.get('B1')); b2 = resolve(pc.get('B2'))
+            if any(x is None for x in (a1, b1, b2)): return False
+            wire_exprs[pc.get('ZN')] = Not(And(a1, Or(b1, b2))); return True
+        # INR3: ZN = ~(A1 | (B1 & B2))
         if ct.startswith('INR3'):
-            a1 = resolve(pc.get('A1')); a2 = resolve(pc.get('A2')); a3 = resolve(pc.get('A3'))
-            if any(x is None for x in (a1, a2, a3)): return False
-            wire_exprs[pc.get('Z')] = And(a1, Not(a2), Not(a3)); return True
+            a1 = resolve(pc.get('A1')); b1 = resolve(pc.get('B1')); b2 = resolve(pc.get('B2'))
+            if any(x is None for x in (a1, b1, b2)): return False
+            wire_exprs[pc.get('ZN')] = Not(Or(a1, And(b1, b2))); return True
         # Unknown cell type — record and skip
         unknown_cells.append(ct)
         return None  # signals "unknown" rather than "not ready"
