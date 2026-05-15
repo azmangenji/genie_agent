@@ -523,7 +523,9 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 
 #### E4b — Driver Substitution (PRIORITY 0 — check BEFORE compound gate discovery)
 
-The most FM-friendly strategy: never touches the pivot path, no new intermediate wires for FM to trace. **When to use:** new conditions prepended before an old default, AND the pivot's backward cone contains a named intermediate net that qualifies.
+The most FM-friendly strategy: never touches the pivot path, no new intermediate wires for FM to trace.
+
+**When to use:** `change_type == "wire_swap"` AND new conditions prepended before an old default expression AND `d_input_decompose_failed: true`. **Do NOT call for `new_logic` / `new_logic_dff` changes** — those insert NEW registers that don't exist in PreEco; the script will return "DFF not found" and waste time. Driver substitution is only for EXISTING registers whose D-input priority chain has changed.
 
 **Target selection — USE THE SCRIPT, do NOT reason manually** (manual tracing produced wrong targets every prior run):
 
