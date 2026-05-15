@@ -988,7 +988,18 @@ def main():
                 for inp in (g.get('inputs') or []):
                     if not isinstance(inp, str): continue
                     base = inp.split('[')[0]
-                    if base.startswith(("1'b", "0'b", "n_eco_", "SEQMAP_NET", "PENDING")): continue
+                    # PENDING_FM_RESOLUTION signals are explicitly stage-unstable —
+                    # flag them directly instead of skipping
+                    if 'PENDING_FM_RESOLUTION' in base:
+                        raw = base.replace('PENDING_FM_RESOLUTION:', '')
+                        intermed_ins_issues.append(
+                            f"changes[{idx}] target={tgt} [FAIL/9f-PENDING-UNSTABLE]: "
+                            f"intermediate_net_insertion gate uses PENDING_FM_RESOLUTION "
+                            f"signal '{raw}' — stage-unstable by definition (FM-036 in P&R stages). "
+                            f"Use driver_substitution with only ECO ports and primary inputs.")
+                        overall_pass = False
+                        continue
+                    if base.startswith(("1'b", "0'b", "n_eco_", "SEQMAP_NET", "PENDING", "ECO_")): continue
                     # Check existence in all 3 PreEco stages
                     for stage, gz in _preeco_gz.items():
                         if not os.path.exists(gz): continue
