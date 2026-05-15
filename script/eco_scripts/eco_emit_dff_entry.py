@@ -225,18 +225,46 @@ def build_d_input_chain(d_input_expected_function, input_names, jira, prefix='')
     """Run eco_synth_chain.synthesize and return list of gate entries +
     final output net (DFF.D). `prefix` disambiguates instance names when
     multiple DFFs are processed in the same study (e.g. 'needfreqadj' →
-    eco_<jira>_needfreqadj_d001 instead of generic eco_<jira>_d001)."""
+    eco_<jira>_needfreqadj_d001 instead of generic eco_<jira>_d001).
+
+    Verilog bus-bit normalization: rtl_diff's chain `inputs` may use
+    bracketed form (`SIG[1]`) while `d_input_expected_function` uses the
+    underscore-escaped form (`SIG_1_`) that survives Python's eval().
+    Both forms are added to input_names so symbol resolution works.
+
+    On synth failure: returns a valid Verilog placeholder net name
+    (`n_eco_<jira>_<prefix>_d_SYNTH_FAILED`) instead of the raw error
+    string. This way the DFF.D field is a parseable identifier (won't
+    crash the applier on Verilog elaboration) and the validator can
+    detect it via name pattern match.
+    """
     if not d_input_expected_function:
         return [], None
+    # Normalize bracketed bus bits → underscore-escaped form, expanding
+    # the input_names list to cover BOTH forms (eval will resolve whichever
+    # form the Boolean string uses).
+    normalized = []
+    for n in input_names:
+        if n not in normalized: normalized.append(n)
+        # Bus bit form: 'BeqCtrlPeSrc[1]' → 'BeqCtrlPeSrc_1_'
+        flat = re.sub(r'\[(\d+)\]', r'_\1_', n)
+        if flat != n and flat not in normalized:
+            normalized.append(flat)
     try:
         chain = synth_chain.synthesize(
             d_input_expected_function,
-            input_names=input_names,
+            input_names=normalized,
             jira=jira,
             prefix=prefix,
         )
     except Exception as e:
-        return [], f'SYNTH_FAILED: {e}'
+        # Return a valid identifier as placeholder so the DFF.D field is
+        # parseable Verilog. The marker '_d_SYNTH_FAILED' lets the
+        # validator detect this case.
+        placeholder = f'n_eco_{jira}_{prefix}_d_SYNTH_FAILED' if prefix else \
+                      f'n_eco_{jira}_d_SYNTH_FAILED'
+        sys.stderr.write(f'WARN: synth_chain failed for prefix={prefix!r}: {e}\n')
+        return [], placeholder
     gate_entries = []
     for c in chain.cells:
         gate_entries.append({

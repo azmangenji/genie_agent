@@ -1703,6 +1703,42 @@ def main():
                     f"entries same as Phase 0 — without them the pivot net '{pivot_net}' is undriven "
                     f"after rename and FM will fail with thousands of compare points.")
 
+    # ── 33. DFF.D MUST be a valid Verilog identifier or constant ────────────
+    # Catches wrapper synth failures that wrote an error string into the D
+    # pin (e.g. "SYNTH_FAILED: ..."). Without this check a broken study
+    # passes validation and the applier writes garbage into the netlist
+    # → FM elaboration error.
+    _VALID_NET_RE = re.compile(r"^([A-Za-z_]\w*|\d+'[bohd][0-9a-fA-FxXzZ_]+)$")
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            inst = e.get('instance_name', '?')
+            # Top-level port_connections + per-stage maps
+            checks = [('port_connections', e.get('port_connections') or {})]
+            for s, p in (e.get('port_connections_per_stage') or {}).items():
+                checks.append((f'port_connections_per_stage[{s}]', p or {}))
+            for label, pcs in checks:
+                d_val = pcs.get('D')
+                if d_val is None:
+                    continue
+                if not isinstance(d_val, str) or not _VALID_NET_RE.match(d_val.strip()):
+                    issues.append(
+                        f"CRITICAL/33-INVALID-DFF-D: DFF {inst} {label}.D = {d_val!r} "
+                        f"is NOT a valid Verilog identifier or constant. "
+                        f"Likely cause: eco_emit_dff_entry.py / eco_synth_chain.py "
+                        f"failed to synthesize the chain and wrote an error string "
+                        f"or null. Re-spawn studier with corrected d_input_expected_function "
+                        f"OR extend eco_synth_chain.py pattern library to handle this Boolean.")
+                # Detect the explicit SYNTH_FAILED marker placeholder
+                if 'SYNTH_FAILED' in d_val:
+                    issues.append(
+                        f"CRITICAL/33-SYNTH-FAILED-PLACEHOLDER: DFF {inst} {label}.D = "
+                        f"{d_val!r}. eco_synth_chain.py failed; the applier will insert "
+                        f"a stub net with no driver. Investigate the synth failure (see "
+                        f"the wrapper's stderr) and fix d_input_expected_function or the "
+                        f"synth_chain pattern library.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
