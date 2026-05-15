@@ -15,7 +15,7 @@
 1. **You handle ONE round only — ONE FM run only.** Do not loop. After Step 6 completes (whether FM passes or fails), update `next_phase` in handoff, signal/spawn per phase, write exit sentinel, EXIT. Never re-run FM within the same ROUND_ORCHESTRATOR instance regardless of the result. Never spawn the next ROUND yourself — main session does that.
 2. **Read state from disk, not memory** — all inputs come from `ROUND_HANDOFF_PATH` and `_eco_fixer_state`. Do not assume anything from previous context.
 3. **Every step must complete and checkpoint must pass** before proceeding to the next step.
-4. **Email before revert** — Step 6a (email) always runs before Step 6b (revert). Never skip.
+4. **Email after FM analyzer** — Step 6.3 (email) runs AFTER Step 6.2 (FM analyzer). Never skip.
 5. **Fixer state must be incremented and saved** before spawning the next round agent.
 6. **Never skip a step** — context pressure is NOT a valid reason to skip any step or checkpoint.
 
@@ -42,8 +42,8 @@ The new `loop_verdict` field from the prior round's analyzer drives this round's
 
 | `loop_verdict` | Round counter | Steps to run | Steps to skip |
 |---|---|---|---|
-| `RERUN_SAME_ROUND` | UNCHANGED (FM aborted, never compared — this round is a retry) | 6a (email/HTML), 6b (revert), 6d-VERDICT, RERUN-PATCH (apply abort fixes only), 5 (pre-FM check), 6 (FM resubmit) | 6e (round increment), 6f-FENETS, 6f (re-study), 4 (eco_apply_fix) — these are for failing-point fixes, not abort fixes |
-| `ADVANCE_NEXT_ROUND` | INCREMENT (FM compared, found failures — study + fix + retry next round) | All steps 6a → 6b → 6d → 6e → 6f-FENETS → 6f → 4 → 5 → 6 (existing flow) | none |
+| `RERUN_SAME_ROUND` | UNCHANGED (FM aborted, never compared — this round is a retry) | 6.1 (backup), 6.2 (analyzer), 6.3 (email/HTML), RERUN-PATCH (apply abort fixes only), 5 (pre-FM check), 6 (FM resubmit) | 6.4 (round increment), 6.5-FENETS, 6.6 (re-study), 4 (eco_apply_fix) — these are for failing-point fixes, not abort fixes |
+| `ADVANCE_NEXT_ROUND` | INCREMENT (FM compared, found failures — study + fix + retry next round) | All steps 6.1 → 6.2 → 6.3 → 6.4 → 6.5-FENETS → 6.6 → 4 → 5 → 6 (existing flow) | none |
 | `CONVERGED` | UNCHANGED | Set `next_phase: FINAL`, spawn FINAL_ORCHESTRATOR inline, write exit sentinel | everything else |
 
 **Hard rules for verdict handling:**
@@ -66,9 +66,28 @@ elif loop_verdict == "ADVANCE_NEXT_ROUND":
 
 ---
 
-## STEP 6a — Write Per-Round HTML and Send Email
+## Execution Order (follow this sequence exactly)
 
-> **IMPORTANT — Run AFTER Step 6d (FM Analyzer), NOT before it.**
+```
+6.1  → Backup PostEco
+6.2  → FM Analyzer (eco_fm_analyzer)
+6.2-VALIDATE → Contract compliance gate
+6.2-VERDICT  → Route on loop_verdict (RERUN / ADVANCE / CONVERGED)
+6.3  → Build HTML + Send Email   ← AFTER analyzer, not before
+6.4  → Increment round + fixer_state
+6.5-FENETS → Re-run fenets (conditional)
+6.5-TUNE   → Apply tune update (conditional)
+6.6  → Re-Study (eco_netlist_studier_round_N)
+4    → Re-Apply (eco_applier)
+5    → Pre-FM check
+6    → FM Verification
+```
+
+---
+
+## STEP 6.3 — Write Per-Round HTML and Send Email
+
+> **Run AFTER Step 6.2 (FM Analyzer) — see execution order above.**
 > The email must include FM analysis results (failure diagnosis, root cause, revised_changes).
 > Sending before the analyzer means the email is always empty. The correct order is:
 > 6b (backup) → 6d (analyzer) → **6a (email)** → 6e/6f (re-study) → 4/5/6 (re-apply+FM)
@@ -141,7 +160,7 @@ If it fails, retry once. If still fails, log the error — but never skip the at
 
 ---
 
-## STEP 6b — Backup Current PostEco (Surgical Patch Mode)
+## STEP 6.1 — Backup Current PostEco (Surgical Patch Mode)
 
 > **Architecture change — do NOT revert to PreEco.** Previous rounds applied changes that were correct. Reverting to PreEco and re-applying everything from scratch causes duplicate insertions when ALREADY_APPLIED detection misfires. Instead: backup the current PostEco (which has all previous rounds' changes), then eco_applier will surgically undo only the failing entries and re-apply corrections.
 
@@ -161,9 +180,7 @@ for stage in Synthesize PrePlace Route:
 
 ---
 
-## STEP 6c — (Removed — SVF is engineers-only)
-
-## STEP 6d — Analyze FM Failure
+## STEP 6.2 — Analyze FM Failure
 
 **Spawn a sub-agent (general-purpose)** with `config/eco_agents/eco_fm_analyzer.md` prepended. Pass:
 - `REF_DIR`, `TAG`, `BASE_DIR`, `ROUND=<ROUND>`, `AI_ECO_FLOW_DIR`
@@ -178,7 +195,7 @@ for stage in Synthesize PrePlace Route:
 
 ---
 
-## STEP 6d-VALIDATE — Helper-output + Contract Compliance Gate (MANDATORY, NEW)
+## STEP 6.2-VALIDATE — Helper-output + Contract Compliance Gate (MANDATORY)
 
 The eco_fm_analyzer sub-agent is responsible for invoking the helper scripts (`eco_fm_evidence_walk.py` and, for FAIL verdicts, `eco_fm_xstage_compare.py`) per its Phase 1+2 contract. ROUND_ORCHESTRATOR must verify those outputs exist AND that the analyzer's `revised_changes` honor the evidence-for-studier contract before any further routing or studier hand-off.
 
@@ -268,7 +285,7 @@ This bounds the retry budget to 1 per round so the loop can never get stuck on a
 
 ---
 
-## STEP 6d-VERDICT — Route Based on `loop_verdict` (NEW)
+## STEP 6.2-VERDICT — Route Based on `loop_verdict`
 
 Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json` and extract:
 ```python
@@ -351,7 +368,7 @@ The remainder of this MD (Steps 6e, 6f-FENETS, 6f, 4, 5, 6) executes only for Br
 
 ---
 
-## STEP 6e — Increment Round and Update fixer_state
+## STEP 6.4 — Increment Round and Update fixer_state
 
 Read `data/<TAG>_eco_fm_analysis_round<ROUND>.json`.
 
@@ -379,7 +396,7 @@ Update `eco_fixer_state`:
 
 ---
 
-## STEP 6f-FENETS — Re-run find_equivalent_nets for missing signals (conditional)
+## STEP 6.5-FENETS — Re-run find_equivalent_nets for missing signals (conditional)
 
 **Run this step ONLY if `eco_fm_analysis_round<ROUND>.json` has `"needs_rerun_fenets": true` and a non-empty `rerun_fenets_signals` list.** Skip to Step 6f directly if not needed.
 
@@ -411,7 +428,7 @@ Pass that JSON path (not the original SPEC_SOURCES dict) to eco_netlist_re_studi
 
 ---
 
-## STEP 6e-TUNE — Apply Tune File Update (conditional)
+## STEP 6.5-TUNE — Apply Tune File Update (conditional)
 
 **Run this step ONLY if `eco_fm_analysis_round<ROUND>.json` has `"action": "tune_file_update"` entries.**
 
@@ -436,7 +453,7 @@ For each `tune_file_update` action:
 
 ---
 
-## STEP 6f — Re-Study (eco_netlist_studier_round_N)
+## STEP 6.6 — Re-Study (eco_netlist_studier_round_N)
 
 **MANDATORY pre-Step 6f: Run GAP-15 check script:**
 ```bash
