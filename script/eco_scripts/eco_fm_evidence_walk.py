@@ -72,6 +72,18 @@ def read_gz_text(path: Path) -> str:
         return f"[READ_ERROR: {e}]"
 
 
+def read_log_text(path: Path) -> str:
+    """Try path as-is (gz), then also try plain .log if .log.gz not found."""
+    text = read_gz_text(path)
+    if text:
+        return text
+    # Try plain .log if path ends with .log.gz
+    if str(path).endswith(".log.gz"):
+        plain = Path(str(path)[:-3])  # remove .gz
+        return read_text(plain)
+    return text
+
+
 def read_text(path: Path) -> str:
     if not path.exists():
         return ""
@@ -120,13 +132,21 @@ def initial_verdict(fm_verify: dict | None) -> tuple[str, str, dict]:
     if not fm_verify:
         return ("RERUN_SAME_ROUND", "eco_fm_verify.json missing or empty", per_target)
 
+    # Support both flat schema (target at top level) and nested schema (per_target dict)
+    nested = fm_verify.get("per_target", {})
+
     for tgt in FM_TARGETS:
-        entry = fm_verify.get(tgt)
+        # Try nested per_target first, then flat top-level
+        entry = nested.get(tgt) if nested else None
+        if entry is None:
+            entry = fm_verify.get(tgt)
         if entry is None:
             per_target[tgt] = "MISSING"
             continue
         if isinstance(entry, dict):
-            per_target[tgt] = entry.get("status", "UNKNOWN")
+            # Support both 'status' and 'verdict' field names
+            status = entry.get("status") or entry.get("verdict")
+            per_target[tgt] = status if status else "UNKNOWN"
         else:
             per_target[tgt] = str(entry)
 
@@ -166,7 +186,7 @@ def diagnose_abort(target: str, ref_dir: Path) -> dict:
     }
 
     log_path = ref_dir / "logs" / f"{target}.log.gz"
-    log_text = read_gz_text(log_path)
+    log_text = read_log_text(log_path)
 
     if not log_text:
         out["log_excerpts"] = ["[log file missing]"]
@@ -407,12 +427,34 @@ def parse_matched_via(rpt_text: str, dff_path_substring: str) -> str:
 
 
 def diagnose_failing(target: str, ref_dir: Path,
-                     jira_pattern: str = r"eco_\d+_") -> dict:
+                     jira_pattern: str = r"eco_\d+_",
+                     fm_verify_entry: dict | None = None) -> dict:
     """Walk all failing-point relevant artifacts."""
     rpt_dir = ref_dir / "rpts" / target
 
     failing_text = read_gz_text(rpt_dir / f"{target}__failing_points.rpt.gz")
     analyze_text = read_gz_text(rpt_dir / f"{target}__analyze_points.rpt.gz")
+
+    # If the RPT files don't exist, synthesize failing_text from fm_verify_entry
+    if not failing_text and fm_verify_entry:
+        raw_fps = fm_verify_entry.get("failing_points", [])
+        if raw_fps:
+            # Build synthetic failing_points rpt text from the list of strings
+            lines = []
+            for fp_line in raw_fps:
+                fp_stripped = fp_line.strip()
+                # Lines look like: "Ref  DFF        r:/FMWORK.../inst"
+                # We need the matching Impl line — emit a placeholder impl
+                if fp_stripped.startswith("Ref "):
+                    parts = fp_stripped.split()
+                    if len(parts) >= 3:
+                        ref_type = parts[1]
+                        ref_path = parts[2]
+                        inst = ref_path.rsplit("/", 1)[-1]
+                        impl_path = ref_path.replace("r:/FMWORK_REF_", "i:/FMWORK_IMPL_")
+                        lines.append(f"  Ref  {ref_type}  {ref_path}")
+                        lines.append(f"  Impl DFF0X   {impl_path}")
+            failing_text = "\n".join(lines)
     undriven_text = read_gz_text(rpt_dir / f"{target}__before_verify_undriven_nets.rpt.gz")
     user_const_text = read_gz_text(rpt_dir / f"{target}_user_added_constants.rpt.gz")
     before_const_text = read_gz_text(rpt_dir / f"{target}__before_verify_constants.rpt.gz")
@@ -593,7 +635,7 @@ def _build_pattern_summary(failing_points: list[dict],
 
 def _extract_amd_warns(ref_dir: Path, target: str) -> list[str]:
     """Extract AMD-WARN lines from FM stdout — indicate tune file get_pins/get_cells failures."""
-    log_text = read_gz_text(ref_dir / "logs" / f"{target}.log.gz")
+    log_text = read_log_text(ref_dir / "logs" / f"{target}.log.gz")
     if not log_text:
         return []
     return [line.strip() for line in log_text.splitlines() if "AMD-WARN: eco" in line][:50]
@@ -648,54 +690,75 @@ def build_summary_signals(per_target: dict[str, dict],
                     "hint": "ECO DFF NEVER Mode E. Examine as Mode A/H/D/S based on cone divergence.",
                 })
 
-    # Signal 3: undriven net mentioned in any failing-point cone
+    # Signal 3: per-target dominant failure pattern (HIGH — from pattern_summary)
+    # One signal per failing target — actionable aggregate, not per-DFF noise.
     for tgt, details in per_target.items():
         if details.get("status") != "FAIL":
             continue
         diag = details.get("failing_diagnostics", {})
-        for d in diag.get("per_dff_dossiers", []):
-            for inp in d["cone_analysis"]["unmatched_cone_inputs"]:
-                desc = inp.get("description", "")
-                if "Is globally unmatched" in desc:
-                    signals.append({
-                        "level": "info",
-                        "type": "UNMATCHED_CONE_INPUT",
-                        "target": tgt,
-                        "instance": d["instance_name"],
-                        "net": inp.get("net", ""),
-                        "hint": "Trace this cone back to first divergent cell/wire/port.",
-                    })
+        ps = diag.get("pattern_summary", {})
+        if not ps:
+            continue
+        total = ps.get("total_failing", 0)
+        top_mod = ps.get("top_failing_modules", [])
+        dom_pat = ps.get("dominant_pattern", "UNKNOWN")
+        dom_sig = ps.get("dominant_signal")
+        top_inputs = ps.get("top_unmatched_cone_inputs", [])
+        eco_fail = ps.get("eco_inserted_failing", 0)
+        tgt_short = tgt.replace("FmEqvEco", "").replace("VsEco", "→").replace("VsSynRtl", "→SynRtl")
+        # Elevate to CRITICAL if ECO-inserted DFFs are failing
+        level = "critical" if eco_fail > 0 else "high"
+        top_scope = top_mod[0]["scope"] if top_mod else "unknown"
+        top_count = top_mod[0]["count"] if top_mod else 0
+        top_input_str = ", ".join(f"{x['net']}({x['dff_count']}dffs)" for x in top_inputs[:3])
+        signals.append({
+            "level": level,
+            "type": "DOMINANT_FAILURE_PATTERN",
+            "target": tgt_short,
+            "total_failing": total,
+            "top_scope": f"{top_scope} ({top_count}/{total} DFFs)",
+            "dominant_pattern": dom_pat,
+            "dominant_signal": dom_sig or "—",
+            "top_unmatched_inputs": top_input_str or "—",
+            "eco_inserted_failing": eco_fail,
+            "hint": (
+                f"{total} failing DFFs in {tgt_short}. "
+                f"Top scope: {top_scope}. "
+                f"Pattern: {dom_pat}" +
+                (f". Dominant signal: {dom_sig}" if dom_sig else "") +
+                (f". ECO DFFs in failing list: {eco_fail} — check Mode A/H." if eco_fail else "")
+            ),
+        })
 
-    # Signal 4: rejected SVF guidance affecting any target
+    # Signal 4: rejected SVF guidance (HIGH if many rejections)
     for tgt, details in per_target.items():
         if details.get("status") != "FAIL":
             continue
         diag = details.get("failing_diagnostics", {})
         svf_counts = diag.get("svf_operation_counts", {})
-        for cat, c in svf_counts.items():
-            if c.get("rejected", 0) > 0:
-                signals.append({
-                    "level": "info",
-                    "type": "SVF_REJECTED",
-                    "target": tgt,
-                    "category": cat,
-                    "count": c["rejected"],
-                    "hint": "Correlate with cone analysis; rejected SVF often causes verification failure.",
-                })
+        total_rejected = sum(c.get("rejected", 0) for c in svf_counts.values())
+        if total_rejected > 0:
+            signals.append({
+                "level": "high",
+                "type": "SVF_REJECTED",
+                "target": tgt,
+                "total_rejected": total_rejected,
+                "hint": f"{total_rejected} SVF guidance commands rejected — verify tune file patterns match netlist names.",
+            })
 
-    # Signal 5: AMD-WARN messages from tune file
+    # Signal 5: AMD-WARN messages from tune file (HIGH if present)
     for tgt, details in per_target.items():
         if details.get("status") != "FAIL":
             continue
         warns = details.get("failing_diagnostics", {}).get("log_amd_warns", [])
         if warns:
             signals.append({
-                "level": "info",
+                "level": "high",
                 "type": "TUNE_FILE_AMD_WARN",
                 "target": tgt,
                 "warn_count": len(warns),
                 "first_warn": warns[0] if warns else "",
-                "hint": "Tune file get_pins/get_cells returned empty for some directive — verify pattern matches actual netlist names.",
+                "hint": f"{len(warns)} AMD-WARN in FM log — tune file get_pins/get_cells returned empty. Verify patterns match netlist.",
             })
 
     return signals
@@ -820,10 +883,15 @@ def main() -> int:
         status = per_target_status.get(tgt, "UNKNOWN")
         details: dict[str, Any] = {"status": status}
 
+        # Extract the per-target entry from fm_verify for fallback data
+        fm_verify_nested = fm_verify.get("per_target", {}) if isinstance(fm_verify, dict) else {}
+        fm_verify_entry = fm_verify_nested.get(tgt) if fm_verify_nested else None
+
         if status == "ABORT" or verdict == "RERUN_SAME_ROUND" and status != "PASS":
             details["abort_diagnostics"] = diagnose_abort(tgt, ref_dir)
         elif status == "FAIL":
-            details["failing_diagnostics"] = diagnose_failing(tgt, ref_dir, args.jira_pattern)
+            details["failing_diagnostics"] = diagnose_failing(tgt, ref_dir, args.jira_pattern,
+                                                              fm_verify_entry=fm_verify_entry)
         # PASS / MISSING / NOT_RUN → no extra walk
 
         per_target_details[tgt] = details
