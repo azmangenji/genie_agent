@@ -98,22 +98,23 @@ def initial_verdict(fm_verify: dict | None) -> tuple[str, str, dict]:
     """Triage from eco_fm_verify.json. Returns (verdict, reason, per_target_status).
 
     SOURCE OF TRUTH for loop_verdict semantics. The downstream chain (analyzer
-    Phase 1, ROUND_ORCHESTRATOR Step 6d-VERDICT, re-studier Step 1) keys off
-    this verdict — keep the rules in lock-step with eco_fm_pattern_library.md
-    §A "Verdict Derivation Rules".
+    Phase 1, ROUND_ORCHESTRATOR Step 6.2-VERDICT, re-studier Step 1) keys off
+    this verdict.
 
     Truth table (per-target status combinations → verdict):
-      • fm_verify is None / empty                         → RERUN_SAME_ROUND  (FM artifact missing)
-      • ANY target = ABORT                                → RERUN_SAME_ROUND  (abort dominates)
-      • ANY target = MISSING or NOT_RUN                   → RERUN_SAME_ROUND  (treat as abort-equivalent)
-      • ALL three targets = PASS                          → CONVERGED
-      • Otherwise (mix of PASS/FAIL with no abort)        → ADVANCE_NEXT_ROUND
+      • fm_verify is None / empty          → RERUN_SAME_ROUND  (FM artifact missing — do not diagnose)
+      • ANY target = MISSING or NOT_RUN    → RERUN_SAME_ROUND  (FM did not run — retry)
+      • ALL three targets = PASS           → CONVERGED
+      • Otherwise (FAIL or ABORT targets)  → ADVANCE_NEXT_ROUND
 
-    Rationale:
-      ABORT means FM never built the comparison — fix structural issue + retry
-      same round (≤3 retries, then forced advance per ROUND_ORCH hard rule).
-      FAIL means FM compared and found non-equivalent points — study + advance.
-      PASS-only means done.
+    Rationale for treating ABORT as ADVANCE_NEXT_ROUND (not RERUN_SAME_ROUND):
+      By the time the ROUND_ORCHESTRATOR calls the evidence walker, the
+      APPLY_ORCHESTRATOR's inline abort_recovery_agent has already handled
+      all ABORT conditions from the initial apply. Any ABORT seen in round 2+
+      is a NEW structural issue introduced by the re-apply — it needs re-study
+      (ADVANCE_NEXT_ROUND), NOT a pointless retry of the same FM run.
+      RERUN_SAME_ROUND is only appropriate when FM literally could not run
+      (artifact missing / target not run) — not when FM ran but aborted.
     """
     per_target: dict[str, str] = {}
     if not fm_verify:
@@ -127,24 +128,25 @@ def initial_verdict(fm_verify: dict | None) -> tuple[str, str, dict]:
         if isinstance(entry, dict):
             per_target[tgt] = entry.get("status", "UNKNOWN")
         else:
-            # Old format: string status; ABORT may appear as "FAIL" with 0 failing
             per_target[tgt] = str(entry)
 
     statuses = list(per_target.values())
 
-    if any(s == "ABORT" for s in statuses):
-        aborted = [t for t, s in per_target.items() if s == "ABORT"]
-        return ("RERUN_SAME_ROUND", f"FM ABORT on: {', '.join(aborted)}", per_target)
-
-    if any(s == "MISSING" or s == "NOT_RUN" for s in statuses):
+    if any(s in ("MISSING", "NOT_RUN") for s in statuses):
         miss = [t for t, s in per_target.items() if s in ("MISSING", "NOT_RUN")]
         return ("RERUN_SAME_ROUND", f"Missing/not-run targets: {', '.join(miss)}", per_target)
 
     if all(s == "PASS" for s in statuses):
         return ("CONVERGED", "All 3 FM targets PASS", per_target)
 
-    failing = [t for t, s in per_target.items() if s == "FAIL"]
-    return ("ADVANCE_NEXT_ROUND", f"FM FAIL on: {', '.join(failing)}", per_target)
+    # FAIL or ABORT → re-study needed. ABORT in round 2+ means a new structural
+    # issue from re-apply; treat same as FAIL (needs diagnosis + fix, not retry).
+    non_pass = [t for t, s in per_target.items() if s != "PASS"]
+    aborted  = [t for t, s in per_target.items() if s == "ABORT"]
+    reason   = f"FM FAIL on: {', '.join(non_pass)}"
+    if aborted:
+        reason += f" (ABORT on: {', '.join(aborted)} — new structural issue from re-apply, needs re-study)"
+    return ("ADVANCE_NEXT_ROUND", reason, per_target)
 
 
 # ---------------------------------------------------------------------------
