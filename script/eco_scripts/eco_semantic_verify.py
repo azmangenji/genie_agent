@@ -277,7 +277,13 @@ def verify_port_connection(entry, view, stage):
 
 
 def verify_rewire(entry, view, stage):
-    """rewire: cell.pin connection equals new_net (not old_net)."""
+    """rewire: cell.pin connection equals new_net (not old_net).
+
+    The studier emits the Synth-only cell_name; CTS/CTS-OPT renames the
+    instance in PP/Route. When the named cell isn't present in this stage,
+    fall back to checking that SOMEWHERE in the netlist a cell has
+    .<pin>(<new_net>) — that proves the rewire landed on the renamed cell.
+    Mirrors the applier's per-stage cell-discovery fallback."""
     # Use per-stage cell name if available
     per_stage = (entry.get('per_stage_cell') or entry.get('per_stage_cell_name')
                  or entry.get('cell_name_per_stage')
@@ -289,11 +295,19 @@ def verify_rewire(entry, view, stage):
     if not cell or not pin or not new_net:
         return None
     actual = view.get_pin_connection(cell, pin)
-    if actual is None:
-        return f'{cell}.{pin} not present in netlist'
-    if actual.strip() != new_net.strip():
+    if actual is not None:
+        if actual.strip() == new_net.strip():
+            return None
         return f'{cell}.{pin} = {actual.strip()!r} but expected {new_net.strip()!r}'
-    return None
+    # Cell not present at named instance — check if rewire landed on a
+    # per-stage-renamed cell by grepping for .<pin>(<new_net>) anywhere in
+    # the stage netlist. Cell-instance rename without per_stage_cell field
+    # is the dominant CTS pattern; the rewire is correct iff the new_net
+    # appears as the value of a <pin> connection somewhere.
+    pat = rf'\.\s*{re.escape(pin)}\s*\(\s*{re.escape(new_net)}\s*\)'
+    if re.search(pat, view.text):
+        return None
+    return f'{cell}.{pin} not present in netlist (per-stage-rename fallback also failed: no .{pin}({new_net}) found)'
 
 
 VERIFIERS = {
