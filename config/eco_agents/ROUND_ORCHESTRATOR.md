@@ -191,7 +191,20 @@ for stage in Synthesize PrePlace Route:
 - Previous strategies from `eco_fixer_state.strategies_tried`
 - Output: `<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
 
-**CHECKPOINT:** Verify `data/<TAG>_eco_fm_analysis_round<ROUND>.json` exists and contains `revised_changes[]` before proceeding.
+**CHECKPOINT — Schema validation (Fix #6):** Verify `data/<TAG>_eco_fm_analysis_round<ROUND>.json` exists and contains ALL required fields:
+```bash
+python3 -c "
+import json, sys
+a = json.load(open('data/<TAG>_eco_fm_analysis_round<ROUND>.json'))
+required = ['loop_verdict', 'next_round', 'failure_mode', 'revised_changes', 'diagnosis']
+missing = [f for f in required if f not in a]
+if missing:
+    print(f'FAIL: eco_fm_analyzer JSON missing required fields: {missing}')
+    sys.exit(1)
+print('eco_fm_analyzer output schema OK')
+"
+```
+If any field is missing → re-spawn eco_fm_analyzer with the missing fields listed explicitly. Do NOT proceed with incomplete analysis.
 
 ---
 
@@ -299,8 +312,9 @@ Branch:
 
 ### Branch A — `loop_verdict == "CONVERGED"`
 
-This shouldn't happen at Step 6d (we only reach 6d when FM failed), but if the analyzer disagrees with our FM-failed assumption, trust the analyzer:
-- Skip Steps 6e, 6f-FENETS, 6f, 4, 5
+This shouldn't happen at Step 6.2 (we only reach 6.2 when FM failed), but if the analyzer disagrees with our FM-failed assumption, trust the analyzer:
+- Skip Steps 6.4, 6.5-FENETS, 6.6, 4, 5
+- **Fix #10:** Update `eco_fixer_state` with `converged_at_round: CURRENT_ROUND` and save to disk BEFORE spawning FINAL
 - Update round_handoff.json with `status: "FM_PASSED"`, `loop_verdict: "CONVERGED"`, `next_phase: "FINAL"`
 - Spawn FINAL_ORCHESTRATOR inline, write `<TAG>_round<CURRENT_ROUND>_phase_exited.marker`, EXIT
 
@@ -308,7 +322,7 @@ This shouldn't happen at Step 6d (we only reach 6d when FM failed), but if the a
 
 The analyzer detected an FM ABORT — the netlist failed elaboration, FM never compared. The fix is structural (port missing, wire syntax error, SVF error). Apply ONLY the netlist patches and resubmit FM in this round.
 
-**Pre-check: enforce max-rerun rule**
+**Pre-check: enforce max-rerun rule (Fix #5 — save fixer_state BEFORE handoff)**
 ```python
 fixer_state = json.load(open(f"data/{TAG}_eco_fixer_state"))
 fixer_state["rerun_count_in_round"] = fixer_state.get("rerun_count_in_round", 0) + 1
@@ -318,8 +332,9 @@ if fixer_state["rerun_count_in_round"] >= 4:
     failure_mode = "abort_unrecoverable"
     print("HARD RULE TRIP: 3 RERUN_SAME_ROUND already attempted; forcing ADVANCE.")
     # Continue to Branch C below
-else:
-    json.dump(fixer_state, open(f"data/{TAG}_eco_fixer_state", "w"), indent=2)
+# MANDATORY: save updated rerun_count to disk BEFORE writing round_handoff.json
+# so the next ROUND reads the correct counter (not the stale pre-increment value).
+json.dump(fixer_state, open(f"data/{TAG}_eco_fixer_state", "w"), indent=2)
 ```
 
 If `loop_verdict` is still `RERUN_SAME_ROUND` after the rerun-count check:
@@ -472,8 +487,8 @@ Pass `GAP15_CHECK_PATH=data/<TAG>_eco_gap15_check.json` to the studier sub-agent
 - `RE_STUDY_MODE=true`
 - `ROUND=<ROUND>` (the round that just failed)
 - `FM_ANALYSIS_PATH=<BASE_DIR>/data/<TAG>_eco_fm_analysis_round<ROUND>.json`
-- `FENETS_RERUN_PATH=<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6f-FENETS ran, otherwise `null`
-- `SPEC_SOURCES`: extract from `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` footer
+- `FENETS_RERUN_PATH=<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if Step 6.5-FENETS ran, otherwise `null`
+- `SPEC_SOURCES` **(Fix #3):** If Step 6.5-FENETS ran AND `data/<TAG>_eco_spec_sources_round<ROUND>.json` exists → use that file (contains updated per-stage spec paths from the rerun). Otherwise fall back to extracting from `<BASE_DIR>/data/<TAG>_eco_step2_fenets.rpt` footer. Never use the original Step 2 sources when a rerun has newer data.
 - Task: fix failing entries only in `eco_preeco_study.json`; write `eco_step3_netlist_study_round<NEXT_ROUND>.rpt`
 
 Wait for eco_netlist_re_studier to complete and verify `eco_step3_netlist_study_round<NEXT_ROUND>.rpt` exists.
@@ -494,6 +509,28 @@ ls <BASE_DIR>/data/<TAG>_eco_step3_netlist_verify.rpt
 ls <AI_ECO_FLOW_DIR>/<TAG>_eco_step3_netlist_verify.rpt
 ```
 If re_studier RPT missing → re_studier failed. Re-spawn Pass 6f-A.
+
+**Fix #2 — Study JSON additive check after verifier:**
+```python
+import json
+study = json.load(open(f"data/{TAG}_eco_preeco_study.json"))
+for stage in ("Synthesize", "PrePlace", "Route"):
+    entries = study.get(stage, [])
+    # All entries must have confirmed=true or confirmed=false — never deleted
+    # Verify force_reapply entries from revised_changes are still present
+    fm_analysis = json.load(open(f"data/{TAG}_eco_fm_analysis_round{ROUND}.json"))
+    for rc in fm_analysis.get("revised_changes", []):
+        cell = rc.get("cell_name") or rc.get("instance_name")
+        stage_rc = rc.get("stage", "all")
+        if stage_rc not in (stage, "all"):
+            continue
+        found = any(
+            e.get("cell_name") == cell or e.get("instance_name") == cell
+            for e in entries
+        )
+        assert found, f"FAIL: revised_change entry for {cell} ({stage}) missing from study JSON after re-study — re-studier deleted it"
+```
+If any assertion fails → re_studier removed a required entry. Re-spawn Pass 6f-A with explicit `PRESERVE_ENTRIES` list from revised_changes.
 If verifier RPT missing → verifier failed. Re-spawn Pass 6f-B.
 Verify `eco_preeco_study.json` modified time is after Step 6d completed. Do NOT proceed to eco_expand_chains without all four.
 
@@ -742,6 +779,13 @@ Read `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` to get `eco_fm_tag` — save 
 
 ### Mandatory Step A — Update round_handoff.json with `next_phase`
 
+**Fix #1 — Read NEW FM tag BEFORE writing handoff (not the stale tag from INPUTS):**
+```bash
+# Read the NEW eco_fm_tag from this round's FM submission
+NEW_ECO_FM_TAG=$(cat <BASE_DIR>/data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp | grep -o 'eco_fm_tag=.*' | cut -d= -f2)
+# This MUST be used in the handoff, not the old eco_fm_tag from INPUTS
+```
+
 Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 ```json
 {
@@ -752,8 +796,8 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
   "base_dir": "<BASE_DIR>",
   "ai_eco_flow_dir": "<AI_ECO_FLOW_DIR>",
   "round": "<NEXT_ROUND or SAME_ROUND per verdict>",
-  "fenets_tag": "<fenets_tag>",
-  "eco_fm_tag": "<new eco_fm_tag>",
+  "fenets_tag": "<fenets_tag from INPUTS, OR new rerun tag if Step 6.5-FENETS ran — Fix #8>",
+  "eco_fm_tag": "<NEW eco_fm_tag from eco_fm_tag_round<NEXT_ROUND>.tmp — Fix #1>",
   "status": "<FM_PASSED|FM_FAILED|MAX_ROUNDS>",
   "loop_verdict": "<RERUN_SAME_ROUND|ADVANCE_NEXT_ROUND|CONVERGED>",
   "rerun_count_in_round": <N>,
@@ -762,14 +806,19 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
 }
 ```
 
-**`next_phase` decision matrix:**
+**`next_phase` decision matrix (Fix #4 — explicit NEXT_ROUND boundary):**
+
+Compute NEXT_ROUND first:
+- `ADVANCE_NEXT_ROUND` → `NEXT_ROUND = CURRENT_ROUND + 1`
+- `RERUN_SAME_ROUND` → `NEXT_ROUND = CURRENT_ROUND` (same round, retry)
 
 | Condition | `next_phase` |
 |---|---|
 | FM PASS on all targets (CONVERGED) | `FINAL` |
-| FM FAIL or ABORT, AND next round ≤ 5 | `ROUND` |
-| Max rounds (5) reached, regardless of FM result | `FINAL` (with `status: MAX_ROUNDS`) |
-| Pre-FM check failed AND next round ≤ 5 | `ROUND` |
+| FM FAIL or ABORT, AND `NEXT_ROUND ≤ 5` | `ROUND` |
+| FM FAIL or ABORT, AND `NEXT_ROUND > 5` (CURRENT_ROUND == 5 for ADVANCE) | `FINAL` (with `status: MAX_ROUNDS`) |
+| Max rounds (5) hit on RERUN_SAME_ROUND (rerun_count ≥ 4) | `FINAL` (with `status: MAX_ROUNDS`) |
+| Pre-FM check failed AND `NEXT_ROUND ≤ 5` | `STOP` (applier issue — not ROUND) |
 | Unrecoverable error (no FM verdict, etc.) | `STOP` |
 
 **CRITICAL: `ai_eco_flow_dir` MUST be in every round_handoff.json** — every subsequent ROUND_ORCHESTRATOR and FINAL_ORCHESTRATOR reads it. The value never changes across rounds — always `<REF_DIR>/AI_ECO_FLOW_<TAG>`.
@@ -818,6 +867,8 @@ ls -la <BASE_DIR>/data/<TAG>_round<CURRENT_ROUND>_phase_exited.marker
 ```
 
 Where `<CURRENT_ROUND>` is the round number this orchestrator just executed (NOT the next round). The main session polls for this exact marker name.
+
+**Fix #7 — Sentinel naming convention:** Always use `round<N>_phase_exited.marker` regardless of verdict (CONVERGED, ADVANCE, RERUN). Do NOT use `apply_phase_exited.marker` — that is ONLY written by APPLY_ORCHESTRATOR. The main session detects ROUND exit via `round<N>_phase_exited.marker` and APPLY exit via `apply_phase_exited.marker`. These are distinct and must not be mixed.
 
 This is the LAST file you write. After this:
 
