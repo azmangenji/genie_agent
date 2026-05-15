@@ -183,23 +183,25 @@ def _module_bounds(lines, line_no):
 
 
 def _is_wire_declared_in_module(body, name):
-    """Robust check: is `name` already declared as wire/tri/wand/wor/reg in any
-    decl form anywhere in the module body?
+    """Robust check: is `name` already declared as wire/tri/wand/wor/reg OR as
+    an input/output/inout PORT in any decl form anywhere in the module body?
 
     Handles:
-      - Single-name decls:    `wire X ;`
-      - Bus decls:            `wire [3:0] X ;` (matches X[N] queries to bus name)
+      - Single-name decls:    `wire X ;` / `output X ;`
+      - Bus decls:            `wire [3:0] X ;` / `output [31:0] X ;`
       - Multi-name decls:     `wire A, B, X, C ;`
       - Bit-indexed names:    `wire X[1] ;`
       - Whitespace variants
 
     Conservative: returns True on ANY match — better to skip an extra decl than
-    to risk an FM-599 'Duplicate wire' ABORT (run 20260511083831 root cause).
+    to risk an FM-599 'Duplicate wire' ABORT (run 20260511083831 root cause)
+    OR emit invalid `wire <bus>[N] ;` when <bus> is already a port (would also
+    cascade to FM SVR-4/SVR-64 ABORT — see eco_pre_fm_check INVALID_WIRE_DECL_SYNTAX).
     """
     if not name:
         return False
     base_name = re.sub(r'\[[^\]]+\]', '', name).strip()  # strip [N] for bus-name match
-    decl_re = re.compile(r'^\s*(wire|tri|wand|wor|reg)\s+(?:\[[^\]]+\]\s+)?([^;]+);')
+    decl_re = re.compile(r'^\s*(wire|tri|wand|wor|reg|input|output|inout)\s+(?:\[[^\]]+\]\s+)?([^;]+);')
     for ln in body:
         dm = decl_re.match(ln)
         if not dm:
