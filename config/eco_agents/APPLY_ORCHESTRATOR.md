@@ -139,56 +139,105 @@ if "check8_verilog_validator" not in check.get("check_summary", {}):
                        "The --strict Verilog validator was not run. Re-spawn eco_pre_fm_checker.")
 
 if check["passed"]:
-    # All checks passed (including any inline fixes applied) → proceed to Step 6
+    # All checks passed → proceed to Step 6
     pass
 else:
-    # Issues remained after eco_pre_fm_checker inline attempts.
-    # DO NOT escalate to ROUND_ORCHESTRATOR for applier-side structural issues —
-    # these are fixable within the same round without wasting a full FM cycle.
-    # Loop until clean or MAX_HEAL iterations exhausted.
+    # -----------------------------------------------------------------------
+    # STEP 5 SELF-HEALING LOOP — MANDATORY. DO NOT SKIP.
+    # -----------------------------------------------------------------------
+    # Step 5 failures are APPLIER-SIDE issues (missing ports, wrong cell,
+    # duplicate wire, semantic mismatch). They MUST be fixed here before FM.
+    # NEVER escalate Step 5 failures to ROUND_ORCHESTRATOR — ROUND is ONLY
+    # for FM logical mismatches that require re-studying the netlist.
     #
-    # Step 5 Self-Healing Loop (max 5 iterations):
-    #   Each iteration: verifier → re-apply → check8 → pre_fm_checker
-    #   Escalate to ROUND only when ALL iterations exhausted — never after just one attempt.
+    # Each iteration:
+    #   1. Read failures from pre_fm_check JSON
+    #   2. Fix each failure directly: update study JSON + re-apply + re-check
+    #   3. Re-run eco_pre_fm_checker
+    #   Repeat up to MAX_HEAL times until PASS.
+    # -----------------------------------------------------------------------
 
     MAX_HEAL = 5
     heal_attempt = 0
 
     while not check["passed"] and heal_attempt < MAX_HEAL:
         heal_attempt += 1
-        log(f"Step 5 self-heal attempt {heal_attempt}/{MAX_HEAL} — unresolved: {len(check.get('issues_unresolved',[]))}")
+        failures = check.get("failures", [])
+        print(f"Step 5 self-heal attempt {heal_attempt}/{MAX_HEAL} — {len(failures)} failures")
 
-        # Step 5a: Re-enrich study JSON with verifier
-        spawn eco_netlist_verifier (same inputs as Step 3b)
+        # --- Fix each failure type directly ---
 
-        # Step 5b: Re-apply with eco_applier (force_reapply entries)
-        spawn eco_applier (ROUND=1, study JSON just re-enriched)
+        for failure in failures:
 
-        # Step 5c: Re-run eco_check8.sh
-        bash script/eco_scripts/eco_check8.sh <BASE_DIR> <REF_DIR> <TAG> 1 data/<TAG>_eco_applied_round1.json
-        CHECK8_RESULT_PATH=data/<TAG>_eco_check8_round1.json
+            # SEMANTIC_REWIRE: per_stage_cell in study JSON missing or wrong field name
+            # Fix: ensure per_stage_cell_name mirrors per_stage_cell for all rewire entries
+            if "SEMANTIC_REWIRE" in failure:
+                study = json.load(open(f"data/{TAG}_eco_preeco_study.json"))
+                for stage_entries in study.values():
+                    if not isinstance(stage_entries, list): continue
+                    for entry in stage_entries:
+                        if entry.get("change_type") == "rewire":
+                            psc = entry.get("per_stage_cell", {})
+                            if psc and not entry.get("per_stage_cell_name"):
+                                entry["per_stage_cell_name"] = psc
+                json.dump(study, open(f"data/{TAG}_eco_preeco_study.json", "w"), indent=2)
+                # No re-apply needed — study JSON fix only; semantic_verify re-reads it
 
-        # Step 5d: Re-run eco_pre_fm_checker
-        spawn eco_pre_fm_checker (CHECK8_RESULT_PATH=<rerun_result>)
-        check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
+            # PORT_CONN_TARGET_MISSING / DEFERRED_PORT: port not declared in stage
+            # Fix: run eco_passes_2_4.py to apply missing port declarations
+            if "PORT_CONN_TARGET" in failure or "DEFERRED_PORT" in failure:
+                for stage in ("Synthesize", "PrePlace", "Route"):
+                    bash(f"python3 script/eco_scripts/eco_passes_2_4.py "
+                         f"--study data/{TAG}_eco_preeco_study.json "
+                         f"--ref-dir {REF_DIR} --tag {TAG} --stage {stage} "
+                         f"--output data/{TAG}_eco_passes_2_4_{stage}.json")
+
+            # DUPLICATE_WIRE / IMPLICIT_WIRE_CONFLICT: explicit wire decl conflicts with implicit
+            # Fix: eco_perl_spec.py deduplication already handles this — re-run applier
+            # (handled by re-apply below)
+
+            # CELL_TYPE_NOT_IN_LIBRARY / NO_CONSTANT_FUNCTIONAL_INPUTS:
+            # Fix: patch the study JSON entry's cell_type to a valid alternative,
+            # then re-apply. Read the failure message to identify which entry and stage.
+            # (handled by re-apply with force_reapply=true below)
+
+        # --- Re-apply with updated study JSON ---
+        bash(f"python3 script/eco_scripts/eco_applier.py "
+             f"--study    data/{TAG}_eco_preeco_study.json "
+             f"--ref-dir  {REF_DIR} --tag {TAG} --jira {JIRA} --round 1 "
+             f"--base-dir {BASE_DIR} --force-reapply "
+             f"--output   data/{TAG}_eco_applied_round1.json")
+
+        # --- Re-run check8 ---
+        bash(f"bash script/eco_scripts/eco_check8.sh "
+             f"{BASE_DIR} {REF_DIR} {TAG} 1 data/{TAG}_eco_applied_round1.json")
+
+        # --- Re-run pre_fm_checker ---
+        spawn eco_pre_fm_checker sub-agent (same inputs, ROUND=1,
+            CHECK8_RESULT_PATH=data/{TAG}_eco_check8_round1.json)
+        check = json.load(open(f"data/{TAG}_eco_pre_fm_check_round1.json"))
 
     if check["passed"]:
         pass  # self-healing succeeded → proceed to Step 6
     else:
-        # All MAX_HEAL iterations exhausted — deeper re-study needed, not just re-apply.
+        # MAX_HEAL exhausted — applier cannot fix this automatically.
+        # This is NOT an FM issue — do NOT spawn ROUND_ORCHESTRATOR.
+        # ROUND is only for FM logical mismatches. Step 5 failure = applier bug.
         write_round_handoff({
-            "status": "FM_FAILED",
+            "status": "STOP",
             "eco_fm_tag": "NOT_RUN_PRE_FM_CHECK_FAILED",
             "pre_fm_check_failed": True,
             "heal_attempts": heal_attempt,
-            "pre_fm_check_path": f"data/{TAG}_eco_pre_fm_check_round1.json",
-            "next_phase": "ROUND",
-            "next_phase_reason": f"pre_fm_check failed after {heal_attempt} self-healing attempts — needs Mode A-H re-study"
+            "next_phase": "STOP",
+            "next_phase_reason": (
+                f"Step 5 pre_fm_check failed after {heal_attempt} self-healing attempts. "
+                f"This is an applier-side issue — NOT an FM logical mismatch. "
+                f"Do NOT spawn ROUND_ORCHESTRATOR. Fix the study JSON / applier manually. "
+                f"Unresolved failures: {check.get('failures', [])}"
+            )
         })
-        write_eco_fixer_state(round=1)
-        emit ROUND_PHASE_READY signal block to SPEC_FILE
         write apply_phase_exited.marker
-        HARD STOP  # Step 6 skipped — FM never submitted; main session spawns ROUND
+        HARD STOP  # Report failures. No FM. No ROUND. Human intervention needed.
 ```
 
 > **Why before FM:** FM stage-to-stage comparisons (PrePlace vs Synthesize, Route vs PrePlace) fail when stages have different ECO changes applied — e.g., a port added to Synthesize but SKIPPED in PrePlace causes thousands of non-equivalent DFFs. This check takes seconds. FM takes 1-2 hours.
