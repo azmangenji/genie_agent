@@ -68,6 +68,11 @@ elif loop_verdict == "ADVANCE_NEXT_ROUND":
 
 ## STEP 6a — Write Per-Round HTML and Send Email
 
+> **IMPORTANT — Run AFTER Step 6d (FM Analyzer), NOT before it.**
+> The email must include FM analysis results (failure diagnosis, root cause, revised_changes).
+> Sending before the analyzer means the email is always empty. The correct order is:
+> 6b (backup) → 6d (analyzer) → **6a (email)** → 6e/6f (re-study) → 4/5/6 (re-apply+FM)
+
 > **All HTML assembly is delegated to the deterministic helper script:**
 > `script/eco_scripts/eco_build_round_html.py`
 >
@@ -229,7 +234,13 @@ If the contract validator returns RC=1:
 
 This bounds the retry budget to 1 per round so the loop can never get stuck on analyzer-side bugs.
 
-**CHECKPOINT 6d-VALIDATE:** Both `eco_fm_evidence_round<ROUND>.json` and `eco_fm_xstage_round<ROUND>.json` exist; contract check JSON shows `compliant: true` (or contract retry exhausted with synthetic failure). Only then proceed to the early-exit / verdict-routing logic below.
+**CHECKPOINT 6d-VALIDATE:** Both `eco_fm_evidence_round<ROUND>.json` and `eco_fm_xstage_round<ROUND>.json` exist; contract check JSON shows `compliant: true` (or contract retry exhausted with synthetic failure). Only then proceed to Step 6a (email) and then the early-exit / verdict-routing logic below.
+
+---
+
+> **NOW run Step 6a (email/HTML) — FM Analyzer is complete, all data is available.**
+> eco_build_round_html.py will include FM results, failing points, evidence walk,
+> root cause reasoning, and revised_changes in the email sent to debuggers.
 
 ---
 
