@@ -483,6 +483,90 @@ def main():
             parent_is_host=strategy_info.get('parent_is_host', False),
         )
 
+    # ── Step F: Mode-I chain-leaf check (per chain leaf input) ────────────
+    # For each chain leaf input that resolves to a bus-bit form (<bus>[<bit>]),
+    # run eco_modei_chain_input_check.py to detect parent-side UNCONNECTED at
+    # a child-instance port-bus connection. On MODEI_DETECTED, splice the
+    # suggested unconnected_rewires into the DFF entry, append the child
+    # port_connection to all 3 stage arrays, and rewrite the chain leaf to
+    # the flat-net replacement everywhere it appears in chain_entries.
+    modei_extra_entries = []  # appended to all 3 stages
+    modei_diagnostics = []
+    if host_module and chain_entries:
+        # Collect unique bus-bit-form leaves from chain port_connections.
+        # Accept both bracket form (`SIG[1]`) and flat form (`SIG_1_`); convert
+        # the latter to bracket form for the helper.
+        leaf_candidates = set()  # canonical bracket form
+        flat_to_bracket = {}     # mapping back to original net names in chain
+        for g in chain_entries:
+            for pin, val in (g.get('port_connections') or {}).items():
+                if pin in ('Z', 'ZN', 'ZN1'): continue
+                if not isinstance(val, str): continue
+                if val.startswith(('n_eco_', "1'b", "0'b", "1'h", "0'h")): continue
+                # Bracket form already
+                m1 = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', val.strip())
+                if m1:
+                    leaf_candidates.add(val.strip())
+                    flat_to_bracket[val.strip()] = val.strip()
+                    continue
+                # Flat form like SIG_1_
+                m2 = re.match(r'^([A-Za-z_][A-Za-z0-9_]*?)_(\d+)_$', val.strip())
+                if m2:
+                    bracket_form = f'{m2.group(1)}[{m2.group(2)}]'
+                    leaf_candidates.add(bracket_form)
+                    flat_to_bracket[bracket_form] = val.strip()
+        modei_helper = Path(__file__).parent / 'eco_modei_chain_input_check.py'
+        for leaf in leaf_candidates:
+            leaf_safe = re.sub(r'[^A-Za-z0-9_]', '_', leaf)
+            out_path = Path(args.base_dir) / 'data' / f'{args.tag}_eco_modei_{dff_prefix}_{leaf_safe}.json'
+            cmd = (
+                f"python3 {modei_helper} --ref-dir {args.ref_dir} "
+                f"--host-module {host_module} --chain-input '{leaf}' "
+                f"--jira {args.jira} --output {out_path}"
+            )
+            try:
+                subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+            except Exception:
+                continue
+            if not out_path.is_file():
+                continue
+            try:
+                result = json.loads(out_path.read_text())
+            except Exception:
+                continue
+            modei_diagnostics.append({
+                'leaf': leaf, 'status': result.get('status'),
+                'output': str(out_path),
+            })
+            if result.get('status') != 'MODEI_DETECTED':
+                continue
+            # Splice unconnected_rewires onto DFF entry
+            ur_entry = result.get('suggested_unconnected_rewires_entry')
+            if ur_entry:
+                dff_entry.setdefault('unconnected_rewires', []).append(ur_entry)
+            # Add child port_connection to extras (will be appended to all stages)
+            child_pc = result.get('suggested_child_port_connection_entry')
+            if child_pc:
+                modei_extra_entries.append(child_pc)
+            # Rewrite chain leaves: original chain ref → flat-net replacement
+            replacement = result.get('suggested_chain_input_replacement')
+            if replacement:
+                # Collect ALL forms of this leaf that appear in chain (bracket
+                # + flat) and rewrite all of them
+                rewrite_targets = {leaf}  # bracket form
+                # Original flat form found earlier
+                if leaf in flat_to_bracket:
+                    rewrite_targets.add(flat_to_bracket[leaf])
+                # Also derive both forms
+                m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', leaf)
+                if m:
+                    rewrite_targets.add(f'{m.group(1)}_{m.group(2)}_')
+                for g in chain_entries:
+                    pcs = g.get('port_connections') or {}
+                    for pin, val in list(pcs.items()):
+                        if isinstance(val, str) and val.strip() in rewrite_targets:
+                            pcs[pin] = replacement
+
     # ── Compose output ─────────────────────────────────────────────────────
     out = {
         'tag':            args.tag,
@@ -490,14 +574,16 @@ def main():
         'dff_instance':   dff_inst,
         'host_module':    host_module,
         'strategy':       strategy_info.get('strategy'),
-        'Synthesize':     [dff_entry] + chain_entries,
-        'PrePlace':       [dff_entry] + chain_entries,
-        'Route':          [dff_entry] + chain_entries,
+        'Synthesize':     [dff_entry] + chain_entries + modei_extra_entries,
+        'PrePlace':       [dff_entry] + chain_entries + modei_extra_entries,
+        'Route':          [dff_entry] + chain_entries + modei_extra_entries,
         'diagnostics':    {
             'strategy_info':  strategy_info,
             'plumbing_error': plumbing_err,
             'chain_size':     len(chain_entries),
             'expected_function': expr,
+            'modei_check':    modei_diagnostics,
+            'modei_entries_added': len(modei_extra_entries),
         },
     }
     if plumbing:
