@@ -279,7 +279,8 @@ def verify_port_connection(entry, view, stage):
 def verify_rewire(entry, view, stage):
     """rewire: cell.pin connection equals new_net (not old_net)."""
     # Use per-stage cell name if available
-    per_stage = (entry.get('per_stage_cell_name') or entry.get('cell_name_per_stage')
+    per_stage = (entry.get('per_stage_cell') or entry.get('per_stage_cell_name')
+                 or entry.get('cell_name_per_stage')
                  or entry.get('mux_cell_instance_per_stage') or {})
     cell = per_stage.get(stage, '') or entry.get('cell_name', '')
     per_stage_pin = entry.get('per_stage_pin', {}) or entry.get('pin_per_stage', {})
