@@ -685,6 +685,11 @@ def main():
             wrp_pp = [n for n in pp_neigh_cps if _re.search(r'wrp_clk', n, _re.IGNORECASE)]
             if not wrp_pp:
                 continue  # no wrapper-clock present in this module
+            # Only flag if wrapper clocks are MAJORITY (>=50%) of neighbor DFFs.
+            # A module with 1/4 DFFs on wrp_clk and 3/4 on UCLK is NOT a wrapper-clock-dominated
+            # module — using UCLK for ungated DFFs is correct in that case.
+            if len(wrp_pp) < len(pp_neigh_cps) / 2:
+                continue  # minority wrapper clock — ungated UCLK DFFs are correct
             # PrePlace check — when wrapper clock exists in module AND new DFF uses
             # raw UCLK (the Synth-stage clock), studier missed the wrapper swap.
             pp_cp = (pcs_per_stage.get('PrePlace', {}) or {}).get('CP', '').strip()
@@ -1761,6 +1766,137 @@ def main():
                         f"a stub net with no driver. Investigate the synth failure (see "
                         f"the wrapper's stderr) and fix d_input_expected_function or the "
                         f"synth_chain pattern library.")
+
+    # ── 34. cell_type non-empty on every new_logic_dff ───────────────────────
+    # Without cell_type the applier returns "cell_type empty for <inst> ...
+    # cannot insert" SKIP and the DFF doesn't land in PostEco. The wrapper
+    # (eco_emit_dff_entry.py _discover_dff_cell_type) populates this from a
+    # neighbor DFF in host module scope; if it's empty here the discovery
+    # missed (host module not found, no DFF on dff_clock) and the DFF needs
+    # a manual cell_type before APPLY can run. Run 20260515071155 surface.
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+                continue
+            ct = (e.get('cell_type') or e.get('dff_cell_type') or '').strip()
+            if not ct:
+                inst = e.get('instance_name', '?')
+                issues.append(
+                    f"CRITICAL/34-DFF-CELL-TYPE-EMPTY: DFF {inst} in {stage} has "
+                    f"empty `cell_type` AND empty `dff_cell_type`. eco_perl_spec "
+                    f"will SKIP with reason 'cell_type empty for {inst} ... "
+                    f"cannot insert without cell type' and the DFF won't land in "
+                    f"PostEco. Cause: eco_emit_dff_entry.py _discover_dff_cell_type "
+                    f"failed (host_module={e.get('module_name')!r} on dff_clock="
+                    f"{e.get('dff_clock')!r} — no neighbor DFF found in PreEco "
+                    f"Synthesize). Studier must populate cell_type via §0c neighbor "
+                    f"DFF lookup before completing Step 3.")
+
+    # ── 35. DFF.CP must equal dff_clock (or its rename_map per-stage value) ──
+    # Wrapper writes the rename-map-resolved CP per stage; if the studier (or
+    # the verifier) post-processes and accidentally truncates / overwrites it
+    # (e.g. UCLK01 → UCLK), FM Route fails on clock-domain mismatch. Check
+    # that DFF.CP starts with (or is identical to) the rtl_diff dff_clock —
+    # this catches truncation and gross overwrites without false-positiving
+    # legitimate CTS-rebalanced names like FxCts_<dff_clock>_*. Run
+    # 20260515071155 surface (UCLK01 → UCLK silent truncation).
+    diff_dff_clocks = {}  # instance_name → dff_clock
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') in ('new_logic', 'new_logic_dff'):
+            tr = c.get('target_register') or ''
+            inst = c.get('dff_instance_name') or (f'{tr}_reg' if tr else '')
+            if inst and c.get('dff_clock'):
+                diff_dff_clocks[inst] = c['dff_clock']
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+            continue
+        inst = e.get('instance_name', '?')
+        expected_clk = diff_dff_clocks.get(inst) or (e.get('dff_clock') or '')
+        if not expected_clk:
+            continue
+        # Synth CP should equal expected exactly (no CTS yet at Synth)
+        cp_synth = (e.get('port_connections') or {}).get('CP', '')
+        if cp_synth and cp_synth != expected_clk:
+            # Allow CTS-rebalanced forms (Fx*Cts*<clk>* or *<clk>_clk_gate*)
+            # that contain the clock as a substring
+            if expected_clk not in cp_synth:
+                issues.append(
+                    f"HIGH/35-DFF-CP-MISMATCH: DFF {inst} Synth port_connections.CP="
+                    f"{cp_synth!r} but rtl_diff dff_clock={expected_clk!r}. The "
+                    f"wrapper resolves CP from the fenets rename_map; if the studier "
+                    f"or verifier overwrote it with a truncated/wrong value, FM Route "
+                    f"will fail on clock-domain mismatch. Verify the rename_map entry "
+                    f"for the DFF's host_scope/dff_clock returned the right per-stage "
+                    f"value and that no post-processing step modified it.")
+        # PP/Route may legitimately differ (CTS); just check non-empty
+        for stg in ('PrePlace', 'Route'):
+            cp_v = ((e.get('port_connections_per_stage') or {}).get(stg) or {}).get('CP', '')
+            if not cp_v:
+                issues.append(
+                    f"HIGH/35-DFF-CP-EMPTY: DFF {inst} port_connections_per_stage[{stg}].CP "
+                    f"is empty. The wrapper (eco_emit_dff_entry.py resolve_cp_per_stage) "
+                    f"must always populate CP per stage from rename_map; empty value "
+                    f"means rename_map didn't have an entry for the DFF's host_scope/"
+                    f"dff_clock combo OR per-stage map post-processing dropped it. "
+                    f"Re-spawn fenets to add the clock query.")
+
+    # ── 36. chain leaf inputs MUST be resolvable in PreEco netlist OR have
+    # an explicit skip-existence flag (input_from_new_port,
+    # input_from_unconnected_rewire, input_from_change). Without the flag,
+    # eco_perl_spec returns SKIP with 'input net <X> absent in <stage>' and
+    # the chain gate doesn't land in PostEco — silently breaks the DFF.D
+    # driver. Run 20260515071155 surface (BeqCtrlPeSrc_0_/_1_/_2_ flat-form
+    # leaves vs bracket-form netlist — caused by analyzer flat-form
+    # representation in d_input_expected_function leaking into chain pcs).
+    OUT_PINS = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S')
+    skip_flags = ('input_from_new_port', 'input_from_unconnected_rewire',
+                  'input_from_change')
+    for stage in ('Synthesize',):  # Synth is enough — same chain across stages
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'new_logic_gate':
+                continue
+            inst = e.get('instance_name', '?')
+            host = e.get('module_name', '')
+            pcs = e.get('port_connections') or {}
+            for pin, val in pcs.items():
+                if pin in OUT_PINS or not isinstance(val, str):
+                    continue
+                v = val.strip()
+                # Skip constants, n_eco_* (intra-batch refs), explicit skip flags
+                if v.startswith(("1'b", "0'b", "1'h", "0'h")): continue
+                if v.startswith('n_eco_'): continue
+                if any(e.get(f) == v for f in skip_flags): continue
+                # Bracket-form bus-bit names (e.g. SIG[0]) need to be matched
+                # against the netlist as bracket form — flat form (SIG_0_) is a
+                # leak from sympy-eval-friendly representation. Detect and
+                # warn on flat form so the wrapper rewrites it.
+                if re.match(r'^[A-Za-z_][A-Za-z0-9_]*?_\d+_$', v):
+                    issues.append(
+                        f"HIGH/36-CHAIN-INPUT-FLAT-FORM: gate {inst}.{pin} = {v!r} "
+                        f"uses flat-net form (sympy-friendly); the netlist has "
+                        f"bracket form. eco_perl_spec.net_exists check will FAIL "
+                        f"and the gate will SKIP. Wrapper must convert "
+                        f"`SIG_<N>_` → `SIG[<N>]` after eco_synth_chain returns "
+                        f"(see eco_emit_dff_entry.py flat_to_bracket post-pass).")
+
+    # ── 37. reset_pin_used must be set explicitly (true/false), never None ──
+    # The studier MD §0c says reset_pin_used MUST be true (when a DFF with
+    # the right reset pin is found in scope) or false (with reason — reset
+    # baked into D-cone). None means the wrapper or studier didn't make the
+    # decision; downstream applier logic falls through and the reset path
+    # may be inconsistent across stages. Run 20260515071155 surface.
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
+            continue
+        if e.get('reset_pin_used') is None:
+            inst = e.get('instance_name', '?')
+            issues.append(
+                f"MEDIUM/37-RESET-PIN-USED-UNSET: DFF {inst} has "
+                f"reset_pin_used=None. Studier (or wrapper) MUST set this to "
+                f"true (when find_reset_capable_dff returned a hit) or false "
+                f"(with reset_pin_used:false + reason — reset baked into D-cone). "
+                f"None defeats the §0c decision tree and downstream applier can't "
+                f"tell whether to wire the dedicated reset pin or rely on the chain.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

@@ -402,12 +402,18 @@ def main():
                 if re.match(r'^SEQMAP_NET_\d+_orig$', str(net)):
                     continue
                 # eco_<jira>_*_orig nets are renamed driver outputs — valid after Pass 4 rewire
-                if re.match(r'^eco_\d+_\w+_orig$', str(net)):
+                # Use IGNORECASE to handle both eco_9899_*_orig and ECO_9899_*_orig naming
+                if re.match(r'^eco_\d+_\w+_orig$', str(net), re.IGNORECASE):
                     continue
                 # Skip existence check for nets that are new ports (added by Pass 2),
                 # output nets of other gates in this same Perl batch (forward reference),
-                # or explicitly flagged via input_from_new_port field in study JSON
-                if net in new_port_nets or net == e.get('input_from_new_port', ''):
+                # explicitly flagged via input_from_new_port field in study JSON,
+                # OR flagged via input_from_unconnected_rewire (the net is created by
+                # passes 2-4 unconnected_rewires renaming UNCONNECTED→<flat-net>;
+                # net doesn't exist in PreEco — chicken-and-egg with pre-existence check)
+                if (net in new_port_nets
+                    or net == e.get('input_from_new_port', '')
+                    or net == e.get('input_from_unconnected_rewire', '')):
                     continue
                 if not net_exists_in_posteco(net, posteco):
                     skip_reason = f"input net '{net}' absent in {args.stage}"

@@ -75,6 +75,80 @@ def _grep_count(pattern, path):
         return 0
 
 
+def _discover_dff_cell_type(host_module, dff_clock, preeco_synth_v, ref_dir, tile_module):
+    """Find a DFF cell type used in host_module scope.
+
+    Strategy (in priority order):
+      1. Cell with `.CP(<dff_clock>)` matching the requested clock — best
+         match (same clock domain).
+      2. Cell with `.CP(<dff_clock>G)` — gated form of same clock.
+      3. Any single-bit DFF instance (cell type starts with SDFQ/SDFF/DFF/DFQ
+         and instance line has `.D(`/`.CP(`/`.Q(`) — same library family.
+
+    The umccmd-style hierarchical wrapper modules often don't have direct
+    .CP(UCLK01) — the clock gets gated to UCLK01G first. The fallback to
+    any-DFF-in-scope mirrors what an engineer does when picking a cell
+    type for a new ECO DFF.
+
+    Tries `<host_module>` then `<host_module>_0` (Route uniquification) then
+    `<tile_module>_<host_module>` prefix variant.
+    """
+    candidates = [host_module]
+    if host_module and not host_module.startswith('ddrss_'):
+        candidates.append(f'{tile_module}_{host_module}')
+    candidates.extend([f'{c}_0' for c in list(candidates)])
+    # Build the source: prefer cached file, else gz. Use zcat for .gz paths
+    # (cat on a binary .gz returns garbage that no awk pattern matches).
+    if preeco_synth_v and Path(preeco_synth_v).is_file():
+        cat_cmd = (f'zcat {preeco_synth_v}' if preeco_synth_v.endswith('.gz')
+                   else f'cat {preeco_synth_v}')
+    else:
+        gz = str(Path(ref_dir) / 'data' / 'PreEco' / 'Synthesize.v.gz')
+        if not Path(gz).is_file():
+            return ''
+        cat_cmd = f'zcat {gz}'
+
+    # Helper: extract first cell-type token from a multi-line awk hit
+    def _first_celltype_for_pattern(cand, grep_pattern):
+        cmd = (
+            f"{cat_cmd} | awk '/^module {re.escape(cand)}[ \\t(]/,/^endmodule/' "
+            f"| grep -B2 -E {grep_pattern!r} "
+            f"| grep -E '^[A-Z][A-Z0-9_]+[ \\t]+[a-zA-Z_]' | head -1"
+        )
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+            line = (r.stdout or '').strip()
+            m = re.match(r'^([A-Z][A-Z0-9_]+)\s+', line)
+            return m.group(1) if m else ''
+        except Exception:
+            return ''
+
+    for cand in candidates:
+        if not cand: continue
+        # Strategy 1: direct .CP(<dff_clock>) match
+        ct = _first_celltype_for_pattern(cand, rf'\.CP\s*\(\s*{re.escape(dff_clock)}[^A-Za-z0-9_]')
+        if ct: return ct
+        # Strategy 2: .CP(<dff_clock>G) gated form
+        ct = _first_celltype_for_pattern(cand, rf'\.CP\s*\(\s*{re.escape(dff_clock)}G[^A-Za-z0-9_]')
+        if ct: return ct
+        # Strategy 3: any DFF cell (SDFQ/SDFF/DFQ/DFF/SDFR/SDF) followed by
+        # instance name + line pattern containing `.CP(`. Engineer-style:
+        # "find any neighbor DFF in scope".
+        try:
+            cmd = (
+                f"{cat_cmd} | awk '/^module {re.escape(cand)}[ \\t(]/,/^endmodule/' "
+                f"| grep -E '^(SDFQ|SDFF|SDFR|DFQ|DFF|SDF)[A-Z0-9_]+[ \\t]+[a-zA-Z_][A-Za-z0-9_]*[ \\t]*\\(' "
+                f"| head -1"
+            )
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+            line = (r.stdout or '').strip()
+            m = re.match(r'^([A-Z][A-Z0-9_]+)\s+', line)
+            if m: return m.group(1)
+        except Exception:
+            continue
+    return ''
+
+
 def _module_scope_dff_count(host_module, dff_clock, preeco_synth_v):
     """Count DFFs in host_module on dff_clock (Check 30 grep)."""
     if not (host_module and dff_clock and preeco_synth_v and Path(preeco_synth_v).is_file()):
@@ -295,7 +369,7 @@ def build_bridge_plumbing(pick, picker_top, dff_inst, host_module, ref_dir, jira
 # ── Step E: Build the DFF entry itself ─────────────────────────────────────
 
 def build_dff_entry(rtl_change, strategy_info, cp_per_stage, scan_per_stage,
-                    chain_d_net, jira):
+                    chain_d_net, jira, dff_cell_type='', host_module=''):
     """Compose the new_logic_dff entry with port_connections_per_stage."""
     target_reg = rtl_change.get('target_register', '') or rtl_change.get('new_token', '')
     dff_inst   = f'{target_reg}_reg' if target_reg else f'eco_{jira}_dff'
@@ -325,10 +399,13 @@ def build_dff_entry(rtl_change, strategy_info, cp_per_stage, scan_per_stage,
     entry = {
         'change_type':                    'new_logic_dff',
         'instance_name':                  dff_inst,
-        'module_name':                    rtl_change.get('declaring_module') or rtl_change.get('module_name', ''),
+        'cell_type':                      dff_cell_type or '',
+        'dff_cell_type':                  dff_cell_type or '',
+        'module_name':                    host_module or rtl_change.get('declaring_module') or rtl_change.get('module_name', ''),
         'dff_clock':                      rtl_change.get('dff_clock', ''),
         'reset_signal':                   rtl_change.get('reset_signal', ''),
         'reset_polarity':                 rtl_change.get('reset_polarity', ''),
+        'reset_pin_used':                 False,    # SE/SI=1'b0 + reset baked into D-cone (default)
         'port_connections':               pcs.get('Synthesize', {}),
         'port_connections_per_stage':     pcs,
         'mode_S_strategy_per_stage':      mode_s_strat_per_stage,
@@ -421,6 +498,10 @@ def main():
     input_names = []
     for g in (rtl_change.get('d_input_gate_chain') or []):
         for v in (g.get('inputs') or []):
+            # Skip intermediate ECO nets (n_eco_*) — they are defined by the chain itself,
+            # not primary inputs. Including them as sympy symbols causes compose_chain_boolean
+            # to return partial expressions (unresolved intermediate), breaking truth-table check.
+            if isinstance(v, str) and v.startswith('n_eco_'): continue
             if v not in input_names: input_names.append(v)
         for k, v in (g.get('port_connections') or {}).items():
             if k in ('Z', 'ZN'): continue
@@ -468,9 +549,42 @@ def main():
     dff_prefix = re.sub(r'[^A-Za-z0-9]+', '_', (target_reg or '').lower()).strip('_')
     chain_entries, chain_d_net = build_d_input_chain(expr, input_names, args.jira, prefix=dff_prefix)
 
+    # Convert chain leaf names from flat-form (`SIG_0_`, used by eco_synth_chain
+    # for sympy eval-friendliness) back to the bracket form (`SIG[0]`) that
+    # matches the actual netlist. perl_spec's input-existence check greps the
+    # netlist literally — flat form misses bracket-form bus bits and produces
+    # SKIPPED entries (run 20260515071155 surface). The reverse mapping is
+    # built from the original `input_names` list (which has bracket form).
+    flat_to_bracket = {}
+    for n in input_names:
+        if isinstance(n, str):
+            m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', n.strip())
+            if m:
+                flat = f'{m.group(1)}_{m.group(2)}_'
+                flat_to_bracket[flat] = n.strip()
+    if flat_to_bracket:
+        for g in chain_entries:
+            pcs = g.get('port_connections') or {}
+            for pin, val in list(pcs.items()):
+                if isinstance(val, str) and val in flat_to_bracket:
+                    pcs[pin] = flat_to_bracket[val]
+
+    # ── Discover DFF cell type (for build_dff_entry) ─────────────────────
+    # Walk host module body in PreEco/Synthesize for a cell using <dff_clock>
+    # on its .CP pin; copy that cell's type. Without this the DFF entry has
+    # cell_type='' and the applier returns 'cell_type empty' SKIP (run
+    # 20260515071155 surface). Engineer-style: pick a neighbor DFF's cell type.
+    dff_cell_type = _discover_dff_cell_type(
+        host_module, dff_clock, synth_v, args.ref_dir, args.tile_module
+    )
+    print(f'  dff_cell_type discovered: {dff_cell_type!r}', file=sys.stderr)
+
     # ── Step E: DFF entry ─────────────────────────────────────────────────
-    dff_entry, dff_inst = build_dff_entry(rtl_change, strategy_info, cp_per_stage,
-                                          scan_per_stage, chain_d_net, args.jira)
+    dff_entry, dff_inst = build_dff_entry(
+        rtl_change, strategy_info, cp_per_stage, scan_per_stage,
+        chain_d_net, args.jira,
+        dff_cell_type=dff_cell_type, host_module=host_module,
+    )
 
     # ── Step D: bridge plumbing (if needed) ───────────────────────────────
     plumbing = None
@@ -548,24 +662,30 @@ def main():
             child_pc = result.get('suggested_child_port_connection_entry')
             if child_pc:
                 modei_extra_entries.append(child_pc)
-            # Rewrite chain leaves: original chain ref → flat-net replacement
+            # Rewrite chain leaves: original chain ref → flat-net replacement.
+            # Also flag the gate with `input_from_unconnected_rewire` so
+            # perl_spec skips the input-existence check (the flat-net is
+            # CREATED by the unconnected_rewires in passes 2-4 — chicken-and-
+            # egg with perl_spec's pre-existence check).
             replacement = result.get('suggested_chain_input_replacement')
             if replacement:
-                # Collect ALL forms of this leaf that appear in chain (bracket
-                # + flat) and rewrite all of them
                 rewrite_targets = {leaf}  # bracket form
-                # Original flat form found earlier
                 if leaf in flat_to_bracket:
                     rewrite_targets.add(flat_to_bracket[leaf])
-                # Also derive both forms
                 m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\]$', leaf)
                 if m:
                     rewrite_targets.add(f'{m.group(1)}_{m.group(2)}_')
                 for g in chain_entries:
                     pcs = g.get('port_connections') or {}
+                    rewired = False
                     for pin, val in list(pcs.items()):
                         if isinstance(val, str) and val.strip() in rewrite_targets:
                             pcs[pin] = replacement
+                            rewired = True
+                    if rewired:
+                        # Tell perl_spec: this input is created by Pass 2/4,
+                        # don't pre-check existence (would falsely SKIP).
+                        g['input_from_unconnected_rewire'] = replacement
 
     # ── Compose output ─────────────────────────────────────────────────────
     out = {
