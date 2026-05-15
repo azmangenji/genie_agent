@@ -648,8 +648,8 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 
 1. **NOT the pivot net itself** — the pivot net (SEQMAP_NET_*, DFF.D driver) is NEVER the target. Walk 2-5 hops UPSTREAM from the pivot net.
 
-2. **The net implementing the OLD DEFAULT EXPRESSION** — the target is the specific net whose gate-level value equals the RTL's old fallback expression (e.g. BothArbPickCmds). To identify it:
-   - Search the backward cone for the net whose DRIVER GATE implements the old RTL expression. For `BothArbPickCmds ? ~ToggleChn : ToggleChn`, find the gate that computes the `BothArbPickCmds` boolean — typically an XNR2, XNOR, or similar comparison gate whose output was renamed by synthesis.
+2. **The net implementing the OLD DEFAULT EXPRESSION** — the target is the specific net whose gate-level value equals the RTL's old fallback expression. To identify it:
+   - Search the backward cone for the net whose DRIVER GATE implements the old default expression. For a ternary `<OldCond> ? <val> : <OldExpr>`, find the gate that computes the `<OldCond>` boolean — typically an XNR2, XNOR, or similar comparison gate whose output was renamed by synthesis.
    - Do NOT pick the first `ctmn_*` closest to the pivot net — that is typically an AOI/OAI compound gate that CONSUMES the old expression, not the one that produces it.
    - **Verification step (MANDATORY):** `zgrep "<candidate_net>" PreEco/Synthesize.v.gz | grep "\.Z\b\|\.ZN\b"` — find the driver cell. If the driver cell type contains `AOI`, `OAI`, `AO`, `OA` with ≥3 inputs (e.g. AOI221, OAI221), REJECT this candidate — it is a CONSUMER that aggregates multiple signals. Go ONE MORE hop upstream and find the simpler functional gate (XNR2, AND2, OR, INV chain) whose output ENTERS the compound gate. That simpler gate's output is the correct target.
    - `ctmn_*` nets ARE valid targets — synthesis-named stable intermediates, NOT synthesis-internal. Do NOT reject them.
@@ -665,8 +665,8 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<net>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`
 2. The new gate chain: renames the target net's driver output → `ECO_<jira>_net_orig`, adds compound gates (OA12/OAI21/AN3/ND3) that output the original net name
 3. The compound gates use ONLY stage-stable signals:
-   - **ALLOWED:** New ECO ports from `new_port`/`port_promotion` changes (e.g. DcqArb0/1_PhArbFineGater). These may be marked `PENDING_ECO_PORT` in the chain — this is valid since they exist after ECO application and are stage-stable.
-   - **ALLOWED:** Existing primary inputs of the module (e.g. SplitActCtr, SplitActInProgCmd0/1).
+   - **ALLOWED:** New ECO ports from `new_port`/`port_promotion` changes (e.g. `<NewEcoPort_A>`, `<NewEcoPort_B>`). These may be marked `PENDING_ECO_PORT` in the chain — this is valid since they exist after ECO application and are stage-stable.
+   - **ALLOWED:** Existing primary inputs of the module (e.g. `<existing_input_A>`, `<existing_input_B>`).
    - **ALLOWED:** `ctmn_*` nets only as the renamed original (`ECO_<jira>_net_orig`) feeding the DEFAULT case — never as new condition gate inputs.
    - **FORBIDDEN:** `PENDING_FM_RESOLUTION` signals — stage-unstable; if a condition requires one, driver_substitution CANNOT be used for that condition → fall through to E4c.
    - **FORBIDDEN:** `phfnn_*`, `N<6-digit>` synthesis-internal signals as new gate inputs.
@@ -691,7 +691,7 @@ Logic: `(~Cond1) & (Cond2 | old_expr)` = if Cond1: 0, elif Cond2: 1, else: old_e
 
 4b. **Eliminate PENDING_FM_RESOLUTION conditions from the chain** — when driver_substitution is used AND a condition requires a `PENDING_FM_RESOLUTION` signal, **remove that condition entirely from the gate chain**. The remaining stage-stable conditions (ECO ports + primary inputs only) are sufficient for driver_substitution. Do NOT attempt to keep PENDING conditions by resolving them in Step 2 — driver_substitution must be self-contained with stage-stable signals only. If removing PENDING conditions makes the ECO logically incomplete → fall through to E4c instead.
 5. The old expression (`ECO_<jira>_net_orig`) feeds the new chain as the DEFAULT input (when no new condition is true)
-6. Pivot net (SEQMAP_NET_*, A2150336, DFF.D) — completely untouched
+6. Pivot net (SEQMAP_NET_*, DFF.D) — completely untouched
 
 **If no valid driver_substitution target found (any rule fails):** proceed to E4c.
 
@@ -775,7 +775,7 @@ python3 script/eco_scripts/eco_pick_sibling.py \
 Read the output JSON and use `recommended_pick` directly:
 - `mode_s_anchor.sibling_module` ← `recommended_pick.module`
 - `mode_s_anchor.anchor_dff` ← `recommended_pick.anchor_dff`
-- `mode_s_anchor.fm_scope` ← `recommended_pick.fm_scope` ← **MANDATORY**. Tile-relative INSTANCE hierarchy (e.g. `ARB/DCQARB`). FM resolves only via instance names; emitting module-type names (e.g. `ddrss_umccmd_t_umcarb/DCQARB`) returns FM-036 on every Cat 8 anchor query.
+- `mode_s_anchor.fm_scope` ← `recommended_pick.fm_scope` ← **MANDATORY**. Tile-relative INSTANCE hierarchy (e.g. `<INST_A>/<INST_B>`). FM resolves only via instance names; emitting module-type names (e.g. `<module_type>/<INST_B>`) returns FM-036 on every Cat 8 anchor query.
 - `mode_s_anchor.anchor_si_wire` ← `recommended_pick.anchor_si_wire` (PP stage)
 - `mode_s_anchor.anchor_se_wire` ← `recommended_pick.anchor_se_wire` (PP stage)
 - `mode_s_anchor.anchor_q_wire`  ← `recommended_pick.anchor_q_wire` (PP stage)
@@ -846,7 +846,7 @@ For every `new_logic` change that emits a `d_input_gate_chain`, you MUST also em
 }
 ```
 
-**Why this matters:** Per-cell truth-table check (Check 5) verifies each cell does what its `gate_function` name claims. But cells can be individually valid yet COMPOSE to the wrong boolean. The 9868 case: AI used `INR3 + IAOI21 + OR2 + INV + INV + AN4` — every cell self-consistent — but the composed function fired for codes 001/010/100 (false positives) AND missed code 011 (FADJ never detected). FM caught this after 30 min; Step 1 should catch it in 1 second via this check.
+**Why this matters:** Per-cell truth-table check (Check 5) verifies each cell does what its `gate_function` name claims. But cells can be individually valid yet COMPOSE to the wrong boolean. A prior AI ECO used a 6-cell chain where every individual cell was self-consistent — but the composed function produced false positives for several input codes and missed the intended case entirely. FM caught this after 30 min; Step 1 catches it in 1 second via this check.
 
 **Skip ONLY if:** chain is empty (`d_input_gate_chain: []` because the D-input is a single net, not decomposed) — in that case `d_input_expected_function` is not required.
 
