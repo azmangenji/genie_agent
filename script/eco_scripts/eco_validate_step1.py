@@ -20,7 +20,7 @@ Usage:
 
 Exit: 0 = all wire_swap entries pass, 1 = any failure.
 """
-import argparse, json, re, sys
+import argparse, json, os, re, sys
 
 # Prefixes that mean the cell's output goes LOW when its inputs go HIGH.
 # Keep generic — covers TSMC/AMD/GF library naming conventions.
@@ -1010,6 +1010,47 @@ def main():
                         except Exception:
                             pass
 
+    # Check 9g — driver_substitution rules enforcement
+    # Validates all 5 mandatory rules for driver_substitution target selection.
+    driver_sub_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('fallback_strategy') != 'driver_substitution': continue
+        tgt = c.get('driver_sub_target_net', '')
+        chain = c.get('new_condition_gate_chain') or []
+        old_tok = c.get('old_token') or c.get('new_token') or '?'
+
+        # Rule 1: target must NOT be the pivot net itself (SEQMAP_NET_*, old_token)
+        if tgt and (tgt == old_tok or 'SEQMAP_NET' in tgt or tgt.startswith('SEQMAP')):
+            driver_sub_issues.append(
+                f"changes[{idx}] [FAIL/9g-DRVSUB-PIVOT-TARGET]: driver_sub_target_net='{tgt}' "
+                f"is the pivot net itself — NEVER target the pivot net. Walk 2-5 hops UPSTREAM "
+                f"to find a named intermediate net (ctmn_*) driven by a compound gate. "
+                f"The pivot net path must remain UNCHANGED.")
+            overall_pass = False
+
+        # Rule 3: No MUX2 cascade in driver_substitution chains
+        mux_gates = [g for g in chain if 'MUX' in g.get('gate_function','').upper()]
+        if mux_gates:
+            driver_sub_issues.append(
+                f"changes[{idx}] [FAIL/9g-DRVSUB-NO-MUX]: driver_substitution chain contains "
+                f"{len(mux_gates)} MUX2 gate(s) — MUX cascade belongs to intermediate_net_insertion only. "
+                f"driver_substitution uses OA12/OAI21/AN3/ND3 compound gates DIRECTLY replacing "
+                f"the target net driver. Remove MUX gates and use compound gates instead.")
+            overall_pass = False
+
+        # Rule: No PENDING_FM_RESOLUTION in driver_substitution chain
+        for g in chain:
+            for inp in (g.get('inputs') or []):
+                if 'PENDING_FM_RESOLUTION' in str(inp):
+                    raw = str(inp).replace('PENDING_FM_RESOLUTION:', '')
+                    driver_sub_issues.append(
+                        f"changes[{idx}] [FAIL/9g-DRVSUB-PENDING]: driver_substitution gate "
+                        f"uses PENDING_FM_RESOLUTION signal '{raw}' — stage-unstable by definition. "
+                        f"driver_substitution MUST use only ECO ports and primary inputs that exist "
+                        f"in ALL 3 PreEco stages. If this signal is required, fall through to E4c.")
+                    overall_pass = False
+                    break
+
     # These should be decomposed as INV/NAND/AND gates, not marked as PENDING.
     # PENDING is only valid for raw RTL signal names that V3 grep cannot find.
     pending_structural_issues = []
@@ -1071,6 +1112,8 @@ def main():
         'reset_inclusion_issues':        reset_inclusion_issues,
         'and_term_mux_issue_count':        len(and_term_mux_issues),
         'and_term_mux_issues':             and_term_mux_issues,
+        'driver_sub_issue_count':          len(driver_sub_issues),
+        'driver_sub_issues':               driver_sub_issues,
         'intermed_ins_issue_count':        len(intermed_ins_issues),
         'intermed_ins_issues':             intermed_ins_issues,
         'pending_structural_issue_count': len(pending_structural_issues),
