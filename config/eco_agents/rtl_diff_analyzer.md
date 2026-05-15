@@ -670,6 +670,8 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
    - **FORBIDDEN:** `phfnn_*`, `N<6-digit>` synthesis-internal signals as new gate inputs.
    - **FORBIDDEN:** Any signal with 0 occurrences in any PreEco stage.
 4. **NO MUX2 cascade** — driver_substitution replaces the target net's driver directly. MUX cascade logic belongs to `intermediate_net_insertion` only.
+
+4b. **Eliminate PENDING_FM_RESOLUTION conditions from the chain** — when driver_substitution is used AND a condition requires a `PENDING_FM_RESOLUTION` signal, **remove that condition entirely from the gate chain**. The remaining stage-stable conditions (ECO ports + primary inputs only) are sufficient for driver_substitution. Do NOT attempt to keep PENDING conditions by resolving them in Step 2 — driver_substitution must be self-contained with stage-stable signals only. If removing PENDING conditions makes the ECO logically incomplete → fall through to E4c instead.
 5. The old expression (`ECO_<jira>_net_orig`) feeds the new chain as the DEFAULT input (when no new condition is true)
 6. Pivot net (SEQMAP_NET_*, A2150336, DFF.D) — completely untouched
 

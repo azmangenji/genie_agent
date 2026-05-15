@@ -1053,18 +1053,46 @@ def main():
                 f"the target net driver. Remove MUX gates and use compound gates instead.")
             overall_pass = False
 
-        # Rule: No PENDING_FM_RESOLUTION in driver_substitution chain
+        # Rule: No PENDING_FM_RESOLUTION in driver_substitution chain (Check 9g)
+        # Rule 4b: when driver_substitution has PENDING conditions, they must be REMOVED
+        # from the chain — not kept and resolved in Step 2.
+        pending_found = []
         for g in chain:
             for inp in (g.get('inputs') or []):
                 if 'PENDING_FM_RESOLUTION' in str(inp):
                     raw = str(inp).replace('PENDING_FM_RESOLUTION:', '')
-                    driver_sub_issues.append(
-                        f"changes[{idx}] [FAIL/9g-DRVSUB-PENDING]: driver_substitution gate "
-                        f"uses PENDING_FM_RESOLUTION signal '{raw}' — stage-unstable by definition. "
-                        f"driver_substitution MUST use only ECO ports and primary inputs that exist "
-                        f"in ALL 3 PreEco stages. If this signal is required, fall through to E4c.")
-                    overall_pass = False
-                    break
+                    pending_found.append(raw)
+        if pending_found:
+            driver_sub_issues.append(
+                f"changes[{idx}] [FAIL/9g-DRVSUB-PENDING]: driver_substitution chain contains "
+                f"PENDING_FM_RESOLUTION signals: {list(set(pending_found))}. "
+                f"These conditions MUST be removed from the chain (Rule 4b) — "
+                f"driver_substitution uses only stage-stable signals. "
+                f"Keep only conditions that use ECO ports and primary inputs. "
+                f"If removed conditions are logically required, fall through to E4c.")
+            overall_pass = False
+
+    # Check 9h — driver_substitution: at least one stage-stable condition must remain
+    # after removing PENDING_FM_RESOLUTION conditions. If all conditions were PENDING,
+    # driver_substitution cannot be used at all — fall through to E4c/E4d.
+    driver_sub_empty_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('fallback_strategy') != 'driver_substitution': continue
+        chain = c.get('new_condition_gate_chain') or []
+        tgt = c.get('old_token') or c.get('new_token') or '?'
+        # Count gates with ALL inputs stage-stable (no PENDING_FM_RESOLUTION)
+        stable_gates = []
+        for g in chain:
+            all_stable = all('PENDING_FM_RESOLUTION' not in str(i) for i in (g.get('inputs') or []))
+            if all_stable and 'MUX' not in g.get('gate_function','').upper():
+                stable_gates.append(g.get('seq','?'))
+        if chain and not stable_gates:
+            driver_sub_empty_issues.append(
+                f"changes[{idx}] target={tgt} [FAIL/9h-DRVSUB-EMPTY]: after removing "
+                f"PENDING_FM_RESOLUTION conditions, NO stage-stable gate conditions remain. "
+                f"driver_substitution requires at least one condition using only ECO ports "
+                f"and primary inputs. Fall through to E4c/E4d instead.")
+            overall_pass = False
 
     # These should be decomposed as INV/NAND/AND gates, not marked as PENDING.
     # PENDING is only valid for raw RTL signal names that V3 grep cannot find.
@@ -1129,6 +1157,8 @@ def main():
         'and_term_mux_issues':             and_term_mux_issues,
         'driver_sub_issue_count':          len(driver_sub_issues),
         'driver_sub_issues':               driver_sub_issues,
+        'driver_sub_empty_issue_count':    len(driver_sub_empty_issues),
+        'driver_sub_empty_issues':         driver_sub_empty_issues,
         'intermed_ins_issue_count':        len(intermed_ins_issues),
         'intermed_ins_issues':             intermed_ins_issues,
         'pending_structural_issue_count': len(pending_structural_issues),
