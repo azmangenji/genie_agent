@@ -651,7 +651,7 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 2. **The net implementing the OLD DEFAULT EXPRESSION** — the target is the specific net whose gate-level value equals the RTL's old fallback expression (e.g. BothArbPickCmds). To identify it:
    - Search the backward cone for the net whose DRIVER GATE implements the old RTL expression. For `BothArbPickCmds ? ~ToggleChn : ToggleChn`, find the gate that computes the `BothArbPickCmds` boolean — typically an XNR2, XNOR, or similar comparison gate whose output was renamed by synthesis.
    - Do NOT pick the first `ctmn_*` closest to the pivot net — that is typically an AOI/OAI compound gate that CONSUMES the old expression, not the one that produces it.
-   - To confirm: grep `PreEco/Synthesize.v.gz` for the candidate net — its DRIVER cell type should be a simple functional cell (XNR2, AND2, OR2, etc.) not a compound AOI/OAI that aggregates multiple inputs. The compound AOI/OAI gate is downstream (a CONSUMER of the old expression).
+   - **Verification step (MANDATORY):** `zgrep "<candidate_net>" PreEco/Synthesize.v.gz | grep "\.Z\b\|\.ZN\b"` — find the driver cell. If the driver cell type contains `AOI`, `OAI`, `AO`, `OA` with ≥3 inputs (e.g. AOI221, OAI221), REJECT this candidate — it is a CONSUMER that aggregates multiple signals. Go ONE MORE hop upstream and find the simpler functional gate (XNR2, AND2, OR, INV chain) whose output ENTERS the compound gate. That simpler gate's output is the correct target.
    - `ctmn_*` nets ARE valid targets — synthesis-named stable intermediates, NOT synthesis-internal. Do NOT reject them.
    - `N<6-digit>` and `phfnn_*` ARE synthesis-internal — reject these.
 
@@ -673,7 +673,21 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
    - **FORBIDDEN:** Any signal with 0 occurrences in any PreEco stage.
 4. **NO MUX2 cascade** — driver_substitution replaces the target net's driver directly. MUX cascade logic belongs to `intermediate_net_insertion` only.
 
-4a. **The LAST gate in the chain MUST output `driver_sub_target_net`** — this restores the original net name so all downstream cells need no changes. If the last gate outputs anything else (e.g. `n_eco_*`), `driver_sub_target_net` becomes undriven after the rename → FM ABORT. The final gate typically combines: condition trigger outputs + `ECO_<jira>_net_orig` (old default expression) → `driver_sub_target_net`. Example: `OA12(cond2_trigger, (old_expr|cond4)&~cond3, ~cond1_trigger) → driver_sub_target_net`.
+4a. **The LAST gate in the chain MUST output `driver_sub_target_net`** — this restores the original net name so all downstream cells need no changes. If the last gate outputs anything else (e.g. `n_eco_*`), `driver_sub_target_net` becomes undriven → FM ABORT.
+
+**Final gate is a COMPOUND gate (OA12/OAI21/AO21) combining ALL of:**
+- Condition trigger outputs (n_eco_*_c004, n_eco_*_c005, etc.)
+- `ECO_<jira>_net_orig` (old default expression — MUST appear here)
+- Output: `driver_sub_target_net`
+
+**Pattern for 2 stage-stable conditions (after removing PENDING conditions per Rule 4b):**
+```
+Step N-1: INV(Cond1_trigger) → n_eco_<jira>_inv_c1
+Step N:   OA12(Cond2_trigger, ECO_<jira>_net_orig, n_eco_<jira>_inv_c1) → driver_sub_target_net
+```
+Logic: `(~Cond1) & (Cond2 | old_expr)` = if Cond1: 0, elif Cond2: 1, else: old_expr ✓
+
+**The chain is INCOMPLETE without this final gate. Condition outputs alone (AND2, INR2, etc.) compute WHEN to trigger but NOT the final combined value.**
 
 4b. **Eliminate PENDING_FM_RESOLUTION conditions from the chain** — when driver_substitution is used AND a condition requires a `PENDING_FM_RESOLUTION` signal, **remove that condition entirely from the gate chain**. The remaining stage-stable conditions (ECO ports + primary inputs only) are sufficient for driver_substitution. Do NOT attempt to keep PENDING conditions by resolving them in Step 2 — driver_substitution must be self-contained with stage-stable signals only. If removing PENDING conditions makes the ECO logically incomplete → fall through to E4c instead.
 5. The old expression (`ECO_<jira>_net_orig`) feeds the new chain as the DEFAULT input (when no new condition is true)

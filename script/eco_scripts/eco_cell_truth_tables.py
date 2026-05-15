@@ -48,6 +48,8 @@ ABSTRACT_GATE_FUNCTIONS = {
     "INR2":  {"ZN": "A1 & ~B1"},
     "INR3":  {"ZN": "A1 & ~B1 & ~B2"},
     "IINR3": {"ZN": "A1 & A2 & ~B1"},
+    "IND2":  {"ZN": "~(~A1 & B1)"},
+    "IND3":  {"ZN": "~(A1 & (B1 | B2))"},
     "AOI21": {"ZN": "~((A1 & A2) | B)"},
     "AOI22": {"ZN": "~((A1 & A2) | (B1 & B2))"},
     "OAI21": {"ZN": "~((A1 | A2) & B)"},
@@ -56,6 +58,9 @@ ABSTRACT_GATE_FUNCTIONS = {
     "AO22":  {"Z":  "(A1 & A2) | (B1 & B2)"},
     "OA21":  {"Z":  "(A1 | A2) & B"},
     "OA22":  {"Z":  "(A1 | A2) & (B1 | B2)"},
+    "AOI211": {"ZN": "~((A1 & A2) | B | C)"},
+    "INR4":   {"ZN": "A1 & ~B1 & ~B2 & ~B3"},
+    "MUX2":   {"Z":  "S ? I1 : I0"},
 }
 
 # ── Engine: regex to extract cell family from a full cell-type string ────────
