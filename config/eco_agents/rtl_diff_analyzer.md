@@ -648,10 +648,12 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 
 1. **NOT the pivot net itself** — the pivot net (SEQMAP_NET_*, DFF.D driver) is NEVER the target. Walk 2-5 hops UPSTREAM from the pivot net.
 
-2. **The net implementing the OLD DEFAULT EXPRESSION** — the target is the specific net whose gate-level value equals the RTL's old fallback expression (e.g. BothArbPickCmds). Identify it by tracing the backward cone: the OLD expression in RTL maps to a specific gate output in the backward cone. That gate output net is the target.
-   - `ctmn_*` nets ARE valid targets — they are synthesis-named stable intermediates, NOT synthesis-internal. Do NOT reject `ctmn_*` as synthesis-internal.
+2. **The net implementing the OLD DEFAULT EXPRESSION** — the target is the specific net whose gate-level value equals the RTL's old fallback expression (e.g. BothArbPickCmds). To identify it:
+   - Search the backward cone for the net whose DRIVER GATE implements the old RTL expression. For `BothArbPickCmds ? ~ToggleChn : ToggleChn`, find the gate that computes the `BothArbPickCmds` boolean — typically an XNR2, XNOR, or similar comparison gate whose output was renamed by synthesis.
+   - Do NOT pick the first `ctmn_*` closest to the pivot net — that is typically an AOI/OAI compound gate that CONSUMES the old expression, not the one that produces it.
+   - To confirm: grep `PreEco/Synthesize.v.gz` for the candidate net — its DRIVER cell type should be a simple functional cell (XNR2, AND2, OR2, etc.) not a compound AOI/OAI that aggregates multiple inputs. The compound AOI/OAI gate is downstream (a CONSUMER of the old expression).
+   - `ctmn_*` nets ARE valid targets — synthesis-named stable intermediates, NOT synthesis-internal. Do NOT reject them.
    - `N<6-digit>` and `phfnn_*` ARE synthesis-internal — reject these.
-   - When multiple `ctmn_*` nets exist in the cone, pick the one whose driving gate computes the OLD RTL expression — typically the one 2-4 hops upstream of the pivot net, not the one closest to the pivot.
 
 3. **One consumer on pivot path** — exactly one cell downstream of the target net lies on the path toward the pivot net/DFF.
 

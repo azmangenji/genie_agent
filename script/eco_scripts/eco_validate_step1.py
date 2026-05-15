@@ -1043,6 +1043,21 @@ def main():
                 f"The pivot net path must remain UNCHANGED.")
             overall_pass = False
 
+        # Rule 1b: driver_sub_renamed_to MUST appear in at least one gate's inputs
+        # Without this, the old default expression (ECO_<jira>_net_orig) is completely
+        # lost — the chain has no fallback case when no condition is true.
+        renamed_to = c.get('driver_sub_renamed_to', '')
+        if renamed_to and chain:
+            uses_renamed = any(renamed_to in str(g.get('inputs', [])) for g in chain)
+            if not uses_renamed:
+                driver_sub_issues.append(
+                    f"changes[{idx}] [FAIL/9g-DRVSUB-NO-DEFAULT]: driver_substitution chain "
+                    f"never uses '{renamed_to}' (the renamed old expression) as a gate input. "
+                    f"The old default case (BothArbPickCmds/old_expr) is completely lost. "
+                    f"The final combination gate MUST include '{renamed_to}' as input — "
+                    f"e.g. OA12(Cond2_trigger, {renamed_to}, ~Cond1_trigger) → {tgt}.")
+                overall_pass = False
+
         # Rule 2: Last gate in chain MUST output driver_sub_target_net
         if chain and tgt:
             last_out = chain[-1].get('output_net', '')
