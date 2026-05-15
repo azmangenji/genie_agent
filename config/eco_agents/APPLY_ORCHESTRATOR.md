@@ -165,57 +165,22 @@ else:
         failures = check.get("failures", [])
         print(f"Step 5 self-heal attempt {heal_attempt}/{MAX_HEAL} — {len(failures)} failures")
 
-        # --- Fix each failure type directly ---
+        # Read every failure message. For each one:
+        #   1. Identify the affected entry in data/<TAG>_eco_preeco_study.json
+        #      (by instance_name, cell_name, port_name, or module_name).
+        #   2. Fix the study JSON directly — update the field that caused the failure
+        #      (e.g. wrong cell_type, missing port_declaration, wrong per_stage_cell,
+        #      incorrect net name, missing wire declaration, etc.).
+        #   3. If the fix requires a PostEco netlist change (not just study JSON),
+        #      use eco_applier or eco_passes_2_4.py with force_reapply to re-apply
+        #      only the affected entries.
+        # Do NOT call ROUND_ORCHESTRATOR. Fix it here.
 
-        for failure in failures:
-
-            # SEMANTIC_REWIRE: per_stage_cell in study JSON missing or wrong field name
-            # Fix: ensure per_stage_cell_name mirrors per_stage_cell for all rewire entries
-            if "SEMANTIC_REWIRE" in failure:
-                study = json.load(open(f"data/{TAG}_eco_preeco_study.json"))
-                for stage_entries in study.values():
-                    if not isinstance(stage_entries, list): continue
-                    for entry in stage_entries:
-                        if entry.get("change_type") == "rewire":
-                            psc = entry.get("per_stage_cell", {})
-                            if psc and not entry.get("per_stage_cell_name"):
-                                entry["per_stage_cell_name"] = psc
-                json.dump(study, open(f"data/{TAG}_eco_preeco_study.json", "w"), indent=2)
-                # No re-apply needed — study JSON fix only; semantic_verify re-reads it
-
-            # PORT_CONN_TARGET_MISSING / DEFERRED_PORT: port not declared in stage
-            # Fix: run eco_passes_2_4.py to apply missing port declarations
-            if "PORT_CONN_TARGET" in failure or "DEFERRED_PORT" in failure:
-                for stage in ("Synthesize", "PrePlace", "Route"):
-                    bash(f"python3 script/eco_scripts/eco_passes_2_4.py "
-                         f"--study data/{TAG}_eco_preeco_study.json "
-                         f"--ref-dir {REF_DIR} --tag {TAG} --stage {stage} "
-                         f"--output data/{TAG}_eco_passes_2_4_{stage}.json")
-
-            # DUPLICATE_WIRE / IMPLICIT_WIRE_CONFLICT: explicit wire decl conflicts with implicit
-            # Fix: eco_perl_spec.py deduplication already handles this — re-run applier
-            # (handled by re-apply below)
-
-            # CELL_TYPE_NOT_IN_LIBRARY / NO_CONSTANT_FUNCTIONAL_INPUTS:
-            # Fix: patch the study JSON entry's cell_type to a valid alternative,
-            # then re-apply. Read the failure message to identify which entry and stage.
-            # (handled by re-apply with force_reapply=true below)
-
-        # --- Re-apply with updated study JSON ---
-        bash(f"python3 script/eco_scripts/eco_applier.py "
-             f"--study    data/{TAG}_eco_preeco_study.json "
-             f"--ref-dir  {REF_DIR} --tag {TAG} --jira {JIRA} --round 1 "
-             f"--base-dir {BASE_DIR} --force-reapply "
-             f"--output   data/{TAG}_eco_applied_round1.json")
-
-        # --- Re-run check8 ---
-        bash(f"bash script/eco_scripts/eco_check8.sh "
-             f"{BASE_DIR} {REF_DIR} {TAG} 1 data/{TAG}_eco_applied_round1.json")
-
-        # --- Re-run pre_fm_checker ---
-        spawn eco_pre_fm_checker sub-agent (same inputs, ROUND=1,
-            CHECK8_RESULT_PATH=data/{TAG}_eco_check8_round1.json)
-        check = json.load(open(f"data/{TAG}_eco_pre_fm_check_round1.json"))
+        # After fixing, re-apply and re-validate:
+        bash eco_applier --force-reapply (re-applies updated study JSON entries)
+        bash eco_check8.sh (syntax check all 3 stages)
+        spawn eco_pre_fm_checker sub-agent (ROUND=1, CHECK8_RESULT_PATH=data/{TAG}_eco_check8_round1.json)
+        check = load(f"data/{TAG}_eco_pre_fm_check_round1.json")
 
     if check["passed"]:
         pass  # self-healing succeeded → proceed to Step 6
