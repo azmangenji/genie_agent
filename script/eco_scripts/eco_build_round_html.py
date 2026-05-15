@@ -53,6 +53,33 @@ def esc(s: Any) -> str:
     return html.escape(str(s)) if s is not None else ""
 
 
+def _parse_fm_verify_rpt(rpt_path: Path) -> dict | None:
+    """Parse eco_step6_fm_verify_round<N>.rpt to extract per-target FM results.
+    Returns a dict compatible with fm_results_table(), or None if not found.
+    eco_fm_verify.json is overwritten each round so this RPT is the only
+    round-specific source of truth for historical round results.
+    """
+    text = read_text(rpt_path)
+    if not text:
+        return None
+    result = {"per_target": {}}
+    for tgt in ("FmEqvEcoSynthesizeVsSynRtl",
+                "FmEqvEcoPrePlaceVsEcoSynthesize",
+                "FmEqvEcoRouteVsEcoPrePlace"):
+        # Match lines like: FmEqvEcoSynthesizeVsSynRtl : FAIL  [failing_count: 3071]
+        import re as _re
+        m = _re.search(
+            rf'{_re.escape(tgt)}\s*:\s*(PASS|FAIL|ABORT\S*)'
+            rf'(?:\s*\[failing(?:_count)?:\s*(\d+)\])?',
+            text
+        )
+        if m:
+            status = m.group(1)
+            count  = int(m.group(2)) if m.group(2) else (0 if status == "PASS" else "—")
+            result["per_target"][tgt] = {"status": status, "failing_count": count}
+    return result if result["per_target"] else None
+
+
 # -----------------------------------------------------------------------------
 # Verdict banner
 # -----------------------------------------------------------------------------
@@ -444,7 +471,11 @@ def build_html(args) -> str:
 
     # Load all artifacts (best-effort; some may be missing depending on verdict)
     handoff      = read_json(data_dir / f"{tag}_round_handoff.json")
-    fm_verify    = read_json(data_dir / f"{tag}_eco_fm_verify.json")
+    # eco_fm_verify.json is overwritten each round — use round-specific RPT to get
+    # the correct results for THIS round (not the latest round's merged data).
+    fm_verify = _parse_fm_verify_rpt(
+        data_dir / f"{tag}_eco_step6_fm_verify_round{round_n}.rpt"
+    ) or read_json(data_dir / f"{tag}_eco_fm_verify.json")
     eco_applied  = read_json(data_dir / f"{tag}_eco_applied_round{round_n}.json")
     evidence     = read_json(data_dir / f"{tag}_eco_fm_evidence_round{round_n}.json")
     xstage       = read_json(data_dir / f"{tag}_eco_fm_xstage_round{round_n}.json")
