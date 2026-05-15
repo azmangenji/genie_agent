@@ -186,12 +186,17 @@ def evidence_summary_section(evidence: dict | None) -> str:
     signals = evidence.get("summary_signals", [])
     if not signals:
         return "<p><i>No summary signals.</i></p>"
+    # Check if any actionable signals exist (only critical/high matter)
+    actionable = [s for s in signals if s.get("level") in ("critical", "high")]
+    if not actionable:
+        return "<p><i>No critical/high signals — see FM Results table for diagnosis.</i></p>"
     by_level: dict[str, list[dict]] = {}
     for s in signals:
         by_level.setdefault(s.get("level", "info"), []).append(s)
     out = []
-    badge = {"critical": "#c62828", "high": "#ef6c00", "info": "#1565c0"}
-    for lvl in ("critical", "high", "info"):
+    badge = {"critical": "#c62828", "high": "#ef6c00"}
+    # Only show critical and high — info signals are not actionable
+    for lvl in ("critical", "high"):
         items = by_level.get(lvl, [])
         if not items:
             continue
