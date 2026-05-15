@@ -732,20 +732,7 @@ def build_summary_signals(per_target: dict[str, dict],
 
     # Signal 4: SVF rejections — omitted (not actionable for ECO flow)
 
-    # Signal 5: AMD-WARN messages from tune file (HIGH if present)
-    for tgt, details in per_target.items():
-        if details.get("status") != "FAIL":
-            continue
-        warns = details.get("failing_diagnostics", {}).get("log_amd_warns", [])
-        if warns:
-            signals.append({
-                "level": "high",
-                "type": "TUNE_FILE_AMD_WARN",
-                "target": tgt,
-                "warn_count": len(warns),
-                "first_warn": warns[0] if warns else "",
-                "hint": f"{len(warns)} AMD-WARN in FM log — tune file get_pins/get_cells returned empty. Verify patterns match netlist.",
-            })
+    # Signal 5: AMD-WARN messages — omitted (not actionable for ECO flow)
 
     return signals
 
