@@ -107,7 +107,13 @@ def fm_results_table(fm_verify: dict | None) -> str:
         det = nested.get(tgt) or fm_verify.get(tgt)
         if isinstance(det, dict):
             status = det.get("status") or det.get("verdict", "?")
-            count  = det.get("failing_count", "—")
+            # Support both failing_count int and failing_points list
+            if "failing_count" in det:
+                count = det["failing_count"]
+            elif "failing_points" in det:
+                count = len(det["failing_points"])
+            else:
+                count = "—"
         else:
             status = str(det) if det is not None else "MISSING"
             count  = "—"
