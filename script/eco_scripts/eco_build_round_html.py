@@ -160,15 +160,54 @@ def fm_results_table(fm_verify: dict | None) -> str:
 
 
 # -----------------------------------------------------------------------------
-# Failing points detail (from spec)
+# Failing points detail — reads from evidence walk (round-specific) first,
+# falls back to fm_verify failing_points list
 # -----------------------------------------------------------------------------
-def failing_points_detail(fm_verify: dict | None, max_lines: int = 30) -> str:
+def failing_points_detail(fm_verify: dict | None, max_lines: int = 30,
+                          evidence: dict | None = None) -> str:
+    blocks = []
+    FM_TGTS = ("FmEqvEcoSynthesizeVsSynRtl",
+                "FmEqvEcoPrePlaceVsEcoSynthesize",
+                "FmEqvEcoRouteVsEcoPrePlace")
+
+    # Primary: evidence walk per_target dossiers (round-specific)
+    if evidence and evidence.get("per_target"):
+        for tgt in FM_TGTS:
+            tgt_data = evidence["per_target"].get(tgt, {})
+            if tgt_data.get("status") != "FAIL":
+                continue
+            diag = tgt_data.get("failing_diagnostics", {})
+            ps = diag.get("pattern_summary", {})
+            dossiers = diag.get("per_dff_dossiers", [])
+            total = diag.get("failing_count", len(dossiers))
+            if not dossiers and not ps:
+                continue
+            lines = []
+            # Show pattern summary first
+            if ps:
+                top_mod = ps.get("top_failing_modules", [])
+                dom = ps.get("dominant_pattern", "")
+                sig = ps.get("dominant_signal", "")
+                lines.append(f"Pattern: {dom}" + (f" (signal: {sig})" if sig else ""))
+                if top_mod:
+                    lines.append(f"Top scope: {top_mod[0].get('scope','')} ({top_mod[0].get('count',0)}/{total} DFFs)")
+            # Show sample DFF paths
+            for d in dossiers[:max_lines]:
+                lines.append(d.get("impl_path", d.get("ref_path", str(d))))
+            more = total - len(dossiers[:max_lines])
+            if more > 0:
+                lines.append(f"... + {more} more ({total} total)")
+            listing = "\n".join(esc(l) for l in lines)
+            blocks.append(f"<h4>{esc(tgt)}</h4>"
+                          f"<pre style='background:#fafafa;padding:8px;font-size:11px;max-height:200px;overflow:auto'>{listing}</pre>")
+        if blocks:
+            return "\n".join(blocks)
+
+    # Fallback: fm_verify failing_points list (may be from latest round, not this round)
     if not fm_verify:
-        return "<p><i>No data.</i></p>"
-    # Support both nested schema (per_target dict) and flat top-level schema
+        return "<p><i>No failing points data.</i></p>"
     nested = fm_verify.get("per_target", {}) or {}
     source = nested if nested else fm_verify
-    blocks = []
     for tgt, det in source.items():
         if not isinstance(det, dict):
             continue
@@ -516,7 +555,7 @@ def build_html(args) -> str:
     else:
         parts += [
             "<h3>1. FM Results</h3>",       fm_results_table(fm_verify),
-            "<h3>2. Failing Points Detail</h3>", failing_points_detail(fm_verify),
+            "<h3>2. Failing Points Detail</h3>", failing_points_detail(fm_verify, evidence=evidence),
             "<h3>3. Evidence Walk Summary</h3>", evidence_summary_section(evidence),
             "<h3>4. Cross-Stage Netlist Deltas</h3>", xstage_section(xstage),
             "<h3>5. ECO Changes Applied This Round</h3>", eco_changes_summary(eco_applied),
