@@ -478,8 +478,14 @@ def diagnose_failing(target: str, ref_dir: Path,
         )
     }
 
+    # Build pattern_summary: aggregate all dossiers to detect common root-cause signals.
+    # This lets the FM analyzer diagnose THIS target independently without reading
+    # thousands of individual dossiers (each target is analyzed separately).
+    pattern_summary = _build_pattern_summary(failing_points, dossiers, analyze)
+
     return {
         "failing_count": len(failing_points),
+        "pattern_summary": pattern_summary,   # aggregate for analyzer Phase 3 per-target
         "per_dff_dossiers": dossiers,
         "all_undriven_nets": parse_undriven_nets(undriven_text)[:200],
         "tune_constants_applied": parse_user_added_constants(user_const_text),
@@ -487,6 +493,101 @@ def diagnose_failing(target: str, ref_dir: Path,
         "before_verify_directives": parse_before_verify_directives(directives_text),
         "svf_operation_counts": svf_counts,
         "log_amd_warns": _extract_amd_warns(ref_dir, target),
+    }
+
+
+def _build_pattern_summary(failing_points: list[dict],
+                           dossiers: list[dict],
+                           analyze: dict) -> dict:
+    """Aggregate all per-DFF dossiers into a pattern summary for this target.
+
+    Enables the FM analyzer to diagnose THIS target independently without
+    reading all N individual dossiers. Groups failures by module/scope,
+    finds dominant unmatched cone inputs, and detects common patterns.
+    """
+    from collections import Counter, defaultdict
+
+    total = len(failing_points)
+
+    # Group by module (last two path segments of impl_path)
+    module_counts: Counter = Counter()
+    for fp in failing_points:
+        parts = fp.get("impl_path", "").split("/")
+        # Use the last 2-3 levels: .../ARB/CMDARB/ToggleChn_reg → "CMDARB"
+        scope = "/".join(parts[-3:-1]) if len(parts) >= 3 else "/".join(parts[:-1])
+        module_counts[scope] += 1
+    top_modules = [{"scope": k, "count": v} for k, v in module_counts.most_common(10)]
+
+    # Aggregate unmatched cone inputs across all dossiers (find most common signals)
+    cone_input_counter: Counter = Counter()
+    for d in dossiers:
+        for inp in d.get("cone_analysis", {}).get("unmatched_cone_inputs", []):
+            net = inp.get("net", "")
+            # Normalize: strip the FMWORK prefix, keep the signal name
+            net_short = net.split("/")[-1] if "/" in net else net
+            if net_short:
+                cone_input_counter[net_short] += 1
+    top_cone_inputs = [
+        {"net": k, "dff_count": v, "fraction": round(v / max(total, 1), 3)}
+        for k, v in cone_input_counter.most_common(20)
+    ]
+
+    # Detect dominant pattern
+    dominant_pattern = "UNKNOWN"
+    dominant_signal = None
+    if top_cone_inputs:
+        top = top_cone_inputs[0]
+        frac = top["fraction"]
+        net = top["net"]
+        if frac > 0.5:
+            # >50% of DFFs share same unmatched input → likely single root cause
+            dominant_pattern = "SINGLE_UNMATCHED_CONE_INPUT"
+            dominant_signal = net
+        elif frac > 0.1:
+            dominant_pattern = "COMMON_UNMATCHED_CONE_INPUT"
+            dominant_signal = net
+
+    # Check if all failures are ECO-inserted or all are existing (non-ECO)
+    eco_count = sum(1 for d in dossiers if d.get("is_eco_inserted"))
+    existing_count = total - eco_count
+
+    # Check for impl_cell_type distribution (DFF0X = constant 0 driven — often undriven net)
+    cell_type_counter: Counter = Counter()
+    for fp in failing_points:
+        cell_type_counter[fp.get("impl_cell_type", "?")] += 1
+    cell_type_distribution = dict(cell_type_counter.most_common(10))
+
+    # All-undriven-cut pattern: if most impl are DFF0X or DFFX → undriven net upstream
+    dff0x_count = cell_type_counter.get("DFF0X", 0) + cell_type_counter.get("DFFX", 0)
+    if dff0x_count > total * 0.5 and dominant_pattern == "UNKNOWN":
+        dominant_pattern = "UNDRIVEN_NET_UPSTREAM"
+
+    # Global analyze_points summary (aggregated across all dossiers)
+    all_unmatched = analyze.get("unmatched_cone_inputs", [])
+    all_required  = analyze.get("required_inputs", [])
+    rejected_cmds = analyze.get("rejected_guidance_commands", [])
+
+    return {
+        "total_failing": total,
+        "eco_inserted_failing": eco_count,
+        "existing_dffs_failing": existing_count,
+        "top_failing_modules": top_modules,
+        "top_unmatched_cone_inputs": top_cone_inputs,
+        "cell_type_distribution": cell_type_distribution,
+        "dominant_pattern": dominant_pattern,
+        "dominant_signal": dominant_signal,
+        "global_unmatched_cone_inputs_count": len(all_unmatched),
+        "global_required_inputs_count": len(all_required),
+        "rejected_guidance_count": len(rejected_cmds),
+        "rejected_guidance_sample": rejected_cmds[:5],
+        "analyzer_note": (
+            f"Investigate this target ({total} failing DFFs) INDEPENDENTLY. "
+            f"Dominant pattern: {dominant_pattern}. "
+            f"Top scope: {top_modules[0]['scope'] if top_modules else 'unknown'} "
+            f"({top_modules[0]['count'] if top_modules else 0}/{total} DFFs). "
+            f"Top unmatched input: {dominant_signal or 'none'}. "
+            f"Do NOT assume this target has the same root cause as other targets."
+        ),
     }
 
 

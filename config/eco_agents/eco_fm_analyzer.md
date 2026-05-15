@@ -139,47 +139,99 @@ This is your structural-divergence X-ray. Use it heavily in Phase 3.
 
 ---
 
-## §3 — PHASE 3: Hypothesize Root Cause (INVESTIGATIVE)
+## §3 — PHASE 3: Hypothesize Root Cause (INVESTIGATIVE — PER TARGET)
 
-Reason from evidence + xstage. Do NOT classify symptoms — investigate.
+**CRITICAL RULE: Every FM target is a DIFFERENT comparison and must be investigated INDEPENDENTLY.**
 
-### Phase 3 algorithm (per failing point in the FAIL case, or the single abort cause in the ABORT case)
+| Target | What it compares | What a failure means |
+|---|---|---|
+| `FmEqvEcoSynthesizeVsSynRtl` | Synthesize PostEco vs RTL reference | ECO logic in Synthesize is wrong — gate function error, wrong expression, missing gate |
+| `FmEqvEcoPrePlaceVsEcoSynthesize` | PrePlace PostEco vs Synthesize PostEco | ECO applied DIFFERENTLY between stages — cell rename skipped, gate missing in PP |
+| `FmEqvEcoRouteVsEcoPrePlace` | Route PostEco vs PrePlace PostEco | ECO applied DIFFERENTLY between PP and Route — same analysis as PP vs Synth but Route-specific |
+
+**Do NOT assume the same root cause across targets.** Synth vs SynRtl FAIL + PP vs Synth FAIL does NOT mean they have the same cause. Diagnose each separately and look for convergence only after individual hypotheses are formed.
+
+### Phase 3 algorithm — run for EACH failing target independently
 
 ```
-For each failing point (or abort cause):
+For each target T in [FmEqvEcoSynthesizeVsSynRtl, FmEqvEcoPrePlaceVsEcoSynthesize, FmEqvEcoRouteVsEcoPrePlace]:
+  if evidence.per_target[T].status not in (FAIL, ABORT): skip
 
-  Q1. Which pin's cone is divergent?
-       Read evidence.per_target[tgt].failing_diagnostics.per_dff_dossiers[*].cone_analysis
-       Look at unmatched_cone_inputs to identify the failing pin (D/SE/SI/CP)
-       For ABORT: read abort_diagnostics.fm_error_codes + missing_ports
+  # STEP 1: Read pattern_summary for THIS target first (aggregate view)
+  ps = evidence.per_target[T].failing_diagnostics.pattern_summary
+  Print: f"TARGET {T}: {ps['total_failing']} failing DFFs"
+  Print: f"  Top scope: {ps['top_failing_modules'][:3]}"
+  Print: f"  Dominant pattern: {ps['dominant_pattern']} signal={ps['dominant_signal']}"
+  Print: f"  Top unmatched cone inputs: {ps['top_unmatched_cone_inputs'][:5]}"
+  Print: f"  Cell type distribution: {ps['cell_type_distribution']}"
 
-  Q2. Is the divergence load-bearing or shadowed by a tune directive?
-       Cross-check evidence.tune_directives_status
-       If tune file applied set_constant SE=0 → SE cone is don't-care → not load-bearing
-       If no directive shadows the failing pin → it IS load-bearing
+  # STEP 2: From pattern_summary, form the dominant hypothesis for this target
+  # If dominant_pattern == SINGLE_UNMATCHED_CONE_INPUT with fraction > 0.5:
+  #   → All/most DFFs share the same undriven/missing signal as root cause
+  #   → Investigate THAT signal in detail (not individual DFFs)
+  # If dominant_pattern == UNKNOWN and multiple modules affected:
+  #   → Likely a cross-module structural issue
+  # If eco_inserted_failing > 0:
+  #   → ECO DFF in failing list — hard rule: NOT Mode E, investigate as Mode A/H/D/S
 
-  Q3. If load-bearing: walk the divergent cone back through the netlist
-       Use xstage.per_failing_dff[inst].stages[stage].driver_chain_D|CP|SE|SI
-       Walk back hop by hop until you find the FIRST point where stages diverge
-       That first divergent point is your root-cause candidate
+  # STEP 3: Sample per_dff_dossiers for this target (top 3-5 representative DFFs)
+  # Pick: 1 from largest failing scope, 1 eco-inserted if any, 1 from smallest scope
+  For each sampled DFF:
+    Q1. Which pin's cone is divergent?
+         Read dossier.cone_analysis.unmatched_cone_inputs
+         Look at unmatched inputs to identify the failing pin (D/SE/SI/CP)
+         For ABORT: read abort_diagnostics.fm_error_codes + missing_ports
 
-  Q4. Characterize the divergent point — pick from these (multiple may apply):
-       - undriven cut-point        → check evidence undriven_nets
-       - CTS rename                → wire_present_per_stage shows wire absent in P&R
-       - black-boxed submodule     → cell_blackboxed shows cell absent in P&R
-       - wrong gate function       → polarity check; needs Mode A Check D
-       - missing port declaration  → ABORT_LINK or false-APPLIED port_decl
+    Q2. Is the divergence load-bearing or shadowed by a tune directive?
+         Cross-check evidence.tune_directives_status
+         If tune file applied set_constant SE=0 → SE cone is don't-care → not load-bearing
+         If no directive shadows the failing pin → it IS load-bearing
 
-  Q5. What netlist edit converges the divergence?
-       Don't pick the action yet — just describe in plain words what would fix it.
-       Example: "Move D-input gate inside child submodule because child is
-                 black-boxed in P&R" or "Add explicit wire decl for n_eco_*
-                 because UNCONNECTED rename left it implicit"
+    Q3. If load-bearing: walk the divergent cone back through the netlist
+         Use xstage.per_failing_dff[inst].stages[stage].driver_chain_D|CP|SE|SI
+         Walk back hop by hop until you find the FIRST point where stages diverge
+         That first divergent point is your root-cause candidate
+
+    Q4. Characterize the divergent point — pick from these (multiple may apply):
+         - undriven cut-point        → check evidence all_undriven_nets
+         - CTS rename                → wire_present_per_stage shows wire absent in P&R
+         - black-boxed submodule     → cell_blackboxed shows cell absent in P&R
+         - wrong gate function       → polarity check; gate output wrong in THIS target's reference
+         - missing port declaration  → ABORT_LINK or false-APPLIED port_decl
+         - ECO rewire skipped        → eco_applied.SKIPPED for this stage; correct cell name needed
+
+    Q5. What netlist edit converges the divergence FOR THIS TARGET?
+         Describe specifically: "In Synthesize PostEco, gate X computes Y but should compute Z"
+         or "In PrePlace PostEco, rewire of cell A2234246 was skipped because cell renamed to FxPrePlace_*"
+         Be stage-specific. Do NOT say "applies to all stages" unless you verified all 3.
+
+  # STEP 4: Form the target-level hypothesis
+  Record hypothesis_per_target[T] = {
+    "failing_count": N,
+    "dominant_scope": top_modules[0].scope,
+    "root_cause": <one-sentence specific diagnosis for THIS target>,
+    "first_divergent_point": <net/cell causing the divergence in THIS comparison>,
+    "fix_description": <what netlist change fixes THIS target's failure>,
+    "confidence": high|medium|low,
+  }
 ```
+
+### Cross-target convergence (after all individual hypotheses formed)
+
+After hypothesizing separately for each target:
+1. Look for SHARED root causes (same fix resolves multiple targets)
+2. Look for TARGET-SPECIFIC root causes (different fix per target)
+3. Emit revised_changes covering ALL targets — one fix per root cause, applied to the correct stage(s)
+
+**Example of correct multi-target diagnosis:**
+- Synth vs SynRtl FAIL → wrong gate function (IND2 instead of INR2) in Synthesize
+- PP vs Synth FAIL → rewire skipped in PP (wrong cell name)
+- Route vs PP FAIL → rewire skipped in Route (different wrong cell name)
+→ 3 separate fixes: replace gate in Synth, apply correct cell name in PP, apply correct cell name in Route
 
 ### Hypothesis record format
 
-For each failing point, record:
+For each **target** (not each failing point — use pattern_summary for aggregate view), record:
 
 ```json
 {
