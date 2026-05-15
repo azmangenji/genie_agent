@@ -950,6 +950,51 @@ def main():
             overall_pass = False
 
     # Check: PENDING_FM_RESOLUTION on gate-structural inputs (inverted / comparison)
+    # Check 9f — intermediate_net_insertion uses stage-unstable signals.
+    # When intermediate_net_insertion is chosen but the new_condition_gate_chain
+    # contains signals with 0 occurrences in any PreEco stage (synthesis-only
+    # internal nets like phfnn_*, N<6-digit> synthesis nodes, etc.), the chain
+    # will produce per-stage divergence that FM cannot verify without SVF.
+    # Fix: use driver_substitution strategy instead — find a named intermediate
+    # net in the backward cone, rename its driver, add compound gates using ONLY
+    # stage-stable signals (new ECO ports, primary inputs).
+    intermed_ins_issues = []
+    if args.ref_dir:
+        _preeco_gz = {
+            s: os.path.join(args.ref_dir, 'data', 'PreEco', f'{s}.v.gz')
+            for s in ('Synthesize', 'PrePlace', 'Route')
+        }
+        for idx, c in enumerate(rtl_diff.get('changes', [])):
+            if c.get('fallback_strategy') != 'intermediate_net_insertion':
+                continue
+            chain = c.get('new_condition_gate_chain') or []
+            tgt = c.get('target_register') or c.get('old_token') or '?'
+            for g in chain:
+                for inp in (g.get('inputs') or []):
+                    if not isinstance(inp, str): continue
+                    base = inp.split('[')[0]
+                    if base.startswith(("1'b", "0'b", "n_eco_", "SEQMAP_NET", "PENDING")): continue
+                    # Check existence in all 3 PreEco stages
+                    for stage, gz in _preeco_gz.items():
+                        if not os.path.exists(gz): continue
+                        try:
+                            import subprocess as _sp
+                            r = _sp.run(f'zgrep -c "{base}" {gz}',
+                                shell=True, capture_output=True, text=True, timeout=30)
+                            cnt = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
+                            if cnt == 0:
+                                intermed_ins_issues.append(
+                                    f"changes[{idx}] target={tgt} [FAIL/9f-STAGE-UNSTABLE]: "
+                                    f"intermediate_net_insertion gate uses '{base}' which has "
+                                    f"0 occurrences in {stage} PreEco — signal won't survive P&R. "
+                                    f"Use driver_substitution: find a named net 2-3 hops upstream "
+                                    f"of the pivot net, rename its driver, add compound gates using "
+                                    f"only stage-stable signals (ECO ports, primary inputs).")
+                                overall_pass = False
+                                break  # one stage failure is enough to flag
+                        except Exception:
+                            pass
+
     # These should be decomposed as INV/NAND/AND gates, not marked as PENDING.
     # PENDING is only valid for raw RTL signal names that V3 grep cannot find.
     pending_structural_issues = []
@@ -1011,6 +1056,8 @@ def main():
         'reset_inclusion_issues':        reset_inclusion_issues,
         'and_term_mux_issue_count':        len(and_term_mux_issues),
         'and_term_mux_issues':             and_term_mux_issues,
+        'intermed_ins_issue_count':        len(intermed_ins_issues),
+        'intermed_ins_issues':             intermed_ins_issues,
         'pending_structural_issue_count': len(pending_structural_issues),
         'pending_structural_issues':      pending_structural_issues,
         'overall_pass':          overall_pass,

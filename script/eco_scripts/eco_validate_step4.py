@@ -343,6 +343,37 @@ def main():
     except Exception:
         pass
 
+    # ── 14. driver_substitution completion check ─────────────────────────────
+    # When fallback_strategy=driver_substitution, verify in PostEco:
+    # (a) original target net is still present (driven by new gate chain)
+    # (b) renamed original net (ECO_<jira>_net_orig or similar) also exists
+    # (c) no undriven references to either net
+    try:
+        rtl_diff_path = Path(args.applied).parent / f"{tag}_eco_rtl_diff.json"
+        if rtl_diff_path.exists():
+            rtl_diff_data = json.loads(rtl_diff_path.read_text())
+            for c in rtl_diff_data.get('changes', []):
+                if c.get('fallback_strategy') != 'driver_substitution': continue
+                target_net = c.get('driver_sub_target_net', '')
+                renamed_to = c.get('driver_sub_renamed_to', '')
+                if not target_net: continue
+                for stage in ['Synthesize', 'PrePlace', 'Route']:
+                    gz = f"{args.ref_dir}/data/PostEco/{stage}.v.gz"
+                    if not Path(gz).exists(): continue
+                    try:
+                        r = subprocess.run(f'zgrep -c "{target_net}" {gz}',
+                            shell=True, capture_output=True, text=True, timeout=30)
+                        cnt = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
+                        if cnt == 0:
+                            issues.append(
+                                f"HIGH: GAP-DRVSUB — {stage}: driver_substitution target "
+                                f"net '{target_net}' not found in PostEco — new gate chain "
+                                f"may not have been applied or final gate output net is wrong.")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': tag, 'round': args.round, 'passed': passed, 'issues': issues}

@@ -1637,6 +1637,32 @@ def main():
                     f"for this stage → FE-LINK-2 ABORT. Studier must pick a cell type "
                     f"that exists in the per-stage PreEco netlist (GAP-5).")
 
+    # ── driver_substitution: gate inputs must be stage-stable ────────────────
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('fallback_strategy') != 'driver_substitution': continue
+        chain = c.get('new_condition_gate_chain') or []
+        tgt = c.get('driver_sub_target_net') or c.get('old_token') or '?'
+        _skip_prefixes = ("1'b", "0'b", "n_eco_", "ECO_", "PENDING", "SEQMAP")
+        for g in chain:
+            for inp in (g.get('inputs') or []):
+                base = str(inp).split('[')[0]
+                if any(base.startswith(p) for p in _skip_prefixes): continue
+                for stage in ['Synthesize', 'PrePlace', 'Route']:
+                    gz = os.path.join(args.ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+                    if not os.path.exists(gz): continue
+                    try:
+                        r = subprocess.run(f'zgrep -c "{base}" {gz}',
+                            shell=True, capture_output=True, text=True, timeout=30)
+                        cnt = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
+                        if cnt == 0:
+                            issues.append(
+                                f"HIGH: {stage} driver_substitution for '{tgt}': "
+                                f"gate input '{base}' has 0 occurrences in {stage} PreEco — "
+                                f"not stage-stable. Only ECO ports and primary inputs allowed.")
+                            break
+                    except Exception:
+                        pass
+
     # ── wire_swap + intermediate_net_insertion gate chain check ──────────────
     # When a wire_swap change has fallback_strategy=intermediate_net_insertion
     # AND new_condition_gate_chain, the studier MUST emit new_logic_gate study

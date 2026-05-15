@@ -638,6 +638,28 @@ When the RTL diff shows the OLD expression still present as the last/default con
 
 Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallback_for_decompose_failed: true`. The studier traces backward from `target_register.D` to find the pivot net.
 
+#### E4b — Driver Substitution (PRIORITY 0 — check BEFORE compound gate discovery)
+
+**Before any gate chain decomposition, check if `driver_substitution` is possible.** This is the most FM-friendly strategy because it never touches the pivot net path and never creates new intermediate wires FM must trace.
+
+**When to use:** When a priority chain RTL diff shows NEW conditions prepended before an OLD default expression, AND the backward cone of the pivot net contains a named intermediate net (e.g. `ctmn_*`, not synthesis-internal `phfnn_*`/`N<6d>`) that:
+1. Has exactly ONE consumer downstream on the path to the target DFF
+2. Exists by the same name in ALL 3 PreEco stage netlists (`zgrep -c <net> PreEco/{Synth,PP,Route}.v.gz` all > 0)
+3. Is driven by an identifiable gate cell in PreEco Synth
+
+**If driver_substitution target found:**
+1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<net>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`
+2. The new gate chain: renames the target net's driver output → `ECO_<jira>_net_orig`, adds compound gates that output the original net name
+3. The compound gates use ONLY stage-stable signals: new ECO ports from `new_port`/`port_promotion` changes, and existing primary inputs — NEVER synthesis-internal signals (phfnn_*, N<6-digit>)
+4. The old expression (`ECO_<jira>_net_orig`) feeds the new chain as the DEFAULT case (when no new condition is true)
+5. ToggleChn_reg.D path remains completely unchanged — FM verifies trivially
+
+**Why FM accepts driver_substitution without SVF:** The entire downstream cone (from target net to DFF) is structurally identical in REF and IMPL. FM only needs to verify the new compound gates compute the right function — straightforward since all inputs are stage-stable and traceable to primary inputs.
+
+**If no driver_substitution target found:** proceed to E4c.
+
+---
+
 #### E4c — PreEco Compound Gate Discovery (PRIORITY 1 — run before E4d RTL decomposition)
 
 **Before decomposing conditions into simple gates from RTL, search the PreEco backward cone of the pivot net for existing compound gates.** This is always more reliable than RTL-decomposed simple gates because:

@@ -598,6 +598,14 @@ If `fanout > 10` → **NEVER use this net as gate output**. High-fanout nets hav
 
 For each `wire_swap` change, process FM fenets results per stage.
 
+**MANDATORY PRE-PHASE 1A: wire_swap + driver_substitution (check BEFORE intermediate_net_insertion)**
+
+When a `wire_swap` change has `fallback_strategy: "driver_substitution"`:
+1. Emit a `rewire` study entry: find the gate driving `driver_sub_target_net` in PreEco Synthesize → rename its output from `<target_net>` to `ECO_<jira>_net_orig` per stage (use rename_map for per-stage cell name)
+2. Emit `new_logic_gate` study entries for each gate in `new_condition_gate_chain` — using ONLY stage-stable inputs (verified via rename_map; inputs must exist in all 3 PreEco stages)
+3. The last gate's output_net MUST equal `driver_sub_target_net` (original name) — this ensures all downstream cells need no changes and FM traces trivially
+4. Do NOT emit a `rewire` for the pivot net (SEQMAP_NET_*) — it is never touched
+
 **MANDATORY PRE-PHASE 1: wire_swap + intermediate_net_insertion gate chain**
 
 For each `wire_swap` change, check FIRST (before reading the rename_map for the rewire entry) whether it has `fallback_strategy: "intermediate_net_insertion"` AND a non-empty `new_condition_gate_chain`. If so, the gate chain MUST be emitted as study entries — treat it exactly like Phase 0 `and_term`/`new_logic` gate insertion. Do this step before the standard rename_map lookup that produces the `rewire` entry, so the gate entries appear in the study JSON alongside the rewire entry:
