@@ -644,26 +644,35 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 
 **When to use:** When a priority chain RTL diff shows NEW conditions prepended before an OLD default expression, AND the backward cone of the pivot net contains a named intermediate net that qualifies.
 
-**Target net selection — MANDATORY rules (all must be true, or fall through to E4c):**
+**Target net selection — USE THE SCRIPT, do NOT reason manually:**
 
-1. **NOT the pivot net itself** — the pivot net (SEQMAP_NET_*, DFF.D driver) is NEVER the target. Walk 2-5 hops UPSTREAM from the pivot net.
+```bash
+python3 script/eco_scripts/eco_find_drvsub_target.py \
+    --ref-dir  <REF_DIR>          \
+    --register <target_register>  \
+    --jira     <JIRA>             \
+    --output   data/<TAG>_eco_drvsub_target.json
+```
 
-2. **The net implementing the OLD DEFAULT EXPRESSION** — the target is the specific net whose gate-level value equals the RTL's old fallback expression. To identify it:
-   - Search the backward cone for the net whose DRIVER GATE implements the old default expression. For a ternary `<OldCond> ? <val> : <OldExpr>`, find the gate that computes the `<OldCond>` boolean — typically an XNR2, XNOR, or similar comparison gate whose output was renamed by synthesis.
-   - Do NOT pick the first `ctmn_*` closest to the pivot net — that is typically an AOI/OAI compound gate that CONSUMES the old expression, not the one that produces it.
-   - **Verification step (MANDATORY):** `zgrep -E "\.ZN?\s*\(\s*<candidate_net>\s*\)" PreEco/Synthesize.v.gz | head -3` — find the driver cell line. If the first token of that line is an AOI/OAI compound type (starts with `AOI`, `OAI`, `AO2x`, `OA2x`, e.g. `AOI221`, `OAI21`), REJECT this candidate — it is a CONSUMER that aggregates multiple signals. Go ONE MORE hop upstream to find the simpler functional gate (XNR2, AND2, OR2, INV chain) whose output feeds INTO this compound gate. That simpler gate's output is the correct target.
-   - **SELF-CHECK before writing `driver_sub_target_net`:** If you recorded `pivot_net_driver_type` as any AOI/OAI variant, the Step 1 validator WILL fail with `9g-DRVSUB-CONSUMER-TARGET`. There is NO exception. You must walk upstream regardless of how many inputs the AOI has or which input carries the old expression.
-   - `ctmn_*` nets ARE valid targets — synthesis-named stable intermediates, NOT synthesis-internal. Do NOT reject them.
-   - `N<6-digit>` and `phfnn_*` ARE synthesis-internal — reject these.
+Read `driver_sub_target_net` and `driver_sub_target_cell_type` directly from the JSON output. Do NOT attempt to trace the cone manually — manual tracing produced wrong targets in every prior run. The script deterministically walks: pivot → MUX → compound consumers → first stage-stable simple-driver net = correct target.
 
-3. **One consumer on pivot path** — exactly one cell downstream of the target net lies on the path toward the pivot net/DFF.
+**If the script returns an error** (DFF not found, no stable candidate): fall through to E4c.
 
-4. **Exists in ALL 3 PreEco stages** — verify with `zgrep -c <net> PreEco/{Synthesize,PrePlace,Route}.v.gz` — ALL counts must be > 0. If any stage returns 0, fall through to E4c.
+**After running the script, verify:**
+- `stage_stable: true` — all 3 PreEco stages have the net
+- `driver_sub_target_cell_type` does NOT start with AOI/OAI/MUX (script enforces this, but confirm)
+- Use the returned `driver_sub_target_net` verbatim as `driver_sub_target_net` in the JSON
 
-5. **Driven by a named gate cell** — the driver of the target net must be identifiable by instance name in PreEco Synth.
+**Rules that still apply** (validated by eco_validate_step1.py):
+1. Target MUST NOT be the pivot net (SEQMAP_NET_*)
+2. Target MUST NOT be synthesis-internal (N\d{6+}, phfnn_*)
+3. Target MUST exist in all 3 PreEco stages
+4. Target driver MUST NOT be AOI/OAI compound (validator Check 9g-DRVSUB-CONSUMER-TARGET)
 
-**If driver_substitution target found and ALL 5 rules pass:**
-1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<net>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`
+**ALSO remove from condition_inputs_to_query and nets_to_query:** When a condition is removed per Rule 4b (PENDING_FM_RESOLUTION), its signals MUST NOT appear in `condition_inputs_to_query` or `nets_to_query`. Driver_substitution is fully self-contained — FM resolution of removed conditions is neither needed nor used by any downstream step. Leaving them in wastes Step 2 FM queries and creates confusion.
+
+**After the script returns a valid target:**
+1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<script output>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`
 2. The new gate chain: renames the target net's driver output → `ECO_<jira>_net_orig`, adds compound gates (OA12/OAI21/AN3/ND3) that output the original net name
 3. The compound gates use ONLY stage-stable signals:
    - **ALLOWED:** New ECO ports from `new_port`/`port_promotion` changes (e.g. `<NewEcoPort_A>`, `<NewEcoPort_B>`). These may be marked `PENDING_ECO_PORT` in the chain — this is valid since they exist after ECO application and are stage-stable.
@@ -690,13 +699,11 @@ Logic: `(~Cond1) & (Cond2 | old_expr)` = if Cond1: 0, elif Cond2: 1, else: old_e
 
 **The chain is INCOMPLETE without this final gate. Condition outputs alone (AND2, INR2, etc.) compute WHEN to trigger but NOT the final combined value.**
 
-4b. **Eliminate PENDING_FM_RESOLUTION conditions from the chain** — when driver_substitution is used AND a condition requires a `PENDING_FM_RESOLUTION` signal, **remove that condition entirely from the gate chain**. The remaining stage-stable conditions (ECO ports + primary inputs only) are sufficient for driver_substitution. Do NOT attempt to keep PENDING conditions by resolving them in Step 2 — driver_substitution must be self-contained with stage-stable signals only. If removing PENDING conditions makes the ECO logically incomplete → fall through to E4c instead.
-
-   **ALSO remove from condition_inputs_to_query and nets_to_query:** When a condition is removed per this rule, its signals MUST NOT appear in `condition_inputs_to_query` or `nets_to_query`. Driver_substitution is fully self-contained — FM resolution of removed conditions is neither needed nor used by any downstream step. Leaving them in wastes Step 2 FM queries and creates confusion.
+4b. **Eliminate PENDING_FM_RESOLUTION conditions from the chain** — when driver_substitution is used AND a condition requires a `PENDING_FM_RESOLUTION` signal, **remove that condition entirely from the gate chain AND from `condition_inputs_to_query`/`nets_to_query`**. The remaining stage-stable conditions (ECO ports + primary inputs only) are sufficient. Driver_substitution is self-contained — FM resolution of removed conditions is neither needed nor used.
 5. The old expression (`ECO_<jira>_net_orig`) feeds the new chain as the DEFAULT input (when no new condition is true)
 6. Pivot net (SEQMAP_NET_*, DFF.D) — completely untouched
 
-**If no valid driver_substitution target found (any rule fails):** proceed to E4c.
+**If the script returned error (no valid target):** proceed to E4c.
 
 ---
 
