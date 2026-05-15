@@ -1044,28 +1044,40 @@ def main():
             overall_pass = False
 
         # Rule 1a: driver_sub_target_net driver must NOT be a compound AOI/OAI gate
-        # If the target net is driven by AOI/OAI compound with ≥3 inputs, the agent
-        # selected a CONSUMER of the old expression, not the PRODUCER.
-        # The correct target is one more hop upstream (the simpler functional gate output).
-        if tgt and args.ref_dir:
+        # Primary: check pivot_net_driver_type field recorded by agent (most reliable).
+        # Fallback: grep Synthesize for .ZN?(net) pattern with correct Verilog syntax.
+        _consumer_fail_msg = (
+            f"changes[{idx}] [FAIL/9g-DRVSUB-CONSUMER-TARGET]: "
+            f"driver_sub_target_net='{tgt}' is driven by a compound AOI/OAI gate "
+            f"(CONSUMER of the old expression, not its PRODUCER). "
+            f"Go 1 hop further upstream to find the simpler functional gate "
+            f"(XNR2/AND2/OR2) whose output enters this compound gate — that IS the target."
+        )
+        _consumer_detected = False
+        _driver_type_reported = c.get('pivot_net_driver_type', '')
+        if _driver_type_reported and re.search(r'^(AOI|OAI|AO[0-9]{1,2}|OA[0-9]{1,2})', _driver_type_reported, re.I):
+            _consumer_detected = True
+            driver_sub_issues.append(
+                f"changes[{idx}] [FAIL/9g-DRVSUB-CONSUMER-TARGET]: "
+                f"driver_sub_target_net='{tgt}' pivot_net_driver_type='{_driver_type_reported}' "
+                f"is an AOI/OAI compound gate (CONSUMER). Go 1 hop upstream to the simpler "
+                f"functional gate whose output feeds INTO this AOI/OAI — that output IS the target.")
+            overall_pass = False
+
+        if not _consumer_detected and tgt and args.ref_dir:
             gz = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz')
             if os.path.exists(gz):
                 try:
                     import subprocess as _sp2
+                    # Correct pattern: match .ZN(net) or .Z(net) — no spaces around net name
                     r = _sp2.run(
-                        f'zgrep -m5 " {tgt} " {gz} | grep -E "\\.ZN?\\s*\\("',
+                        f'zgrep -m5 -E "\\.ZN?\\s*\\(\\s*{re.escape(tgt)}\\s*\\)" {gz}',
                         shell=True, capture_output=True, text=True, timeout=30
                     )
                     for line in (r.stdout or '').splitlines():
                         cell = line.strip().split()[0] if line.strip() else ''
-                        if re.search(r'^(AOI|OAI|AO[0-9]|OA[0-9])', cell, re.I):
-                            driver_sub_issues.append(
-                                f"changes[{idx}] [FAIL/9g-DRVSUB-CONSUMER-TARGET]: "
-                                f"driver_sub_target_net='{tgt}' is driven by compound gate "
-                                f"'{cell}' (AOI/OAI consumer, ≥3 inputs). This is a CONSUMER "
-                                f"of the old expression, not its PRODUCER. Go 1 hop further "
-                                f"upstream to find the simpler functional gate (XNR2/AND2/OR2) "
-                                f"whose output enters this compound gate — that output IS the target.")
+                        if re.search(r'^(AOI|OAI|AO[0-9]{1,2}|OA[0-9]{1,2})', cell, re.I):
+                            driver_sub_issues.append(_consumer_fail_msg)
                             overall_pass = False
                             break
                 except Exception:

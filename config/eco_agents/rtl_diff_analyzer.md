@@ -651,7 +651,8 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 2. **The net implementing the OLD DEFAULT EXPRESSION** — the target is the specific net whose gate-level value equals the RTL's old fallback expression. To identify it:
    - Search the backward cone for the net whose DRIVER GATE implements the old default expression. For a ternary `<OldCond> ? <val> : <OldExpr>`, find the gate that computes the `<OldCond>` boolean — typically an XNR2, XNOR, or similar comparison gate whose output was renamed by synthesis.
    - Do NOT pick the first `ctmn_*` closest to the pivot net — that is typically an AOI/OAI compound gate that CONSUMES the old expression, not the one that produces it.
-   - **Verification step (MANDATORY):** `zgrep "<candidate_net>" PreEco/Synthesize.v.gz | grep "\.Z\b\|\.ZN\b"` — find the driver cell. If the driver cell type contains `AOI`, `OAI`, `AO`, `OA` with ≥3 inputs (e.g. AOI221, OAI221), REJECT this candidate — it is a CONSUMER that aggregates multiple signals. Go ONE MORE hop upstream and find the simpler functional gate (XNR2, AND2, OR, INV chain) whose output ENTERS the compound gate. That simpler gate's output is the correct target.
+   - **Verification step (MANDATORY):** `zgrep -E "\.ZN?\s*\(\s*<candidate_net>\s*\)" PreEco/Synthesize.v.gz | head -3` — find the driver cell line. If the first token of that line is an AOI/OAI compound type (starts with `AOI`, `OAI`, `AO2x`, `OA2x`, e.g. `AOI221`, `OAI21`), REJECT this candidate — it is a CONSUMER that aggregates multiple signals. Go ONE MORE hop upstream to find the simpler functional gate (XNR2, AND2, OR2, INV chain) whose output feeds INTO this compound gate. That simpler gate's output is the correct target.
+   - **SELF-CHECK before writing `driver_sub_target_net`:** If you recorded `pivot_net_driver_type` as any AOI/OAI variant, the Step 1 validator WILL fail with `9g-DRVSUB-CONSUMER-TARGET`. There is NO exception. You must walk upstream regardless of how many inputs the AOI has or which input carries the old expression.
    - `ctmn_*` nets ARE valid targets — synthesis-named stable intermediates, NOT synthesis-internal. Do NOT reject them.
    - `N<6-digit>` and `phfnn_*` ARE synthesis-internal — reject these.
 
@@ -690,6 +691,8 @@ Logic: `(~Cond1) & (Cond2 | old_expr)` = if Cond1: 0, elif Cond2: 1, else: old_e
 **The chain is INCOMPLETE without this final gate. Condition outputs alone (AND2, INR2, etc.) compute WHEN to trigger but NOT the final combined value.**
 
 4b. **Eliminate PENDING_FM_RESOLUTION conditions from the chain** — when driver_substitution is used AND a condition requires a `PENDING_FM_RESOLUTION` signal, **remove that condition entirely from the gate chain**. The remaining stage-stable conditions (ECO ports + primary inputs only) are sufficient for driver_substitution. Do NOT attempt to keep PENDING conditions by resolving them in Step 2 — driver_substitution must be self-contained with stage-stable signals only. If removing PENDING conditions makes the ECO logically incomplete → fall through to E4c instead.
+
+   **ALSO remove from condition_inputs_to_query and nets_to_query:** When a condition is removed per this rule, its signals MUST NOT appear in `condition_inputs_to_query` or `nets_to_query`. Driver_substitution is fully self-contained — FM resolution of removed conditions is neither needed nor used by any downstream step. Leaving them in wastes Step 2 FM queries and creates confusion.
 5. The old expression (`ECO_<jira>_net_orig`) feeds the new chain as the DEFAULT input (when no new condition is true)
 6. Pivot net (SEQMAP_NET_*, DFF.D) — completely untouched
 
