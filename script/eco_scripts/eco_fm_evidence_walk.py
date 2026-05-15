@@ -730,21 +730,7 @@ def build_summary_signals(per_target: dict[str, dict],
             ),
         })
 
-    # Signal 4: rejected SVF guidance (HIGH if many rejections)
-    for tgt, details in per_target.items():
-        if details.get("status") != "FAIL":
-            continue
-        diag = details.get("failing_diagnostics", {})
-        svf_counts = diag.get("svf_operation_counts", {})
-        total_rejected = sum(c.get("rejected", 0) for c in svf_counts.values())
-        if total_rejected > 0:
-            signals.append({
-                "level": "high",
-                "type": "SVF_REJECTED",
-                "target": tgt,
-                "total_rejected": total_rejected,
-                "hint": f"{total_rejected} SVF guidance commands rejected — verify tune file patterns match netlist names.",
-            })
+    # Signal 4: SVF rejections — omitted (not actionable for ECO flow)
 
     # Signal 5: AMD-WARN messages from tune file (HIGH if present)
     for tgt, details in per_target.items():
