@@ -473,6 +473,9 @@ def main():
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
             continue
+        # scope_is_tile_root=true entries intentionally use "" scope (FM auto-scopes under tile)
+        if c.get('scope_is_tile_root'):
+            continue
         if not (c.get('scope') or c.get('instance_scope')):
             tgt = c.get('target_register') or c.get('new_token') or '?'
             scope_field_issues.append(
@@ -977,9 +980,48 @@ def main():
                         except Exception:
                             pass
 
+    # Check 9g-DRVSUB-SCRIPT-IGNORED: if eco_drvsub_target_<register>.json exists
+    # in the same data directory AND shows stage_stable=true, the wire_swap change
+    # for that register MUST use fallback_strategy="driver_substitution".
+    # Agent ignoring the script result and choosing intermediate_net_insertion
+    # instead is a hard failure — the script is the authoritative source.
+    import glob as _glob
+    driver_sub_issues = []
+    rtl_diff_dir = os.path.dirname(os.path.abspath(args.rtl_diff))
+    # Extract tag from filename (rtl_diff JSON may not have 'tag' field)
+    _rtl_fname = os.path.basename(args.rtl_diff)  # e.g. 20260515080721_eco_rtl_diff.json
+    tag = rtl_diff.get('tag') or _rtl_fname.split('_eco_rtl_diff')[0]
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'wire_swap':
+            continue
+        reg = c.get('target_register', '')
+        if not reg:
+            continue
+        # Look for drvsub script output for this register
+        drvsub_paths = (
+            _glob.glob(os.path.join(rtl_diff_dir, f'{tag}_eco_drvsub_target_{reg}.json')) +
+            _glob.glob(os.path.join(rtl_diff_dir, f'{tag}_eco_drvsub_target.json'))
+        )
+        for dp in drvsub_paths:
+            try:
+                ds = json.load(open(dp))
+                if ds.get('stage_stable') and ds.get('driver_sub_target_net'):
+                    actual_fs = c.get('fallback_strategy', '')
+                    if actual_fs != 'driver_substitution':
+                        driver_sub_issues.append(
+                            f"changes[{idx}] [FAIL/9g-DRVSUB-SCRIPT-IGNORED]: "
+                            f"eco_find_drvsub_target.py returned stage_stable=True "
+                            f"with target='{ds['driver_sub_target_net']}' for register '{reg}', "
+                            f"but agent chose fallback_strategy='{actual_fs}'. "
+                            f"When the drvsub script returns a valid stage-stable target, "
+                            f"driver_substitution is MANDATORY. No exceptions."
+                        )
+                        overall_pass = False
+            except Exception:
+                pass
+
     # Check 9g — driver_substitution rules enforcement
     # Validates all 5 mandatory rules for driver_substitution target selection.
-    driver_sub_issues = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('fallback_strategy') != 'driver_substitution': continue
         tgt = c.get('driver_sub_target_net', '')

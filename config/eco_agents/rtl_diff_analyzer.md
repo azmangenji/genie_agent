@@ -539,6 +539,9 @@ Read `driver_sub_target_net` + `driver_sub_target_cell_type` directly. The scrip
 
 **Verify:** `stage_stable: true`; `driver_sub_target_cell_type` not AOI/OAI/MUX (script enforces); use returned `driver_sub_target_net` verbatim.
 
+**MANDATORY — if `stage_stable: true` → `fallback_strategy` MUST be `"driver_substitution"`. NO EXCEPTIONS.**
+Using `intermediate_net_insertion` after the script returned a valid stable target is detected by validator Check **9g-DRVSUB-SCRIPT-IGNORED** and causes immediate FAIL. Do NOT substitute a different signal. Do NOT revert to intermediate_net_insertion. Do NOT second-guess the script. The validator will reject and force a re-run.
+
 **Rules (eco_validate_step1.py):** target MUST NOT be the pivot (SEQMAP_NET_*); MUST NOT be synthesis-internal (`N\d{6+}`, `phfnn_*`); MUST exist in all 3 stages; driver MUST NOT be AOI/OAI compound (Check 9g-DRVSUB-CONSUMER-TARGET).
 
 **On valid target:**
