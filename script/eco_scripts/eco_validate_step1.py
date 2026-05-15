@@ -1043,6 +1043,21 @@ def main():
                 f"The pivot net path must remain UNCHANGED.")
             overall_pass = False
 
+        # Rule 2: Last gate in chain MUST output driver_sub_target_net
+        if chain and tgt:
+            last_out = chain[-1].get('output_net', '')
+            if last_out != tgt:
+                driver_sub_issues.append(
+                    f"changes[{idx}] [FAIL/9g-DRVSUB-INCOMPLETE]: driver_substitution chain "
+                    f"last gate outputs '{last_out}' but must output '{tgt}' (driver_sub_target_net). "
+                    f"The chain is INCOMPLETE — missing the final combination gate that drives "
+                    f"'{tgt}' with the combined logic: "
+                    f"(old_expr=ECO_<jira>_net_orig, Cond1_trigger, Cond2_trigger). "
+                    f"Without this, '{tgt}' is UNDRIVEN after rename → FM ABORT. "
+                    f"Add a final gate (e.g. OA12/OAI21/AO21) that combines the condition "
+                    f"outputs + ECO_<jira>_net_orig and outputs '{tgt}'.")
+                overall_pass = False
+
         # Rule 3: No MUX2 cascade in driver_substitution chains
         mux_gates = [g for g in chain if 'MUX' in g.get('gate_function','').upper()]
         if mux_gates:
