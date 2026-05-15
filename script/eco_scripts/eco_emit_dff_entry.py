@@ -221,9 +221,11 @@ def resolve_neighbor_dff_si_se(host_module, ref_dir):
 
 # ── Step C: D-input chain via eco_synth_chain ───────────────────────────────
 
-def build_d_input_chain(d_input_expected_function, input_names, jira):
+def build_d_input_chain(d_input_expected_function, input_names, jira, prefix=''):
     """Run eco_synth_chain.synthesize and return list of gate entries +
-    final output net (DFF.D)."""
+    final output net (DFF.D). `prefix` disambiguates instance names when
+    multiple DFFs are processed in the same study (e.g. 'needfreqadj' →
+    eco_<jira>_needfreqadj_d001 instead of generic eco_<jira>_d001)."""
     if not d_input_expected_function:
         return [], None
     try:
@@ -231,6 +233,7 @@ def build_d_input_chain(d_input_expected_function, input_names, jira):
             d_input_expected_function,
             input_names=input_names,
             jira=jira,
+            prefix=prefix,
         )
     except Exception as e:
         return [], f'SYNTH_FAILED: {e}'
@@ -502,7 +505,11 @@ def main():
         }
 
     # ── Step C: D-input chain ─────────────────────────────────────────────
-    chain_entries, chain_d_net = build_d_input_chain(expr, input_names, args.jira)
+    # Per-DFF prefix for chain instance names (avoids collisions when multiple
+    # DFFs in the same study both use eco_<jira>_d001). Lowercase the target
+    # register name for consistent identifier form.
+    dff_prefix = re.sub(r'[^A-Za-z0-9]+', '_', (target_reg or '').lower()).strip('_')
+    chain_entries, chain_d_net = build_d_input_chain(expr, input_names, args.jira, prefix=dff_prefix)
 
     # ── Step E: DFF entry ─────────────────────────────────────────────────
     dff_entry, dff_inst = build_dff_entry(rtl_change, strategy_info, cp_per_stage,

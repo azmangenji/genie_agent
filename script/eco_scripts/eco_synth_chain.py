@@ -156,12 +156,17 @@ class CellChain:
         }
 
 
-def _wire_name(jira, idx):
-    return f'n_eco_{jira}_d{idx:03d}'
+def _wire_name(jira, idx, prefix=''):
+    """Per-DFF prefix prevents collisions when multiple DFFs are synthesized
+    in the same study (e.g. NeedFreqAdj + EcoUseSdpOutstRdCnt would both
+    produce eco_<jira>_d001 without per-DFF labeling)."""
+    p = f'{prefix}_' if prefix else ''
+    return f'n_eco_{jira}_{p}d{idx:03d}'
 
 
-def _inst_name(jira, idx):
-    return f'eco_{jira}_d{idx:03d}'
+def _inst_name(jira, idx, prefix=''):
+    p = f'{prefix}_' if prefix else ''
+    return f'eco_{jira}_{p}d{idx:03d}'
 
 
 def detect_and_of_terms_with_xor(expr):
@@ -227,7 +232,7 @@ def detect_and_of_terms_with_xor(expr):
     }
 
 
-def synthesize_and_pattern(expr, input_syms, jira='9868'):
+def synthesize_and_pattern(expr, input_syms, jira, prefix=''):
     """
     Synthesize an AND-of-literals(+ XOR terms) expression into a synthesis-
     style cell chain. Picks the most-compact engineer-style cell pattern
@@ -263,10 +268,10 @@ def synthesize_and_pattern(expr, input_syms, jira='9868'):
             return chain
         # negative literal: single INV
         v = neg_lits[0]
-        wire = _wire_name(jira, 1)
+        wire = _wire_name(jira, 1, prefix)
         chain.add_wire(wire)
         chain.add_cell(
-            'INVD1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1),
+            'INVD1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1, prefix),
             {'I': str(v), 'ZN': wire},
         )
         chain.output_net = wire
@@ -281,12 +286,12 @@ def synthesize_and_pattern(expr, input_syms, jira='9868'):
             3: 'AN3D1BWP136P5M156H3P48CPDLVT',
             4: 'AN4D1BWP136P5M156H3P48CPDLVT',
         }[n]
-        wire = _wire_name(jira, 1)
+        wire = _wire_name(jira, 1, prefix)
         chain = CellChain()
         chain.add_wire(wire)
         pc = {f'A{i+1}': str(v) for i, v in enumerate(pos_lits)}
         pc['Z'] = wire
-        chain.add_cell(cell_type, _inst_name(jira, 1), pc)
+        chain.add_cell(cell_type, _inst_name(jira, 1, prefix), pc)
         chain.output_net = wire
         return chain
 
@@ -298,12 +303,12 @@ def synthesize_and_pattern(expr, input_syms, jira='9868'):
             3: 'NR3D1BWP136P5M156H3P48CPDLVT',
             4: 'NR4D1BWP136P5M156H3P48CPDLVT',
         }[n]
-        wire = _wire_name(jira, 1)
+        wire = _wire_name(jira, 1, prefix)
         chain = CellChain()
         chain.add_wire(wire)
         pc = {f'A{i+1}': str(v) for i, v in enumerate(neg_lits)}
         pc['ZN'] = wire
-        chain.add_cell(cell_type, _inst_name(jira, 1), pc)
+        chain.add_cell(cell_type, _inst_name(jira, 1, prefix), pc)
         chain.output_net = wire
         return chain
 
@@ -315,10 +320,10 @@ def synthesize_and_pattern(expr, input_syms, jira='9868'):
     # disable via `prefer_single_cell=False` if needed for engineer-match).
     if not xor_terms and len(pos_lits) == 1 and len(neg_lits) == 1:
         chain = CellChain()
-        wire = _wire_name(jira, 1)
+        wire = _wire_name(jira, 1, prefix)
         chain.add_wire(wire)
         chain.add_cell(
-            'INR2D1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1),
+            'INR2D1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1, prefix),
             {'A1': str(pos_lits[0]), 'A2': str(neg_lits[0]), 'Z': wire},
         )
         chain.output_net = wire
@@ -326,10 +331,10 @@ def synthesize_and_pattern(expr, input_syms, jira='9868'):
 
     # ── 3-5 factor mixed (with optional XOR) — engineer NeedFreqAdj style ──
     # OR4 + NR2 chain; INV any positive literals; XOR2/XNR2 for XOR terms.
-    return _synthesize_or4_nr2_pattern(info, jira)
+    return _synthesize_or4_nr2_pattern(info, jira, prefix)
 
 
-def _synthesize_or4_nr2_pattern(info, jira):
+def _synthesize_or4_nr2_pattern(info, jira, prefix=''):
     """OR4 + NR2 collapse pattern for 3-5 factor mixed AND-with-XOR.
 
     Engineer NeedFreqAdj_reg pattern. Inputs:
@@ -421,8 +426,8 @@ def _synthesize_or4_nr2_pattern(info, jira):
     # 1. INVs for positive literals (need negated form in OR4)
     inv_outputs = {}     # var_name → wire name of its INV output
     for v in pos_for_or4:
-        wire = _wire_name(jira, cell_idx)
-        inst = _inst_name(jira, cell_idx)
+        wire = _wire_name(jira, cell_idx, prefix)
+        inst = _inst_name(jira, cell_idx, prefix)
         chain.add_wire(wire)
         chain.add_cell(
             cell_type='INVD1BWP136P5M156H3P48CPDLVT',
@@ -435,8 +440,8 @@ def _synthesize_or4_nr2_pattern(info, jira):
     # 2. XOR2 / XNR2 cells for XOR factors
     xor_outputs = []  # list of (wire, original_xor_tuple)
     for (a, b, kind) in xors_for_or4:
-        wire = _wire_name(jira, cell_idx)
-        inst = _inst_name(jira, cell_idx)
+        wire = _wire_name(jira, cell_idx, prefix)
+        inst = _inst_name(jira, cell_idx, prefix)
         chain.add_wire(wire)
         if kind == 'negated':  # factor is ~(a^b) → OR4 input must be (a^b) → use XOR2
             cell_type = 'XOR2D1BWP136P5M156H3P48CPDLVT'
@@ -461,8 +466,8 @@ def _synthesize_or4_nr2_pattern(info, jira):
     while len(or4_inputs) < 4:
         or4_inputs.append("1'b0")
 
-    or4_wire = _wire_name(jira, cell_idx)
-    or4_inst = _inst_name(jira, cell_idx)
+    or4_wire = _wire_name(jira, cell_idx, prefix)
+    or4_inst = _inst_name(jira, cell_idx, prefix)
     chain.add_wire(or4_wire)
     chain.add_cell(
         cell_type='OR4D1BWP136P5M117H3P48CPDLVT',
@@ -476,8 +481,8 @@ def _synthesize_or4_nr2_pattern(info, jira):
     cell_idx += 1
 
     # 4. NR2 final cell — combine or4_wire with last term
-    final_wire = _wire_name(jira, cell_idx)
-    final_inst = _inst_name(jira, cell_idx)
+    final_wire = _wire_name(jira, cell_idx, prefix)
+    final_inst = _inst_name(jira, cell_idx, prefix)
     chain.add_wire(final_wire)
 
     if nr2_second_var is None:
@@ -498,7 +503,7 @@ def _synthesize_or4_nr2_pattern(info, jira):
 
 # ────────────────────────── Top-level synthesize ──────────────────────────
 
-def synthesize(rtl_boolean_str, input_names, jira='9868'):
+def synthesize(rtl_boolean_str, input_names, jira, prefix=''):
     """
     Top-level synthesize: parse Boolean string → emit cell chain.
 
@@ -519,7 +524,7 @@ def synthesize(rtl_boolean_str, input_names, jira='9868'):
     expr = _push_nots_to_literals(expr)
 
     # Try the AND-of-literals-with-XOR pattern (engineer NeedFreqAdj style)
-    chain = synthesize_and_pattern(expr, syms, jira=jira)
+    chain = synthesize_and_pattern(expr, syms, jira=jira, prefix=prefix)
     if chain is not None:
         # Verify equivalence by re-composing the chain's Boolean and comparing
         chain_expr = compose_chain_boolean(chain, sym_dict, jira)
@@ -665,7 +670,7 @@ def compose_chain_boolean(chain, sym_dict, jira):
 
 def cmd_synthesize(args):
     inputs = [s.strip() for s in args.inputs.split(',')]
-    chain = synthesize(args.boolean, inputs, jira=args.jira)
+    chain = synthesize(args.boolean, inputs, jira=args.jira, prefix=args.prefix)
 
     out = chain.to_dict()
     out['_meta'] = {
@@ -696,7 +701,8 @@ def main():
     s = sub.add_parser('synthesize', help='Synthesize Boolean → cell chain')
     s.add_argument('--boolean', required=True, help='Boolean expression (Python syntax)')
     s.add_argument('--inputs', required=True, help='Comma-separated input signal names')
-    s.add_argument('--jira', default='9868', help='JIRA tag for cell/wire naming')
+    s.add_argument('--jira', required=True, help='JIRA tag for cell/wire naming (e.g. 9868)')
+    s.add_argument('--prefix', default='', help='Optional per-DFF prefix to disambiguate chain instance names when multiple DFFs are synthesized in the same study (e.g. "needfreqadj" → eco_<jira>_needfreqadj_d001). Empty (default) preserves the legacy `eco_<jira>_d<N>` form.')
     s.add_argument('--output', help='Output JSON path (else stdout)')
     s.set_defaults(func=cmd_synthesize)
 
