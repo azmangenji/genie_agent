@@ -45,6 +45,19 @@ These four files are the source of truth for ALL prior-state decisions. Keep the
 
 ## §1 — PHASE 1: Comprehensive Evidence Gathering (MANDATORY, FIRST)
 
+> **CRITICAL — DO NOT write your own JSON. You MUST run the scripts.**
+>
+> `eco_fm_evidence_walk.py` and `eco_fm_xstage_compare.py` are the ONLY
+> authoritative sources. Writing a simplified/sampled JSON by hand instead
+> of running these scripts is FORBIDDEN. The contract validator checks for
+> the script's structural signature (`per_target` in evidence walk,
+> `per_failing_dff` in xstage compare) and FAILS the round if those keys
+> are missing — which means your hand-written JSON will always cause a
+> contract violation and force a re-spawn.
+>
+> If the script output is large (thousands of DFFs), that is expected and
+> correct. Do NOT truncate or summarize it. Read the output and reason from it.
+
 Run the evidence-walker helper script. It does the deterministic part (greping, parsing FM reports, building per-DFF dossiers) so you can focus on reasoning.
 
 ```bash
@@ -101,6 +114,11 @@ python3 script/eco_scripts/eco_fm_xstage_compare.py \
 # → writes <BASE_DIR>/data/<TAG>_eco_fm_xstage_round<ROUND>.json
 # Auto-skips if evidence verdict != ADVANCE_NEXT_ROUND
 ```
+
+> **FORBIDDEN:** Do NOT write `eco_fm_xstage_round<N>.json` manually.
+> The contract validator checks for `per_failing_dff` key (script signature).
+> Agent-written JSON using `dff_deltas` or any other key structure will
+> FAIL validation with SCRIPT_NOT_RUN violation.
 
 ```python
 xstage = json.load(open(f"{BASE_DIR}/data/{TAG}_eco_fm_xstage_round{ROUND}.json"))

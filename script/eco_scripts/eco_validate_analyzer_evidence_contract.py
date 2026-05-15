@@ -332,6 +332,73 @@ def main() -> int:
     revised = analysis.get("revised_changes", [])
     all_violations: list[dict] = []
 
+    # -----------------------------------------------------------------------
+    # SCRIPT-RUN INTEGRITY CHECKS (must pass before per-change validation)
+    # Ensures eco_fm_evidence_walk.py and eco_fm_xstage_compare.py were
+    # actually executed — not hand-written by the agent.
+    # -----------------------------------------------------------------------
+
+    # Check 1: evidence walk JSON must have 'per_target' key (script signature).
+    # Agent-written versions typically use simplified flat structure without this.
+    if evidence_doc is not None:
+        if "per_target" not in evidence_doc:
+            all_violations.append({
+                "ctx": "evidence_walk_json",
+                "violation": (
+                    "SCRIPT_NOT_RUN: eco_fm_evidence_walk.py was NOT executed. "
+                    "JSON missing required 'per_target' key — agent wrote its own JSON. "
+                    "Re-run: python3 script/eco_scripts/eco_fm_evidence_walk.py --tag <TAG> ..."
+                )
+            })
+        else:
+            # Check 2: per_target failing_count must match eco_fm_verify.json counts
+            fm_verify_path = analysis_path.parent / f"{analysis_path.stem.split('_eco_fm_analysis')[0]}_eco_fm_verify.json"
+            if fm_verify_path.exists():
+                try:
+                    fm_verify = json.loads(fm_verify_path.read_text())
+                    for tgt, tgt_data in evidence_doc.get("per_target", {}).items():
+                        fd = tgt_data.get("failing_diagnostics", {})
+                        evidence_count = fd.get("failing_count", 0)
+                        verify_count = fm_verify.get(tgt, {}).get("failing_count", 0) if isinstance(fm_verify.get(tgt), dict) else 0
+                        if verify_count > 0 and evidence_count == 0:
+                            all_violations.append({
+                                "ctx": f"evidence_walk_json.per_target.{tgt}",
+                                "violation": (
+                                    f"INCOMPLETE_EVIDENCE: {tgt} has {verify_count} failing points "
+                                    f"in eco_fm_verify.json but 0 dossiers in evidence walk. "
+                                    f"eco_fm_evidence_walk.py did not parse __failing_points.rpt.gz correctly."
+                                )
+                            })
+                except Exception:
+                    pass
+
+    # Check 3: xstage JSON must have 'per_failing_dff' key (script signature).
+    # Agent-written versions use 'dff_deltas' (a list) — different structure.
+    if xstage_doc is not None:
+        if "per_failing_dff" not in xstage_doc:
+            all_violations.append({
+                "ctx": "xstage_compare_json",
+                "violation": (
+                    "SCRIPT_NOT_RUN: eco_fm_xstage_compare.py was NOT executed. "
+                    "JSON missing required 'per_failing_dff' key "
+                    f"(found keys: {list(xstage_doc.keys())[:6]}). "
+                    "Agent wrote its own simplified JSON instead of running the script. "
+                    "Re-run: python3 script/eco_scripts/eco_fm_xstage_compare.py --tag <TAG> ..."
+                )
+            })
+        else:
+            # Check 4: per_failing_dff must contain at least the ECO-specific failing DFFs
+            eco_pattern = re.compile(r"eco_\d+_", re.I)
+            failing_dffs = xstage_doc.get("per_failing_dff", {})
+            if len(failing_dffs) == 0 and xstage_doc.get("loop_verdict") == "ADVANCE_NEXT_ROUND":
+                all_violations.append({
+                    "ctx": "xstage_compare_json",
+                    "violation": (
+                        "EMPTY_XSTAGE: per_failing_dff is empty but loop_verdict=ADVANCE_NEXT_ROUND. "
+                        "eco_fm_xstage_compare.py produced no DFF comparisons — check evidence walk dossiers."
+                    )
+                })
+
     for i, change in enumerate(revised):
         action = change.get("action")
         if action in EXEMPT_ACTIONS:
