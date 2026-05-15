@@ -118,251 +118,134 @@ Failure mode if missing: studier has to infer the clock from neighboring DFFs in
 
 ## Step C — Hierarchy Tracing (MANDATORY)
 
-**CRITICAL: Trace to the DECLARING module, not the usage module.**
+**Trace to the DECLARING module, not the usage module.** The signal may pass through ancestors as a port; the hierarchy path MUST start at the module declaring it as `reg`/`wire`. Stopping too shallow makes the scope filter too wide.
 
-The signal may pass through multiple ancestor modules as a port. The hierarchy path MUST start from the module that **declares** the signal as `reg` or `wire` — NOT from any ancestor that merely passes it through as a port connection. If you stop at the wrong level, the hierarchy will be too shallow and the scope filter in eco_netlist_studier will be too wide.
+For each signal in a change:
 
-For EACH signal involved in a change, trace its full hierarchy:
-
-**1. Find the DECLARING module (reg/wire only — not port passthrough):**
-
+**1. Find the DECLARING module** — anchored grep finds declarations, not usages/port-connections:
 ```bash
 grep -rn "^\s*reg\b.*<signal>\|^\s*wire\b.*<signal>" <REF_DIR>/data/PreEco/SynRtl/
 ```
+Start with the changed file's module. If `reg`/`wire` of `<signal>` is found there → declaring module = changed file ✓. Else `<signal>` is only `input`/`output` in the changed file → declaring module is a PARENT; the file containing the declaration is the declaring module. **Update `module_name` in the JSON** to the declaring module.
 
-Use anchored patterns (`^\s*reg\b`, `^\s*wire\b`) to find only **declarations**, not usages or port connections. The file that contains the declaration is the declaring module.
-
-- Start with the changed file's module as the candidate. Confirm that `reg` or `wire` declaration of the signal exists in that file:
-```bash
-grep -n "^\s*reg\b.*<signal>\|^\s*wire\b.*<signal>" <REF_DIR>/data/PreEco/SynRtl/rtl_<module_X>.v
-```
-- **If FOUND** → declaring module = changed file's module → `module_name` in JSON stays as `<module_X>` ✓
-- **If NOT found** → the signal is only an `input`/`output` port in the changed file. The declaring module is a **PARENT** module (one that instantiates the changed file's module and drives this signal as a `reg`/`wire`). Search all RTL files for the declaration:
-```bash
-grep -rn "^\s*reg\b.*<signal>\|^\s*wire\b.*<signal>" <REF_DIR>/data/PreEco/SynRtl/
-```
-The file containing the `reg`/`wire` declaration is the declaring module. **Update `module_name` in the JSON to this declaring module** — NOT the changed file's module. The hierarchy path and scope filter in Steps 2–4 will be based on this declaring module's instance, not the changed file's instance.
-
-**Example (generic):** diff found in `rtl_<module_X>.v` (module `<module_X>`), but `<signal>` is `reg` in `rtl_<declaring_module>.v` (module `<declaring_module>`). → `module_name = <declaring_module>`, hierarchy starts at `<INST_A>` (<declaring_module>'s instance in the tile), NOT at `<INST_A>/<INST_B>` (<module_X>'s instance).
+Example: diff in `rtl_<module_X>.v` but `<signal>` is `reg` in `rtl_<declaring_module>.v` → `module_name = <declaring_module>`; hierarchy starts at the declaring module's instance, NOT the changed module's instance.
 
 **2. Find that module's INSTANCE NAME in its parent:**
 ```bash
 grep -n "<module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
-```
-Extract the instance name from the instantiation line:
-```
-<module_b> <INST_B> (   ← module_name=<module_b>, instance_name=<INST_B>
+# extract instance from `<module_b> <INST_B> (`
 ```
 
-**3. Repeat up the hierarchy until you reach the tile module — stop at the tile's DIRECT CHILDREN:**
+**3. Repeat upward until parent IS the tile** (`<TILE>`). Stop there — tile is the boundary, NOT included in the path.
 
-Keep tracing upward until the parent module IS the tile module (its name matches `<TILE>`). Stop there — do NOT include the tile itself in the path. The tile is the boundary.
+**4. Build path from instance names — declaring module's instance up to (but NOT including) the tile.**
+E.g. tile → `<INST_A>` (`<module_A>`) → `<INST_B>` (`<module_B>`), signal declared in `<module_B>` → path `<INST_A>/<INST_B>/<signal>`; `hierarchy = ["<INST_A>","<INST_B>"]`.
 
+**Never include the tile name in the path.** FM auto-scopes under the tile; including it produces a doubled prefix → FM-036 on every net. **Rule: `net_path[0]` MUST NEVER equal `<TILE>`.**
+
+**5. Self-verify** — confirm reg/wire decl exists in the declaring file; instance name is right at each level; `net_path` doesn't start with the tile name. If decl missing in your chosen module → stopped too high, go deeper. If `net_path` starts with `<TILE>` → went too far up, drop the first component.
+
+**6. Multiple instances of the same module (Gap 2)** — after identifying the declaring module, check the parent for repeats:
 ```bash
-grep -n "<parent_module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<grandparent>.v
+grep -c "<declaring_module>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent>.v
+grep -n "<declaring_module>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent>.v   # extract all instances
 ```
+Record all instance names in `instances: ["<INST_A>","<INST_B>"]`. Step D produces separate `nets_to_query` per instance.
 
-**4. Build full path using INSTANCE NAMES — from declaring module's instance up to (but NOT including) the tile:**
-
-- If tile=`<TILE>` and hierarchy is: `<TILE>` → `<INST_A>` (instance of `<module_A>`) → `<INST_B>` (instance of `<module_B>`) and signal is DECLARED in `<module_B>`
-- Path = `<INST_A>/<INST_B>/signal_name`   ← does NOT start with `<TILE>`
-- The `hierarchy` array contains only levels BELOW the tile: `["<INST_A>", "<INST_B>"]`
-
-**CRITICAL — Do NOT include the tile name in the path:**
-FM scopes all queries under the tile automatically. If `<TILE>=<tile_name>` and the path is `<tile_name>/<INST_A>/signal`, FM constructs the internal path as `.../<tile_name>/<tile_name>/<INST_A>/signal` (double prefix) → FM-036 error for all nets. The correct path is `<INST_A>/signal`.
-
-Rule: `net_path[0]` must NEVER equal `<TILE>`.
-
-**5. Self-verify (MANDATORY before writing output):**
+**7. Resolve flat net name for new_port inputs (Gap 3)** — for each `new_port` input, find the parent net actually driving the port per instance:
 ```bash
-# Confirm reg/wire declaration exists in the declaring module file
-grep -n "^\s*reg\b.*<signal>\|^\s*wire\b.*<signal>" <REF_DIR>/data/PreEco/SynRtl/rtl_<declaring_module>.v
-
-# Confirm instance name is correct at each level
-grep -n "<module_name> <instance_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
-
-# Confirm net_path does NOT start with tile name
-# WRONG: net_path = "<TILE>/<INST_A>/signal"  → FM-036
-# RIGHT: net_path = "<INST_A>/signal"
+grep -A 50 "<declaring_module> <INST_X>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent>.v | grep "<new_port_name>"
+# If absent in PreEco (new connection), check PostEco data/SynRtl/ instead.
+# Extract `.new_port_name(<actual_net>)` → flat_net_name
 ```
 
-If the `reg`/`wire` declaration is NOT found in the module you identified → you stopped too high — go one level deeper.
-If `net_path` starts with `<TILE>` → you went one level too far up — remove the first component.
-
-**6. Detect multiple instances of the same module (Gap 2):**
-
-After identifying the declaring module and its instance name, check if the parent module instantiates the same module MORE THAN ONCE:
-
-```bash
-grep -c "<declaring_module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
-```
-
-If count > 1, extract ALL instance names:
-```bash
-grep -n "<declaring_module_name>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v
-```
-
-This returns lines like:
-```
-<declaring_module_name> <INST_A> (
-<declaring_module_name> <INST_B> (
-```
-
-Record ALL instance names in the `instances` field of the JSON change entry: `["<INST_A>", "<INST_B>"]`. Step D will generate separate `nets_to_query` entries for each instance using its own hierarchy path.
-
-**7. Resolve flat net name for new_port inputs (Gap 3):**
-
-For each `new_port` change where the port is an `input` (a new signal being received), find what net in the parent scope actually drives this port for each instance. Look at the parent module's instantiation block for the declaring module:
-
-```bash
-grep -A 50 "<declaring_module_name> <INST_X>" <REF_DIR>/data/PreEco/SynRtl/rtl_<parent_module>.v | grep "<new_port_name>"
-```
-
-If the port doesn't appear in the PreEco instantiation (it's a NEW port connection added in the ECO diff), look at the PostEco RTL instantiation:
-
-```bash
-grep -A 50 "<declaring_module_name> <INST_X>" <REF_DIR>/data/SynRtl/rtl_<parent_module>.v | grep "<new_port_name>"
-```
-
-Extract the actual connected net: `.new_port_name(<actual_net>)` → `flat_net_name = "<actual_net>"`.
-
-Record per-instance flat_net_name (may differ between instances for cross-connections):
+Record per-instance map:
 ```json
-"flat_net_name_per_instance": {
-  "<INST_A>": "<net_connected_to_INST_A>",
-  "<INST_B>": "<net_connected_to_INST_B>"
-}
+"flat_net_name_per_instance": {"<INST_A>": "<net_for_A>", "<INST_B>": "<net_for_B>"}
 ```
 
-This is critical for `and_term` changes where the new AND term is a new port that maps to an existing signal — the applier needs the actual flat net name to insert the new gate.
+Required for `and_term` ECOs where a new AND term maps to an existing signal — the applier needs the actual flat net.
 
-**8. Update `module_name` in JSON and RPT if declaring module differs from changed file:**
-
-If Step C found that the declaring module is different from the changed file's module (i.e., the signals are only ports in the changed file), you MUST:
-- Update `"module_name"` in `<TAG>_eco_rtl_diff.json` to the declaring module
-- Update the `Module :` line in `<TAG>_eco_step1_rtl_diff.rpt` to the declaring module
-- Add a `Notes:` section in the RPT explaining: "diff found in `<changed_file>` (module `<changed_module>`), but `<signal>` is declared as `reg`/`wire` in `<declaring_module>` — `module_name` set to declaring module `<declaring_module>`"
-
-**Key rule:** when the changed file's module only has `input`/`output` port declarations for a signal (not `reg`/`wire`), the declaring module is a parent — update `module_name` accordingly. Wrong `module_name` causes the hierarchy path to start at the wrong instance level, leading to FM-036 or wrong scope filtering in Step 3.
+**8. Update `module_name` in JSON + RPT if declaring module differs from changed file** — also add a `Notes:` line explaining the redirect. Wrong `module_name` makes the hierarchy start at the wrong level → FM-036 / wrong scope filtering in Step 3.
 
 ---
 
 ## Step D — Net Selection
 
-**`nets_to_query` building is owned by Step 2 (`eco_fenets_runner`).** Skip this step. The patterns below stay for Step 2's reference (it reads `changes[]` directly).
+**`nets_to_query` building is owned by Step 2 (`eco_fenets_runner`).** Skip in this step. The patterns below stay for Step 2's reference (reads `changes[]` directly).
 
-For EACH change, determine which gate-level nets will reveal WHERE to make the ECO and HOW to rewire. The goal is to find which gate-level net connects to the target pin.
+For EACH change, determine which gate-level nets reveal WHERE to ECO and HOW to rewire.
 
-**General principles:**
-- For `wire_swap`: query both old_token and new_token — find current driver of old_token and confirm new_token exists in gate level
+**Per change_type:**
+- **`wire_swap`:** query both `old_token` (find current driver) and `new_token` (confirm exists). Special case: `new_token` is a NEW gate output — see MUX-select polarity below (resolve in Step 1, not the studier).
+- **`and_term`:** query `old_token`. Gate input scope rule — the new term is inserted INSIDE the declaring module; `gate input` must use the in-module name: if `new_token` is a `new_port` of the declaring module → use the PORT NAME (do NOT use parent-scope `flat_net_name`); if existing wire/reg → use it directly. Record `and_term_gate_input: "<port_name_inside_module>"`.
+- **`new_port` / `port_connection`:** **skip FM query** — wiring change handled by studier from `flat_net_name`.
+- **`port_promotion`:** **skip FM query** — flat net already exists; set `flat_net_exists: true`.
+- **`new_logic`:** skip the FM query for the new register's output (doesn't exist in PreEco). Instead query an EXISTING signal the D-input depends on (enable / driving signal from `context_line`). If D-input is entirely new with no existing reference, leave `nets_to_query` empty for this change.
+- Avoid querying flip-flop Q outputs.
 
-**Special case — `wire_swap` where `new_token` does not yet exist in the gate-level netlist (requires new MUX select gate insertion):**
+### MUX-select polarity (resolved here, NOT in the studier)
 
-When the old_token is an internal wire driving a MUX select pin, and the new_token is a gate output to be inserted, the correct gate function MUST be determined by reading the PreEco Synthesize netlist here in Step 1 — NOT deferred to the studier. This eliminates the persistent failure mode where the studier derives the gate function from the RTL condition text instead of the actual MUX I0/I1 port mapping.
+When `wire_swap` inserts a new MUX-select gate, the gate function MUST be derived from PreEco I0/I1 port mapping in Step 1. Deferring to the studier (which would derive from RTL condition text) is the persistent failure mode.
 
-**Perform the MUX select polarity analysis NOW:**
-
-**Step D-MUX-1 — Find the MUX cell in the PreEco Synthesize netlist:**
+**D-MUX-1 — Find the MUX cell:**
 ```bash
 zcat <REF_DIR>/data/PreEco/Synthesize.v.gz > /tmp/preeco_study_rtldiff_Synthesize.v
 grep -n "<target_register>_reg\b" /tmp/preeco_study_rtldiff_Synthesize.v | head -5
-```
-Read the target register's `.D` pin net → trace backward to find the MUX cell whose output feeds the D-input chain:
-```bash
+# trace backward from .D pin to MUX whose .Z drives the chain
 grep -n "\.Z\b\s*(\s*<d_input_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -5
 ```
 
-**Step D-MUX-2 — Read the MUX cell's I0 and I1 port connections:**
-```bash
-grep -A8 "<mux_cell_name>" /tmp/preeco_study_rtldiff_Synthesize.v | head -10
-```
-Record: `i0_net = <net_on_I0_pin>`, `i1_net = <net_on_I1_pin>`
+**D-MUX-2 — Read MUX `.I0` and `.I1`:** `grep -A8 "<mux_cell_name>"` → record `i0_net`, `i1_net`.
 
-**Step D-MUX-3 — Read old select driver and commit to gate direction BEFORE reading condition:**
-
+**D-MUX-3 — Old select driver inverting? (ONE question — do NOT read the new condition yet):**
 ```bash
 grep -n "\.Z[N]\?\s*(\s*<old_select_net>\s*)" /tmp/preeco_study_rtldiff_Synthesize.v | head -3
 ```
+Inverting prefixes (`NOR`/`NR`/`INR`/`INV`/`NAND`/`ND`/`IND`) → output LOW when inputs HIGH → **old S=0 when condition TRUE**. Non-inverting (`AND`/`AN`/`OR`/`BUF`) → **old S=1 when condition TRUE**. Record `old_S_when_condition_true`. STOP.
 
-Read the first word of the driver cell type name. Answer only ONE question:
+**D-MUX-4 — Commit to gate direction (still without reading the condition):**
+- `old_S=0` → MUX picked I0 on TRUE → I0 = true-branch → new gate = `NOT(condition)`
+- `old_S=1` → I1 = true-branch → new gate = `condition itself`
 
-**Is this cell type INVERTING (output=LOW when inputs=HIGH) or NON-INVERTING (output=HIGH when inputs=HIGH)?**
-- Inverting: cell name starts with `NOR`, `NR`, `INR`, `INV`, `NAND`, `ND`, `IND` → output goes LOW when condition=TRUE → **old S=0 when condition TRUE**
-- Non-inverting: cell name starts with `AND`, `AN`, `OR`, `BUF` → output goes HIGH when condition=TRUE → **old S=1 when condition TRUE**
+Record direction. STOP.
 
-**STOP HERE. Record `old_S_when_condition_true`. Do NOT read the new condition expression yet.**
+**D-MUX-5 — Now read the condition** from `context_line`, apply the committed direction (negate via De Morgan if `NOT(condition)`), map to a standard gate (AND2/NAND2/OR2/NOR2/AND3/…).
 
-**Step D-MUX-4 — Commit to gate direction (still without reading condition expression):**
-
-From Step D-MUX-3:
-- `old_S_when_condition_true = 0` → the MUX selected I0 when old condition=TRUE → I0 = true-branch → new S must also be 0 when new condition=TRUE → **new gate must output 0 when condition=TRUE → gate = NOT(condition)**
-- `old_S_when_condition_true = 1` → I1 = true-branch → **gate = condition itself**
-
-**STOP HERE. Record the gate direction: "NOT(condition)" or "condition itself". Do NOT read the RTL condition text yet.**
-
-**Step D-MUX-5 — NOW read the condition expression and apply the committed direction:**
-
-Only now read the new RTL condition from `context_line`. Write it as a boolean expression of ECO signals.
-
-Apply the direction committed in Step D-MUX-4:
-- If direction = "NOT(condition)": logically negate the entire expression using De Morgan's laws
-- If direction = "condition itself": implement the expression directly
-
-Map the resulting boolean expression to a standard gate:
-- Two inputs ANDed → AND2; negated AND → NAND2
-- Two inputs ORed → OR2; negated OR → NOR2
-- Single input negated → INV
-- More inputs → extend the gate count (AND3, NAND3, OR3, NOR3, etc.)
-
-**Step D-MUX-5b — Store result in JSON:**
-
-All fields below are MANDATORY — every intermediate D-MUX-3/4 derivation value must be recorded so D-MUX-6 can verify the chain end-to-end:
+**D-MUX-5b — JSON (ALL fields MANDATORY):**
 
 ```json
 "mux_select_gate_function": "<AND2|NAND2|OR2|NOR2|...>",
 "mux_select_i0_net": "<net_on_I0_pin>",
 "mux_select_i1_net": "<net_on_I1_pin>",
 "mux_select_branch_true_on": "I0|I1",
-"mux_select_old_driver_cell_type": "<first uppercase token of old select net's driver cell, e.g. INR3D4...>",
+"mux_select_old_driver_cell_type": "<first uppercase token of old select driver>",
 "mux_select_old_driver_inverting": true|false,
 "mux_select_old_S_when_condition_true": 0|1,
-"mux_select_reasoning": "<one sentence: driver cell + inverting → old_S → branch_true_on → gate>"
+"mux_select_reasoning": "<one sentence: driver cell + inverting → old_S → branch → gate>"
 ```
 
-**MANDATORY — `mux_select_i0_net` / `mux_select_i1_net` source rule:**
+**`mux_select_i{0,1}_net` source rule** — when the input is a `new_port` (no flat net yet), populate it DIRECTLY from `new_select_inputs[k]` (symbolic RTL name). Do NOT flat-net-resolve — there's nothing to resolve, and the resolver grabs unrelated CTS-renamed cone wires → wrong studier inputs → FM logical mismatch.
 
-When the new MUX inputs are `new_port` signals (signals that don't yet exist as flat nets in the netlist — they're being created by THIS ECO), populate `mux_select_i{0,1}_net` **DIRECTLY from the symbolic RTL signal name** (the same value that appears in `new_select_inputs[k]`). Do NOT attempt to flat-net-resolve them — there's nothing to resolve yet.
-
-```
-if new_select_inputs_from_change[0] == True:
-    mux_select_i0_net = new_select_inputs[0]    # use symbolic RTL name verbatim
-else:
-    mux_select_i0_net = <flat-net resolution of existing signal>
-# Same logic for i1
+```python
+mux_select_i0_net = new_select_inputs[0] if new_select_inputs_from_change[0] else <flat-net of existing>
+# same for i1
 ```
 
-Failure mode if violated: the flat-net-resolve grabs unrelated CTS-renamed wires from elsewhere in the cone (since the new signals don't exist as flat nets yet). Step 3 studier reading these wrong values builds the wrong AND2/OR2 inputs → FM logical mismatch on the target register.
+Cross-check before writing JSON: `mux_select_i{0,1}_net == new_select_inputs[k]` when the corresponding flag is true. Step 1 Check 27 enforces.
 
-**Cross-check before writing JSON:** assert `mux_select_i0_net == new_select_inputs[0]` and `mux_select_i1_net == new_select_inputs[1]` (when the corresponding `new_select_inputs_from_change[k]` is true). Step 1 validator (Check 27) enforces this.
+Set `mux_select_polarity_pending: false`.
 
-Set `mux_select_polarity_pending: false` — the gate function is fully resolved here.
+**D-MUX-6 — Self-consistency (MANDATORY; ANY fail → discard and retry from D-MUX-3):**
+1. `mux_select_old_driver_inverting == true` iff cell type starts with an inverting prefix (`NOR`/`NR`/`INR`/`INV`/`NAND`/`ND`/`IND`/`XNOR`/`XNR`).
+2. `old_S_when_condition_true == 0` iff `inverting==true`.
+3. `branch_true_on == "I0"` iff `old_S==0` else `"I1"`.
+4. Evaluating the chosen gate at `new_condition=TRUE` MUST equal `old_S_when_condition_true`.
+5. If `mux_select_reasoning` contains backtracking words (`wait`/`actually`/`re-analyz`/`correcting`/`inverts`) → unstable derivation, retry.
 
-**Step D-MUX-6 — Self-consistency check (MANDATORY before writing JSON):**
+Cleanup: `rm -f /tmp/preeco_study_rtldiff_Synthesize.v`.
 
-Verify the full derivation chain. ANY failure → discard the entire derivation and re-run from D-MUX-3.
-
-1. **Inverter flag consistency:** `mux_select_old_driver_inverting` must be `true` iff `mux_select_old_driver_cell_type` starts with an inverting prefix (`NOR`, `NR`, `INR`, `INV`, `NAND`, `ND`, `IND`, `XNOR`, `XNR`).
-2. **Old-S consistency:** `mux_select_old_S_when_condition_true` must equal `0` if `mux_select_old_driver_inverting==true` else `1`.
-3. **Branch consistency:** `mux_select_branch_true_on` must be `"I0"` if `mux_select_old_S_when_condition_true==0` else `"I1"`.
-4. **Gate-function consistency:** Evaluate the chosen gate function at new_condition=TRUE; the output MUST equal `mux_select_old_S_when_condition_true` (the required new S).
-5. **Reasoning stability:** If `mux_select_reasoning` contains any backtracking phrase (`wait`, `actually`, `re-analyz`, `correcting`, `inverts`), the derivation was unstable → discard and retry.
-
-**Cleanup:**
-```bash
-rm -f /tmp/preeco_study_rtldiff_Synthesize.v
-```
-
-**If the MUX cell cannot be found** (trace fails after 5 hops): set `mux_select_polarity_pending: true` and `mux_select_gate_function: null` — the studier will attempt Step 4c-POLARITY as fallback. Do NOT write any gate function hint based on RTL condition text alone.
+**MUX cell not found after 5 hops:** set `mux_select_polarity_pending: true` and `mux_select_gate_function: null` — studier attempts Step 4c-POLARITY fallback. Do NOT guess from the RTL condition.
 - For `and_term`: query `old_token` (the output net of the existing expression) to find the gate driving it. **CRITICAL — `and_term` gate input scope rule:** The new AND term is inserted as a gate INSIDE the declaring module. The gate input net must be the name as it appears INSIDE that module:
   - If the new term (`new_token`) is a `new_port` on the declaring module → gate input = the PORT NAME (`new_token`) as declared in the module header. Do NOT use `flat_net_name` (parent-scope net) as the gate input — `flat_net_name` is the connected net in the PARENT, invisible inside the child module.
   - If the new term is an existing wire/reg in the declaring module → gate input = the wire/reg name directly.
@@ -640,70 +523,41 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 
 #### E4b — Driver Substitution (PRIORITY 0 — check BEFORE compound gate discovery)
 
-**Before any gate chain decomposition, check if `driver_substitution` is possible.** This is the most FM-friendly strategy because it never touches the pivot net path and never creates new intermediate wires FM must trace.
+The most FM-friendly strategy: never touches the pivot path, no new intermediate wires for FM to trace. **When to use:** new conditions prepended before an old default, AND the pivot's backward cone contains a named intermediate net that qualifies.
 
-**When to use:** When a priority chain RTL diff shows NEW conditions prepended before an OLD default expression, AND the backward cone of the pivot net contains a named intermediate net that qualifies.
-
-**Target net selection — USE THE SCRIPT, do NOT reason manually:**
+**Target selection — USE THE SCRIPT, do NOT reason manually** (manual tracing produced wrong targets every prior run):
 
 ```bash
 python3 script/eco_scripts/eco_find_drvsub_target.py \
-    --ref-dir  <REF_DIR>          \
-    --register <target_register>  \
-    --jira     <JIRA>             \
-    --output   data/<TAG>_eco_drvsub_target.json
+    --ref-dir <REF_DIR> --register <target_register> --jira <JIRA> \
+    --output  data/<TAG>_eco_drvsub_target.json
 ```
 
-Read `driver_sub_target_net` and `driver_sub_target_cell_type` directly from the JSON output. Do NOT attempt to trace the cone manually — manual tracing produced wrong targets in every prior run. The script deterministically walks: pivot → MUX → compound consumers → first stage-stable simple-driver net = correct target.
+Read `driver_sub_target_net` + `driver_sub_target_cell_type` directly. The script walks pivot → MUX → compound consumers → first stage-stable simple-driver net. Script error (no DFF / no candidate) → fall through to E4c.
 
-**If the script returns an error** (DFF not found, no stable candidate): fall through to E4c.
+**Verify:** `stage_stable: true`; `driver_sub_target_cell_type` not AOI/OAI/MUX (script enforces); use returned `driver_sub_target_net` verbatim.
 
-**After running the script, verify:**
-- `stage_stable: true` — all 3 PreEco stages have the net
-- `driver_sub_target_cell_type` does NOT start with AOI/OAI/MUX (script enforces this, but confirm)
-- Use the returned `driver_sub_target_net` verbatim as `driver_sub_target_net` in the JSON
+**Rules (eco_validate_step1.py):** target MUST NOT be the pivot (SEQMAP_NET_*); MUST NOT be synthesis-internal (`N\d{6+}`, `phfnn_*`); MUST exist in all 3 stages; driver MUST NOT be AOI/OAI compound (Check 9g-DRVSUB-CONSUMER-TARGET).
 
-**Rules that still apply** (validated by eco_validate_step1.py):
-1. Target MUST NOT be the pivot net (SEQMAP_NET_*)
-2. Target MUST NOT be synthesis-internal (N\d{6+}, phfnn_*)
-3. Target MUST exist in all 3 PreEco stages
-4. Target driver MUST NOT be AOI/OAI compound (validator Check 9g-DRVSUB-CONSUMER-TARGET)
+**On valid target:**
+1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<script output>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`.
+2. New chain renames target's driver output → `ECO_<jira>_net_orig`; adds compound gates (OA12/OAI21/AN3/ND3) that re-output the original net name.
+3. Stage-stable signals only: ALLOWED — new ECO ports from `new_port`/`port_promotion` (may be `PENDING_ECO_PORT`), existing primary inputs, `ctmn_*` ONLY as `ECO_<jira>_net_orig` for the default. FORBIDDEN — `PENDING_FM_RESOLUTION` (stage-unstable; that condition forces fall-through to E4c), `phfnn_*` / `N<6+digit>` synthesis-internals, anything with 0 occurrences in any stage.
+4. **NO MUX2 cascade** — direct driver replacement. MUX cascade is for `intermediate_net_insertion` only.
+4a. **Last gate MUST output `driver_sub_target_net`** — restores the original name; otherwise undriven → FM ABORT.
+4b. **Drop PENDING_FM_RESOLUTION conditions** from chain AND from `condition_inputs_to_query`/`nets_to_query` — driver_substitution is self-contained, FM resolution of removed conditions is unused.
+5. Old expression (`ECO_<jira>_net_orig`) feeds the chain as DEFAULT.
+6. Pivot net (SEQMAP_NET_*, DFF.D) — untouched.
 
-**ALSO remove from condition_inputs_to_query and nets_to_query:** When a condition is removed per Rule 4b (PENDING_FM_RESOLUTION), its signals MUST NOT appear in `condition_inputs_to_query` or `nets_to_query`. Driver_substitution is fully self-contained — FM resolution of removed conditions is neither needed nor used by any downstream step. Leaving them in wastes Step 2 FM queries and creates confusion.
-
-**After the script returns a valid target:**
-1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<script output>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`
-2. The new gate chain: renames the target net's driver output → `ECO_<jira>_net_orig`, adds compound gates (OA12/OAI21/AN3/ND3) that output the original net name
-3. The compound gates use ONLY stage-stable signals:
-   - **ALLOWED:** New ECO ports from `new_port`/`port_promotion` changes (e.g. `<NewEcoPort_A>`, `<NewEcoPort_B>`). These may be marked `PENDING_ECO_PORT` in the chain — this is valid since they exist after ECO application and are stage-stable.
-   - **ALLOWED:** Existing primary inputs of the module (e.g. `<existing_input_A>`, `<existing_input_B>`).
-   - **ALLOWED:** `ctmn_*` nets only as the renamed original (`ECO_<jira>_net_orig`) feeding the DEFAULT case — never as new condition gate inputs.
-   - **FORBIDDEN:** `PENDING_FM_RESOLUTION` signals — stage-unstable; if a condition requires one, driver_substitution CANNOT be used for that condition → fall through to E4c.
-   - **FORBIDDEN:** `phfnn_*`, `N<6-digit>` synthesis-internal signals as new gate inputs.
-   - **FORBIDDEN:** Any signal with 0 occurrences in any PreEco stage.
-4. **NO MUX2 cascade** — driver_substitution replaces the target net's driver directly. MUX cascade logic belongs to `intermediate_net_insertion` only.
-
-4a. **The LAST gate in the chain MUST output `driver_sub_target_net`** — this restores the original net name so all downstream cells need no changes. If the last gate outputs anything else (e.g. `n_eco_*`), `driver_sub_target_net` becomes undriven → FM ABORT.
-
-**Final gate is a COMPOUND gate (OA12/OAI21/AO21) combining ALL of:**
-- Condition trigger outputs (n_eco_*_c004, n_eco_*_c005, etc.)
-- `ECO_<jira>_net_orig` (old default expression — MUST appear here)
-- Output: `driver_sub_target_net`
-
-**Pattern for 2 stage-stable conditions (after removing PENDING conditions per Rule 4b):**
+**Final gate is a COMPOUND (OA12/OAI21/AO21)** combining condition trigger outputs + `ECO_<jira>_net_orig`. Pattern for 2 stage-stable conditions:
 ```
-Step N-1: INV(Cond1_trigger) → n_eco_<jira>_inv_c1
-Step N:   OA12(Cond2_trigger, ECO_<jira>_net_orig, n_eco_<jira>_inv_c1) → driver_sub_target_net
+INV(Cond1_trigger) → n_eco_<jira>_inv_c1
+OA12(Cond2_trigger, ECO_<jira>_net_orig, n_eco_<jira>_inv_c1) → driver_sub_target_net
+# = (~Cond1) & (Cond2 | old_expr) → if Cond1:0 elif Cond2:1 else old_expr ✓
 ```
-Logic: `(~Cond1) & (Cond2 | old_expr)` = if Cond1: 0, elif Cond2: 1, else: old_expr ✓
+Chain is INCOMPLETE without this final compound — condition outputs alone compute WHEN, not the combined value.
 
-**The chain is INCOMPLETE without this final gate. Condition outputs alone (AND2, INR2, etc.) compute WHEN to trigger but NOT the final combined value.**
-
-4b. **Eliminate PENDING_FM_RESOLUTION conditions from the chain** — when driver_substitution is used AND a condition requires a `PENDING_FM_RESOLUTION` signal, **remove that condition entirely from the gate chain AND from `condition_inputs_to_query`/`nets_to_query`**. The remaining stage-stable conditions (ECO ports + primary inputs only) are sufficient. Driver_substitution is self-contained — FM resolution of removed conditions is neither needed nor used.
-5. The old expression (`ECO_<jira>_net_orig`) feeds the new chain as the DEFAULT input (when no new condition is true)
-6. Pivot net (SEQMAP_NET_*, DFF.D) — completely untouched
-
-**If the script returned error (no valid target):** proceed to E4c.
+Script error → E4c.
 
 ---
 
@@ -736,166 +590,66 @@ zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
 
 #### E4d — Decompose the new prepended conditions into a gate chain (FALLBACK when E4c finds nothing)
 
-When `fallback_strategy: "intermediate_net_insertion"` is set AND E4c compound gate discovery found nothing, the new conditions must be synthesized as a gate chain from RTL. The eco_netlist_studier Step 0c-4 Entry B inserts these gates at the pivot net — but it needs a concrete gate chain to insert.
+When `fallback_strategy: "intermediate_net_insertion"` AND E4c found nothing, synthesize the new conditions as a gate chain from RTL. Studier Step 0c-4 Entry B inserts these gates at the pivot net.
 
-Parse each new condition from `context_line` independently (these are the cases BEFORE the last/default old expression) and decompose each into a sub-gate chain using the same E3 table rules. Assign sequence numbers starting from `c001` (condition gates), separate from the D-input chain `d001` numbering.
+Parse each new condition from `context_line` independently (cases BEFORE the last/default old expression). Decompose each into a sub-chain using E3 rules. Sequence numbers start at `c001` (condition gates) — separate from D-input chain `d001` numbering.
 
-**PRIORITY: Use compound gate types from PreEco before simple gates.**
+**PRIORITY: compound gate types from PreEco before simple gates.** For each Boolean sub-expression, search PreEco for a COMPOUND cell that implements it (OA12, OAI21, AN3, ND3, NR3, INR3, IAOI21, …) — these are FM-verifiable stage-to-stage without SVF. Record `cell_type_from_preeco: true`.
 
-For each boolean sub-expression, search PreEco for a COMPOUND gate that implements it in one cell rather than decomposing into simple INV/AND2/OR2 chains. Compound gates (OA12, OAI21, AN3, ND3, NR3, INR3, IAOI21, etc.) that exist in the library are FM-verifiable stage-to-stage without SVF:
 ```bash
-# For expression like (A & ~B | C): search PreEco for OA-type cells in the backward cone
-zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | \
-  awk "/^module <declaring_module>/,/^endmodule/" | \
-  grep -E "^\s+(OA|OAI|AN|ND|NR|INR|IAOI)[A-Z0-9]" | head -10
-# Use the discovered cell type — do NOT invent simple gate chains if a compound exists
+zcat <REF_DIR>/data/PreEco/Synthesize.v.gz | awk "/^module <declaring_module>/,/^endmodule/" \
+  | grep -E "^\s+(OA|OAI|AN|ND|NR|INR|IAOI)[A-Z0-9]" | head -10
 ```
-Record `cell_type_from_preeco: true` when using a discovered compound type.
 
-**MANDATORY truth-table verification before recording any compound cell:** call `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py`. `False` means the cell does NOT compute the claimed function (cell name and logic don't always agree across libraries — particularly for inverter-input compound families) — pick a different cell or update `gate_function` to the cell's real logic; never write a `False` choice into the chain. `None` means the cell is not in the loaded library JSON — extend `script/eco_scripts/cell_libraries/<lib>.json` with the verified expression from the cell library, do not guess. This rule is the primary gate for cell choice; Step 3 validate enforces it as a backstop.
+**MANDATORY truth-table verification before recording any compound cell:** call `cell_function_matches(cell_type, gate_function)` from `script/eco_scripts/eco_cell_truth_tables.py`. `False` → cell does NOT compute the claimed function (cell name and logic don't always agree across libraries) — pick another cell or update `gate_function` to match; never commit a `False` choice. `None` → cell missing from `cell_libraries/<lib>.json`; extend the JSON with the verified expression from the library — do not guess. Step 3 validate enforces this as backstop.
 
-**MANDATORY scan-stitching flag (Mode S) — for every `new_logic` change with `dff_instance_name` set:**
+**Scan stitching is OUT OF SCOPE.** New ECO DFFs get `SE=SI=1'b0` in all 3 stages. DFT team handles scan integration. Do NOT emit `requires_scan_stitching`, `mode_s_anchor`, or sibling/bridge fields.
 
-Emit `requires_scan_stitching: true` on every new_logic_dff change. This signals Step 3 (eco_netlist_studier) to apply the scan-stitching pattern (3 new ports + assign + per-hierarchy port_connections) in PrePlace and Route stages. Synthesize stage keeps SE/SI=`1'b0` (RTL-clean view). Skip ONLY if you can prove the DFF's clock cone never touches scan_cntl logic (e.g., a wrapper-only clock like `wrp_clk_*` that doesn't propagate scan-enable). When in doubt, emit `true` — the cost of unnecessary scan-stitching is 3 wire decls; the cost of missing it is FM Route failure.
+**MANDATORY fields on every `new_logic` / `new_logic_dff`** (Step 1 validate REJECTS if missing):
+- `scope` (or `instance_scope`) — full netlist hierarchy path (e.g. `umccmd/ARB/CTRLSW`). Needed when `module_name` is instantiated more than once.
+- **Mode I source-port info** when `d_input_net` starts with `UNCONNECTED_*` — emit `submodule_instance` + `port_name` + `bus_bit_index` so Step 3 can pair a child-scope `port_connection`.
 
-The flag is MANDATORY (Step 1 validator rejects entries that omit it). To opt out (`requires_scan_stitching: false`), you MUST also emit `scan_stitching_skipped_reason: "<auditable justification>"` AND `dff_clock` must be a wrapper clock (`wrp_clk_*`) — the validator enforces both.
+**MANDATORY MUX context on every `wire_swap`** (REJECT if missing): `mux_select_gate_function`, `mux_select_branch_true_on`, `mux_select_i0_net`, `mux_select_i1_net` — even when polarity is decided.
 
+**FORBIDDEN: `UNCONNECTED_<N>` as a variable in chain inputs or `d_input_expected_function`.** It's an undriven-net marker, not a signal. Trace it back to the real RTL source (e.g. `REG_UmcCfgEco[1]`) and emit the chain against THAT.
+
+**MANDATORY `d_input_expected_function` (Gap E) for every change with a non-empty `d_input_gate_chain`** — Step 1 REJECTS as HIGH if missing. It's the Python Boolean the DFF.D should compute, in the chain's primary input variables.
+
+Procedure: (1) read the always block; (2) strip the reset clause (added back as `& ~Reset`); (3) resolve Verilog macros to bit values; (4) sanitize bit-selects (`Sig[N]` → `Sig_N_`; `src==3'b011` → `src_0_ & src_1_ & (~src_2_)`); (5) translate operators; (6) wrap with reset (`(<EXPR>) & (~Reset)` if baked, else `<EXPR>`); (7) emit as a single string.
+
+Example — RTL `if (IReset) X<=0; else X<=A & ~B & ((src==3'b000) | (src==3'b011))`:
 ```json
-{
-  "change_type": "new_logic",
-  "dff_instance_name": "<reg>_reg",
-  "requires_scan_stitching": true,
-  ...
-}
+{"change_type": "new_logic", "dff_instance_name": "X_reg", "d_input_gate_chain": [...],
+ "d_input_expected_function": "A & (~B) & (~IReset) & (((~src_2_)&(~src_1_)&(~src_0_)) | (src_0_&src_1_&(~src_2_)))"}
 ```
 
-**MANDATORY mode_s_anchor — when requires_scan_stitching=true.** Step 2 fenets uses this to query SI/SE/Q paths of an EXISTING anchor DFF in the chosen sibling module (Cat 8). Without this field, Step 2 has no equivalence data and Step 3 studier guesses bridge source/consumer wires.
+**Why this matters:** per-cell truth-table check (Check 5) verifies each cell against its `gate_function`, but cells can each be valid yet compose to the wrong Boolean. A prior 6-cell chain was per-cell-correct but composed wrong — FM caught it after 30 min; Step 1 catches it in 1 sec via this field.
 
-**MANDATORY: invoke the deterministic picker — DO NOT guess.** For each new_logic_dff with `requires_scan_stitching: true`, run:
-```bash
-python3 script/eco_scripts/eco_pick_sibling.py \
-    --netlist       <REF_DIR>/data/PreEco/PrePlace.v.gz \
-    --route-netlist <REF_DIR>/data/PreEco/Route.v.gz   \
-    --host-module   <module_name from this entry> \
-    --tile-module   <tile_top_module from rtl_diff>     \
-    --output        data/<TAG>_eco_sibling_pick_<dff>.json
-```
-`--route-netlist` is **MANDATORY** — without it, picker may select a DFF whose anchor SE wire is CTS-tied to `1'b0` in Route (scan-dead), AND won't emit Route-stage wire names (CTS-renamed). Step 2 then queries PP-stage names in Route → FM-036 / `1'b0` echo → bridge unbuildable (run 20260511201004 root cause).
+**Skip ONLY when** `d_input_gate_chain: []` (D-input is a single net, not decomposed).
 
-Read the output JSON and use `recommended_pick` directly:
-- `mode_s_anchor.sibling_module` ← `recommended_pick.module`
-- `mode_s_anchor.anchor_dff` ← `recommended_pick.anchor_dff`
-- `mode_s_anchor.fm_scope` ← `recommended_pick.fm_scope` ← **MANDATORY**. Tile-relative INSTANCE hierarchy (e.g. `<INST_A>/<INST_B>`). FM resolves only via instance names; emitting module-type names (e.g. `<module_type>/<INST_B>`) returns FM-036 on every Cat 8 anchor query.
-- `mode_s_anchor.anchor_si_wire` ← `recommended_pick.anchor_si_wire` (PP stage)
-- `mode_s_anchor.anchor_se_wire` ← `recommended_pick.anchor_se_wire` (PP stage)
-- `mode_s_anchor.anchor_q_wire`  ← `recommended_pick.anchor_q_wire` (PP stage)
-- `mode_s_anchor.anchor_si_wire_route` ← `recommended_pick.anchor_si_wire_route` (Route stage; CTS-renamed — Step 2 Cat 8 queries this for Route bridge source)
-- `mode_s_anchor.anchor_se_wire_route` ← `recommended_pick.anchor_se_wire_route`
-- `mode_s_anchor.anchor_q_wire_route`  ← `recommended_pick.anchor_q_wire_route`
+**Per-input polarity (REQUIRED).** `d_input_expected_function` encodes polarity directly (`SIG` vs `~SIG`). `eco_synth_chain.py` parses it to derive cell topology + input form. When a literal appears negated, the studier MUST reuse an existing INV in scope whose output is `~SIG` (else instantiate a fresh INV) — never substitute the positive-form wire and rely on a downstream NR/NAND to flip it.
 
-The picker enforces all selection constraints automatically: peer-module-only (excludes host), ≥10 DFFs in scan-en cluster, ranks by cluster size descending. Manual selection is FORBIDDEN — Check 12 will FAIL any entry where `sibling_module` matches the host.
-
-**If `recommended_pick` is null** (no viable peer in the host's parent — common for top-scope DFFs like umccmd-level): set `requires_scan_stitching: false` with `scan_stitching_skipped_reason: "no viable peer module under <parent> has ≥10 DFFs in scan-en cluster"`. Bridge_port doesn't apply; downstream uses neighbor_dff or constant_zero.
-
-Emit:
-```json
-{
-  "requires_scan_stitching": true,
-  "mode_s_anchor": {
-    "sibling_module":        "<recommended_pick.module>",
-    "anchor_dff":            "<recommended_pick.anchor_dff>",
-    "fm_scope":              "<recommended_pick.fm_scope>",
-    "anchor_si_wire":        "<recommended_pick.anchor_si_wire>",
-    "anchor_se_wire":        "<recommended_pick.anchor_se_wire>",
-    "anchor_q_wire":         "<recommended_pick.anchor_q_wire>",
-    "anchor_si_wire_route":  "<recommended_pick.anchor_si_wire_route>",
-    "anchor_se_wire_route":  "<recommended_pick.anchor_se_wire_route>",
-    "anchor_q_wire_route":   "<recommended_pick.anchor_q_wire_route>"
-  }
-}
-```
-Step 1 validator requires `mode_s_anchor` populated (or `requires_scan_stitching: false` with skip reason).
-
-**MANDATORY scope/hierarchy field — for every `new_logic` / `new_logic_dff`:**
-
-Emit `scope` (or `instance_scope`) as the full netlist hierarchy path (e.g. `umccmd/ARB/CTRLSW`). Step 3 needs this to land the new DFF in the correct instance when `module_name` is instantiated multiple times. Step 1 validate REJECTS the entry if missing.
-
-**MANDATORY Mode I source-port info — when `d_input_net` starts with `UNCONNECTED_*`:**
-
-The DFF has no PreEco D-driver and the new chain replaces it. Step 3 needs to emit a paired child-scope `port_connection` so the chain input source resolves cleanly. Emit `submodule_instance` + `port_name` + `bus_bit_index` identifying the original UNCONNECTED slot. Step 1 validate REJECTS the entry if any of the three is missing.
-
-**MANDATORY MUX context on every `wire_swap` (not only polarity-pending ones):**
-
-Even when polarity is decided, emit `mux_select_gate_function`, `mux_select_branch_true_on`, `mux_select_i0_net`, `mux_select_i1_net`. Step 3 needs the full MUX context to apply the rewire. Step 1 validate REJECTS the entry if any of the four is missing.
-
-**FORBIDDEN: `UNCONNECTED_<N>` placeholders as variables in chain inputs or `d_input_expected_function`.**
-
-`UNCONNECTED_<N>` is a Verilog marker for an undriven net — it is NOT a real signal. If a PreEco DFF's D-input shows `d_input_net: UNCONNECTED_<N>`, you MUST trace the placeholder back to the actual RTL source the chain should consume (e.g. `REG_UmcCfgEco[1]`) and emit the chain + `d_input_expected_function` against THAT signal. Step 1 validate REJECTS the entry if any chain input or expected_function contains `UNCONNECTED_<digits>`.
-
-**MANDATORY whole-chain equivalence reference field (Gap E) — REQUIRED for every change with a non-empty `d_input_gate_chain`:**
-
-For every `new_logic` change that emits a `d_input_gate_chain`, you MUST also emit a top-level `d_input_expected_function` field. Step 1 validate REJECTS the change if this field is missing (HIGH issue). The field is the boolean function the DFF.D should compute — a Python boolean expression in the chain's primary input variables.
-
-**Procedure (do this for every chain you emit):**
-
-1. **Read the always block** for the new register from RTL.
-2. **Strip the reset clause** (`if (Reset) X <= 0; else X <= EXPR;`) → keep only `EXPR`. Reset is added back as `& ~Reset`.
-3. **Resolve all Verilog macros** to their bit values. Example: ```define UMC_CTRLSRC_SELFREF 3'b000``` → write the comparison expanded as bit AND/NOT.
-4. **Sanitize bit-selects** — Verilog `Sig[N]` → Python `Sig_N_`. Bus equality `src==3'b011` → `src_0_ & src_1_ & (~src_2_)`.
-5. **Translate operators** — Verilog `&` → Python `&`, `|` → `|`, `^` → `^`, `~` → `~`, `==` → expand to AND/NOT bit equalities.
-6. **Wrap with reset clause** — final form: `(<EXPR>) & (~Reset)` if reset is bake-in, or just `<EXPR>` if reset is via dedicated DFF reset pin.
-7. **Emit as a single string** in the JSON.
-
-**Example** — RTL: `if (IReset) X<=0; else X<=A & ~B & ((src==3'b000) | (src==3'b011))`
-```json
-{
-  "change_type": "new_logic",
-  "dff_instance_name": "X_reg",
-  "d_input_gate_chain": [...],
-  "d_input_expected_function": "A & (~B) & (~IReset) & (((~src_2_) & (~src_1_) & (~src_0_)) | (src_0_ & src_1_ & (~src_2_)))"
-}
-```
-
-**Why this matters:** Per-cell truth-table check (Check 5) verifies each cell does what its `gate_function` name claims. But cells can be individually valid yet COMPOSE to the wrong boolean. A prior AI ECO used a 6-cell chain where every individual cell was self-consistent — but the composed function produced false positives for several input codes and missed the intended case entirely. FM caught this after 30 min; Step 1 catches it in 1 second via this check.
-
-**Skip ONLY if:** chain is empty (`d_input_gate_chain: []` because the D-input is a single net, not decomposed) — in that case `d_input_expected_function` is not required.
-
-**Per-input intended polarity (REQUIRED — used by studier + Check 31).** `d_input_expected_function` already encodes per-input polarity in the Boolean (`SIG` = positive form, `~SIG` = negated form). The studier's chain synthesizer (`eco_synth_chain.py`) parses this Boolean to derive the correct cell topology + input form. When a literal appears negated in the Boolean (`~SIG`), the studier MUST search the host module for an existing inverter output that produces `~SIG` and use its output net as the chain input — do NOT pick the bare `SIG` wire and rely on cell composition to flip it (a downstream NR/NAND may absorb the inversion incorrectly). If no existing `~SIG` driver exists in scope, the studier MUST instantiate a fresh INV — never substitute the positive-form wire for a negated literal.
-
-**MANDATORY signal-in-scope check before recording any chain input:** every input signal MUST exist in the target module's scope — as a port, wire decl, or cell output net. If a referenced signal isn't visible (a frequent case is the registered version of an upstream port), look for an existing local DFF whose Q already produces the same logical signal and use its per-stage Q net name as the chain input. If no local source exists, propose a port promotion (`new_port` change + a `port_connection` from the parent that wires it). Never reference a signal name that won't resolve to an in-scope driver. Step 1 validate enforces this as a backstop.
+**MANDATORY signal-in-scope check before recording any chain input** — every input MUST exist in the target module's scope (port, wire decl, or cell output). If a registered version of an upstream port is referenced and not visible, reuse a local DFF whose Q produces the same logical signal (per-stage Q name); else propose a `new_port` + `port_connection` to wire it. Never reference an out-of-scope signal. Step 1 validate enforces.
 
 **For each new condition `<cond_expr> ? <val> : <next_condition>`:**
+1. Decompose `<cond_expr>` — prefer compound PreEco gates over simple-gate chains.
+2. Each gate: instance `eco_<jira>_c<seq>`, output `n_eco_<jira>_c<seq>`.
+3. Final gate of sub-chain: 1-bit (condition true/false).
+4. `<val>` (`1'b0` / `1'b1`) → what the MUX outputs when this condition matches.
 
-1. Decompose `<cond_expr>` into a gate chain — prefer compound gates from PreEco that implement the boolean in fewer cells; use E3 table simple gates only as last resort
-2. Each gate gets instance name `eco_<jira>_c<seq>` and output net `n_eco_<jira>_c<seq>`
-3. The final gate of the condition sub-chain produces a 1-bit signal: condition is true or false
-4. The condition value (`<val>`: `1'b0` or `1'b1`) determines what the MUX should output when this condition matches
+**Combining conditions with the old expression — MANDATORY.** `new_condition_gate_chain` MUST include condition gates AND the priority MUX cascade that connects them to the pivot. Without the cascade, nothing drives the pivot net.
 
-**Combining all conditions with the old expression — MANDATORY:**
-
-The `new_condition_gate_chain` MUST include BOTH the condition logic gates AND the priority combination gates that connect them to the pivot net. Stopping at just the condition outputs is incomplete — without the combination gates, nothing drives the pivot net and the ECO is non-functional.
-
-The overall gate structure is a cascaded MUX2 priority chain:
-- Highest priority condition first: if `c_cond_N` is true → output `<val_N>` (constant 1'b0 or 1'b1)
-- Otherwise fall through to next condition
-- Default (all conditions false): pass through `<pivot_net>_orig` (the old expression)
-
-**MANDATORY: include the MUX cascade gates in the chain:**
-
+Cascade:
 ```
-c_mux1: MUX2 — selects between val_1 (1'b0/1'b1) and pivot_net_orig based on condition 1 output
-c_mux2: MUX2 — selects between val_2 and c_mux1 output based on condition 2 output
-c_mux3: MUX2 — selects between val_3 and c_mux2 output based on condition 3 output
-c_mux4: MUX2 — selects between val_4 and c_mux3 output, outputs to <pivot_net>
+c_mux1: MUX2(val_1, pivot_net_orig, sel=cond_1) → c_mux1
+c_mux2: MUX2(val_2, c_mux1,         sel=cond_2) → c_mux2
+…
+c_muxN: MUX2(val_N, c_mux<N-1>,     sel=cond_N) → <pivot_net>   ← restores original name
 ```
 
-The last MUX gate MUST output to `<pivot_net>` (not to a new net) — this restores the original net name so all downstream cells in the existing priority chain are unchanged.
+Last MUX MUST output `<pivot_net>` (not a new net) — keeps downstream chain unchanged. Use `gate_function: "MUX2"` (eco_applier resolves to the library `MUX2[A-Z0-9]*`). Constants `1'b0`/`1'b1` are accepted directly in MUX inputs (`.I1(1'b0)`).
 
-**Note on MUX2 gate type:** Use `gate_function: "MUX2"` in the chain entries. The eco_applier will resolve this to the correct library cell by grepping the PreEco netlist for `MUX2[A-Z0-9]*` cells. Do NOT omit the MUX cascade gates to avoid a generic primitive — the eco_applier fix handles the cell type resolution. A chain without MUX gates is functionally incomplete.
-
-**Constant inputs (`1'b0`, `1'b1`):** Include them directly as inputs in the MUX gate entries. The eco_applier accepts constants in gate port connections (`.I1(1'b0)`).
-
-Record as `new_condition_gate_chain` in the JSON — a flat array of all gates needed:
+Record as `new_condition_gate_chain` (flat array of all gates):
 
 ```json
 "new_condition_gate_chain": [
@@ -920,92 +674,49 @@ Record as `new_condition_gate_chain` in the JSON — a flat array of all gates n
 ]
 ```
 
-**After decomposing all condition gates, verify each input signal — classify as resolvable or unresolvable:**
+**After decomposing, verify each input — V1–V4.**
 
-**Two rules before running V1-V4 on any gate input:**
-
-- **`~X` → INV gate, not PENDING.** Negation is a structural operation — always emit `INV(X) → n_eco_<jira>_c<seq>_inv`. Only the base signal `X` goes through V1-V4. Never write `PENDING_FM_RESOLUTION:X_inv`.
-- **`X[N:M] == K` → bit-decompose into AND/INV/NAND gates, not PENDING.** Each individual bit signal goes through V1-V4. The comparison logic itself is handled as gates.
-
-`PENDING_FM_RESOLUTION` is only for a raw named RTL signal that V3 grep cannot find in PreEco (falls through to V4 FM resolution). It is never for gate operations.
-
-For every input net referenced in `new_condition_gate_chain`:
+Two pre-rules: `~X` → emit INV gate (not PENDING); only base `X` goes through V1–V4. `X[N:M] == K` → bit-decompose into AND/INV/NAND gates; each bit signal goes through V1–V4. `PENDING_FM_RESOLUTION` is ONLY for a raw RTL signal V3 grep can't find — never for gate ops.
 
 ```python
 all_inputs_resolvable = True
 for gate in new_condition_gate_chain:
     for idx, inp in enumerate(gate["inputs"]):
+        # V1: constants
+        if inp in ("1'b0", "1'b1"): continue
 
-        # Step V1 — Constants are always valid
-        if inp in ("1'b0", "1'b1"):
-            continue
-
-        # Step V2 — New port/signal from this same ECO (RULE 23)
-        # Check BEFORE gate-level verification — these signals don't exist in PreEco by definition
+        # V2: same-ECO new tokens (RULE 23 — will exist after Pass 2)
         eco_new_tokens = [c["new_token"] for c in changes
-                          if c["change_type"] in ("new_port", "new_logic", "port_promotion")]
+                          if c["change_type"] in ("new_port","new_logic","port_promotion")]
         if inp in eco_new_tokens:
-            change_idx = next((i for i, c in enumerate(changes)
-                               if c.get("new_token") == inp), None)
-            gate["input_from_change"] = change_idx  # RULE 23 — will exist after ECO Pass 2
+            gate["input_from_change"] = next((i for i,c in enumerate(changes)
+                                              if c.get("new_token") == inp), None)
             continue
 
-        # Step V3 — Resolve to gate-level name in PreEco Synthesize netlist
-        # RTL signal names are NOT guaranteed to match gate-level net names after synthesis.
-        # Synthesis renames, merges, or restructures signals during elaboration.
-        # The chain must store the GATE-LEVEL name so the studier can find it in the PreEco netlist.
-        # Try name variants in order:
-        resolved_name = None
-        candidates = [
-            inp,                    # exact RTL name
-            f"{inp}_reg",           # synthesis appends _reg to state registers
-            f"{inp}_0_",            # bit-0 of a bus: signal[0] → signal_0_
-            f"{inp}_reg/Q",         # DFF Q output net (some synthesis tools)
-        ]
-        for candidate in candidates:
-            count = grep_count_in_preeco(candidate, stage="Synthesize")
-            if count >= 1:
-                resolved_name = candidate
-                break
-
-        if resolved_name:
-            gate["inputs"][idx] = resolved_name  # Replace RTL name with gate-level name in chain
+        # V3: resolve to gate-level name in PreEco Synthesize (synthesis renames RTL names)
+        candidates = [inp, f"{inp}_reg", f"{inp}_0_", f"{inp}_reg/Q"]
+        resolved = next((c for c in candidates
+                         if grep_count_in_preeco(c, stage="Synthesize") >= 1), None)
+        if resolved:
+            gate["inputs"][idx] = resolved
             continue
 
-        # Step V4 — Signal not found by text search; use FM find_equivalent_nets to resolve
-        # Synthesis sometimes renames signals to completely different internal net names that
-        # have no predictable relationship to the RTL name (e.g., internal tool-generated net names).
-        # Text-based name variant search (Step V3) cannot find these.
-        # FM find_equivalent_nets CAN find them — it maps RTL reference nets to impl nets.
-        # Store the signal as PENDING_FM_RESOLUTION and add it to nets_to_query.
-        # The studier will substitute the FM-returned gate-level name during Step 0c-5.
-        gate["inputs"][idx] = "PENDING_FM_RESOLUTION:" + inp  # Sentinel: resolved by studier
-        if "condition_inputs_to_query" not in change:
-            change["condition_inputs_to_query"] = []
+        # V4: not found by text — FM find_equivalent_nets will resolve
+        gate["inputs"][idx] = "PENDING_FM_RESOLUTION:" + inp
+        change.setdefault("condition_inputs_to_query", [])
         if inp not in [q["signal"] for q in change["condition_inputs_to_query"]]:
             change["condition_inputs_to_query"].append({
-                "signal": inp,
-                "scope": "<INST_A>/<INST_B>",  # hierarchy of declaring module from changes array
-                "reason": f"condition gate input not found in PreEco gate-level netlist (tried {candidates}); FM will resolve"
+                "signal": inp, "scope": "<INST_A>/<INST_B>",
+                "reason": f"not in PreEco (tried {candidates}); FM will resolve"
             })
-        # Do NOT set all_inputs_resolvable=False — FM will resolve it in Step 2
+        # Do NOT mark unresolvable — FM resolves in Step 2
 
-# Only set null when decomposition itself failed (arithmetic, function calls, etc.)
-# Signals marked PENDING_FM_RESOLUTION are NOT unresolvable — they will be resolved by FM
+# null ONLY when decomposition itself failed (arithmetic / function calls)
 if not all_inputs_resolvable:
-    new_condition_gate_chain = null
-    fallback_strategy = null
+    new_condition_gate_chain = null; fallback_strategy = null
 ```
 
-**CRITICAL — The chain structure MUST be preserved even when inputs have PENDING_FM_RESOLUTION placeholders.**
-
-The chain is built in two phases:
-1. **First: build the full gate structure** — create all gate entries (seq, gate_function, output_net) from the RTL condition decomposition
-2. **Then: verify inputs** — for each gate input, run V1→V4 checks; unresolvable inputs get `"PENDING_FM_RESOLUTION:<signal>"` as placeholder
-
-**Do NOT skip building the chain because some inputs are pending.** The studier needs the chain structure (which gates exist, in what order, what they output) to apply the ECO. Without the chain structure, there is nothing to substitute FM-resolved names into. Setting `new_condition_gate_chain: null` when inputs are merely pending destroys the structure and forces MANUAL_ONLY even though FM can resolve the inputs.
-
-The output JSON must always contain the chain structure when decomposition succeeded, even if some inputs are pending:
+**Preserve chain structure even when inputs are PENDING.** Two phases: (1) build full gate structure from RTL; (2) verify inputs — unresolvable ones get `PENDING_FM_RESOLUTION:<sig>` placeholders. The studier needs the structure to substitute FM-resolved names; setting `new_condition_gate_chain: null` for pending inputs forces MANUAL_ONLY unnecessarily.
 ```json
 "new_condition_gate_chain": [
   {"seq": "c<N>", "gate_function": "<gate_type>",

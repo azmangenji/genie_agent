@@ -204,7 +204,7 @@ python3 script/eco_scripts/eco_validate_analyzer_evidence_contract.py \
 RC=$?
 ```
 
-The validator enforces the `evidence_for_studier` schemas defined in `config/eco_agents/eco_re_studier_evidence_contract.md` §2 — universal block + per-action required fields + GAP-4b/4c bridge constraints + evidence_path_refs resolvability.
+The validator enforces the `evidence_for_studier` schemas defined in `config/eco_agents/eco_re_studier_evidence_contract.md` §2 — universal block + per-action required fields + evidence_path_refs resolvability.
 
 **Exit codes:**
 - `0` → all `revised_changes` comply; proceed to Step 6d-VERDICT
@@ -240,7 +240,6 @@ This bounds the retry budget to 1 per round so the loop can never get stuck on a
 - `failure_mode: ABORT_CELL_TYPE` → NOT a reason to stop — `revised_changes` contains `fix_cell_type` entries; eco_netlist_studier_round_N re-searches PreEco for correct cell type and updates study JSON, continue to next round
 - `failure_mode: T` (compound-cell truth-table mismatch) → NOT a reason to stop — `revised_changes` contains `swap_compound_cell` entries; eco_netlist_studier_round_N overrides `cell_type` (and re-permutes `port_connections` per `port_remap` if present) for all 3 stages in study JSON, continue to next round. If Check T could not find a same-family match, eco_fm_analyzer escalates to Mode F with action `try_structural_decomposition` (rebuild chain with simpler 2/3-input primitives) — never `manual_only`.
 - `failure_mode: I` (child output port internally undriven) → NOT a reason to stop — `revised_changes` contains a second `port_connection` entry with `module_name=<child>`, `bus_bit_index`, `net_name=<port>[<bit>]`. eco_netlist_studier_round_N appends it to study JSON; existing `_apply_bus_rename` in eco_passes_2_4 wires the child's internal slot to its own output pin. Continue to next round.
-- `failure_mode: S` (scan-stitching incomplete on new ECO DFF in PrePlace/Route) → NOT a reason to stop — `revised_changes` contains `fix_scan_stitching` entries with `mode_S_hint`. Re-spawn `eco_netlist_studier` for round N with `MODE_S_HINT=<hint>` per failing instance; studier re-emits the per-stage stitching chain (3 ports + assign + bridge wires up to parent scan-chain scope) per its `0b-MODE-S` section. Continue to next round.
 - `failure_mode: H` (hierarchical port bus input) → NOT a reason to stop — `revised_changes` contains `fix_named_wire` entries; eco_netlist_studier_round_N sets `needs_named_wire: true` in study JSON, eco_apply_fix_round_N declares named wire and rewires port bus, continue to next round
 - `needs_rerun_fenets: true` → NOT a reason to stop — Step 6f-FENETS re-queries the missing signals; eco_netlist_studier_round_N resolves PENDING_FM_RESOLUTION inputs from the rerun results; continue to next round
 - `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly

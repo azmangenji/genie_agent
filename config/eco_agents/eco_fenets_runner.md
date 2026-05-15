@@ -81,10 +81,6 @@ for idx, c in enumerate(rtl_diff["changes"]):
         if sm and port and bbi is not None:
             nets_to_query.append({"net_path": f"{scope}/{sm}/{port}[{bbi}]", "source": f"changes[{idx}].mode_I_candidate"})
     # Cat 7: new_port hierarchical hookup — TODO if rtl_diff_analyzer emits hookup hints
-    # Cat 8: Mode-S anchor pins — when a new_logic_dff carries `mode_s_anchor`
-    #        with sibling_module + anchor_dff, query SI/SE/Q paths of that
-    #        anchor DFF. Studier consumes responses to pick stage-stable
-    #        bridge source/consumer wires (avoid guessing).
 # Deduplicate
 seen = set(); valid_nets = []
 for n in nets_to_query:
@@ -371,16 +367,12 @@ Read `data/<TAG>_eco_validate_step2.json` issues list. For each issue, build a t
 - Build fallback query: `<scope>/<driver_cell_instance>` for PP and Route stages
 - Add to re-query batch with `category: 9, mode_H_recovery: true`
 
-**C2 / C7 — Cat 8 anchor FM-036:**
-- Re-derive queries with corrected `mode_s_anchor.fm_scope` (fix instance path)
-- Add to re-query batch
-
 **C4 / C5 — Sanitize / coverage gaps:**
 - Re-run `eco_fenets_derive_queries.py` + `eco_fenets_sanitize_queries.py` with corrected inputs
 - Re-submit full query batch
 
 **C6 — rename map echo-fallback (rename_map[stage] == input net):**
-For each echo'd signal: if the same name exists as a wire in `PreEco/<stage>.v.gz` (bus-style preserved name) → mark `accepted_echo: true`. Otherwise re-query that signal for the missing stage(s) with `c6_recovery: true`. If still echoes after 1 retry → mark the affected DFF's `mode_S_strategy_per_stage[<stage>]: BLOCKED_NO_RENAME_MAP`.
+For each echo'd signal: if the same name exists as a wire in `PreEco/<stage>.v.gz` (bus-style preserved name) → mark `accepted_echo: true`. Otherwise re-query that signal for the missing stage(s) with `c6_recovery: true`. If still echoes after 1 retry → flag the failure on the affected DFF entry; downstream studier will fall back to the input signal name as-is.
 
 ### STEP F-3 — Re-submit FM for fix batch (BLOCKING)
 

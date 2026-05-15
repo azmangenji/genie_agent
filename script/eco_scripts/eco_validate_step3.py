@@ -80,6 +80,25 @@ def main():
                 if not pcs.get(chk_stage):
                     issues.append(f"HIGH: DFF {inst} in {stage} missing port_connections_per_stage[{chk_stage}] — eco_netlist_studier Phase 0b-STAGE-NETS incomplete")
 
+    # ── 3a-SKIP. Scan stitching is OUT OF SCOPE (DFT team handles integration).
+    #        The wrapper (eco_emit_dff_entry.py) emits SE=SI=1'b0 in all stages
+    #        and never sets mode_S_applied/requires_scan_stitching. When neither
+    #        the study nor the rtl_diff carries those fields, skip the entire
+    #        Mode-S block (3b/3c/3d). Checks remain in place as a safety net
+    #        for stale fields leaking through.
+    _mode_s_active = any(
+        e.get('mode_S_applied') or e.get('requires_scan_stitching')
+        for stage in ('Synthesize', 'PrePlace', 'Route')
+        for e in study.get(stage, [])
+        if e.get('change_type') in ('new_logic_dff', 'new_logic')
+    )
+    _diff_requires_scan = any(
+        c.get('requires_scan_stitching')
+        for c in rtl_diff.get('changes', [])
+        if c.get('change_type') in ('new_logic', 'new_logic_dff')
+    )
+    _skip_mode_s_checks = (not _mode_s_active) and (not _diff_requires_scan)
+
     # ── 3b. Mode S consistency: when requires_scan_stitching/mode_S_applied is
     #        true on a DFF, every per-stage entry list (Synthesize/PrePlace/Route)
     #        must carry the SAME port_connections_per_stage map. The 9868 R1 bug
@@ -274,8 +293,12 @@ def main():
     #        scan_stitching_skipped_reason justification). Silent downgrade
     #        bypasses the entire Mode S pipeline and was the actual cause of
     #        9868 R1 fresh-run Round 2 going wrong on EcoUseSdpOutstRdCnt.
-    diff_decisions = {}  # instance_name → (requires_scan_stitching, skipped_reason)
-    for c in rtl_diff.get('changes', []):
+    #
+    # Skipped when scan stitching is out of scope (3a-SKIP) — neither side
+    # should emit `requires_scan_stitching` under the new policy.
+    if not _skip_mode_s_checks:
+      diff_decisions = {}  # instance_name → (requires_scan_stitching, skipped_reason)
+      for c in rtl_diff.get('changes', []):
         if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
             continue
         dff_inst = c.get('dff_instance_name') or (
@@ -284,8 +307,8 @@ def main():
             diff_decisions[dff_inst] = (
                 bool(c.get('requires_scan_stitching')),
                 c.get('scan_stitching_skipped_reason') or '')
-    seen_in_study = set()
-    for stage in ['Synthesize']:
+      seen_in_study = set()
+      for stage in ['Synthesize']:
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
@@ -1535,12 +1558,14 @@ def main():
                     f"bridge buffer. PP MUST also use 'bridge_port' when Route does.")
 
     # ── 30. CONSTANT-ZERO-ONLY-WHEN-NO-DFFS (G2) — with grep override ─────
-    # constant_zero is permitted ONLY when host module has zero pre-existing
-    # DFFs in the same clock domain. The studier's declared
-    # host_module_dff_count_same_clock is RE-VERIFIED via netlist grep — a
-    # studier that lies about the count to bypass this check is caught and
-    # overridden. This closes the second G1/G2 escape hatch.
-    for stage in ('Synthesize', 'PrePlace', 'Route'):
+    # constant_zero was previously gated to host modules with zero same-clock
+    # DFFs (assumed scan-isolated island would fail FM). Under the new policy
+    # scan stitching is OUT OF SCOPE — constant_zero on SE/SI is the unconditional
+    # default in all 3 stages; DFT team handles scan integration separately. This
+    # entire check is now a no-op (kept as a safety net behind _skip_mode_s_checks
+    # in case scan stitching is reintroduced).
+    if not _skip_mode_s_checks:
+      for stage in ('Synthesize', 'PrePlace', 'Route'):
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue

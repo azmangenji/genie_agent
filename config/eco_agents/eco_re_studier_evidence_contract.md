@@ -20,7 +20,7 @@ Every `revised_change` entry must carry this block, regardless of action:
     "failing_pin_load_bearing": true|false,
     "load_bearing_reason": "shadowed_by_set_constant|shadowed_by_set_dont_verify|none",
     "first_divergent_point": {
-      "kind": "undriven_cut|cts_rename|blackbox|wrong_gate|missing_port|bridge_gap|se_not_consolidated|wrong_polarity|cell_not_in_lib|other",
+      "kind": "undriven_cut|cts_rename|blackbox|wrong_gate|missing_port|wrong_polarity|cell_not_in_lib|other",
       "what": "<specific_net_or_cell_or_wire>",
       "exists_in_ref_cone": true|false,
       "exists_in_impl_cone": true|false,
@@ -62,76 +62,7 @@ Every `revised_change` entry must carry this block, regardless of action:
 
 Each action verb has additional REQUIRED fields beyond the universal block. The validator enforces these.
 
-### §2.1 — `fix_scan_stitching` (Mode S)
-
-```json
-"evidence_for_studier": {
-  ...universal block...,
-  "candidate_fix_recipes": [
-    {
-      "kind": "scan_stitching_via_bridge_port",
-      "applicability_score": 0.95,
-      "required_inputs_for_studier": {
-        "host_module": "<module containing failing DFF>",
-        "host_dff_instance": "<inst_name>",
-        "bridge_port_names": {
-          "se_in": "ECO_<jira>_SE_in",
-          "si_in": "ECO_<jira>_SI_in",
-          "q_out": "ECO_<jira>_Q_out"
-        },
-        "parent_module": "<module that instantiates host_module>",
-        "parent_bridge_wires": {
-          "se_bridge": "eco<jira>_se_bridge",
-          "si_bridge": "eco<jira>_si_bridge",
-          "q_bridge":  "eco<jira>_q_bridge"
-        },
-        "sibling_module_for_buffer": "<sibling module name to host the buffer cells>",
-        "sibling_bridge_ports": {
-          "se_out": "ECO_<jira>_SE_out",
-          "si_out": "ECO_<jira>_SI_out",
-          "q_in":   "ECO_<jira>_Q_in"
-        },
-        "sibling_buffer_source_se": {
-          "wire_name": "<internal_DCQARB_wire>",
-          "parent_driver_pp":    "<parent ARB hookup in PP>",
-          "parent_driver_route": "<parent ARB hookup in Route>",
-          "pp_route_match": true|false,           ← MUST be true (GAP-4b)
-          "selection_rationale": "..."
-        },
-        "sibling_buffer_source_si": {... same shape as se ...},
-        "sibling_se_consolidation_targets": [    ← GAP-4 list
-          {"inst_name": "<dff_inst>", "current_se_wire": "<old_wire>"},
-          ...
-        ],
-        "sibling_q_consumer": {                  ← GAP-4c required
-          "consumer_dff_inst": "<dff_inst_in_sibling>",
-          "consumer_original_si": "<old_si_wire>",
-          "rationale": "<why this DFF was chosen>"
-        }
-      },
-      "verification_after_fix": "grep -c '\\.SE ( ECO_<jira>_SE_out )' in sibling_module_body == count(sibling_se_consolidation_targets)"
-    },
-    {
-      "kind": "scan_stitching_via_constant_zero",   ← fallback recipe
-      "applicability_score": 0.6,
-      "required_inputs_for_studier": {
-        "host_dff_instance": "<inst_name>",
-        "stages_to_apply": ["Synthesize", "PrePlace", "Route"]
-      },
-      "verification_after_fix": "grep '<inst>' shows .SE(1'b0), .SI(1'b0)"
-    }
-  ],
-  "constraints": {
-    "scope_module": "<sibling module name>",
-    "do_not_modify_modules": ["<other DCQARB module variants like umcdcqarb_1_0>"],
-    "do_not_touch_signals": ["<scan-chain signals outside the consolidation list>"]
-  }
-}
-```
-
-**GAP-4/4b/4c enforcement** is encoded in `pp_route_match: true` + `sibling_q_consumer` requirement + `do_not_modify_modules` constraint.
-
-### §2.2 — `fix_named_wire` / `move_gate_to_submodule` (Mode H)
+### §2.1 — `fix_named_wire` / `move_gate_to_submodule` (Mode H)
 
 ```json
 "evidence_for_studier": {
@@ -180,7 +111,7 @@ Each action verb has additional REQUIRED fields beyond the universal block. The 
 
 **GAP for Mode H persistent (auto-escalation to move_gate_to_submodule)** is encoded in `applicable_only_if` + `previous_round_attempts`.
 
-### §2.3 — `try_alternative_pivot` / `try_structural_insertion` (Mode F1)
+### §2.2 — `try_alternative_pivot` / `try_structural_insertion` (Mode F1)
 
 ```json
 "evidence_for_studier": {
@@ -249,19 +180,7 @@ Each action verb has additional REQUIRED fields beyond the universal block. The 
 
 **Progressive doctrine encoded**: `applicability_score` ranks the recipes; `applicable_only_if` excludes already-tried strategies.
 
-### §2.4 — Real Bridge Stitching (GAP-1/4/4b/4c full implementation)
-
-This is the same shape as §2.1 (`fix_scan_stitching` Mode S) but with `kind: "scan_stitching_via_bridge_port"` as the ONLY recipe (no constant_zero fallback). All GAP-4/4b/4c sub-fields are required:
-
-- `sibling_buffer_source_se.pp_route_match: true` (GAP-4b)
-- `sibling_buffer_source_si.pp_route_match: true` (GAP-4b)
-- `sibling_se_consolidation_targets[]` non-empty (GAP-4)
-- `sibling_q_consumer` populated (GAP-4c)
-- `constraints.do_not_modify_modules` lists sibling module variants (Addendum)
-
-The validator script enforces these as hard requirements when `kind == scan_stitching_via_bridge_port` and `applicability_score >= 0.9`.
-
-### §2.5 — `force_port_decl` (ABORT_LINK)
+### §2.3 — `force_port_decl` (ABORT_LINK)
 
 ```json
 "evidence_for_studier": {
@@ -336,7 +255,6 @@ Validation rules:
 3. At least 1 `candidate_fix_recipes` entry
 4. Per-action required fields per §2 schemas
 5. `evidence_path_refs` resolve to actual paths in evidence_walk_json + xstage_compare_json (load + dereference check)
-6. `pp_route_match: true` enforced when `kind == scan_stitching_via_bridge_port` and `applicability_score >= 0.9`
 
 ---
 
@@ -392,78 +310,49 @@ For one transition round, both old + new schema are accepted. Validator emits WA
 
 ## §6 — Examples
 
-### Example 1: Mode S NeedFreqAdj_reg (current 9868 case)
+### Example 1: Mode H — submodule-input black-box
 
 ```json
 {
   "stage": "Route",
-  "action": "fix_scan_stitching",
-  "cell_name": "NeedFreqAdj_reg",
-  "rationale": "...",
-  "fallback_action": "tune_file_update",
-  "eco_preeco_study_update": {...},
+  "action": "move_gate_to_submodule",
+  "cell_name": "<reg>_reg",
+  "rationale": "Chain inputs come from inside child submodule which is black-boxed in P&R; gate must move inside the child so inputs resolve.",
+  "fallback_action": "fix_named_wire",
   "evidence_for_studier": {
-    "failing_pin": "SE",
-    "failing_pin_load_bearing": false,
-    "load_bearing_reason": "shadowed_by_set_constant",
+    "failing_pin": "D",
+    "failing_pin_load_bearing": true,
+    "load_bearing_reason": "none",
     "first_divergent_point": {
       "kind": "blackbox",
-      "what": "I_CHGATER_FuncCGCG/lat.00",
+      "what": "<child_submodule_inst>",
       "exists_in_ref_cone": true,
       "exists_in_impl_cone": false,
       "evidence_path_refs": [
-        "evidence.per_target.FmEqvEcoRouteVsEcoPrePlace.failing_diagnostics.per_dff_dossiers[0].cone_analysis.failing_reverse_clock_gating[0]",
-        "xstage.per_failing_dff.NeedFreqAdj_reg.deltas.cell_blackboxed[0]"
+        "xstage.per_failing_dff.<reg>_reg.deltas.cell_blackboxed[0]"
       ]
     },
     "candidate_fix_recipes": [
       {
-        "kind": "scan_stitching_via_bridge_port",
-        "applicability_score": 0.95,
+        "kind": "move_gate_to_submodule",
+        "applicability_score": 0.9,
         "required_inputs_for_studier": {
-          "host_module": "ddrss_umccmd_t_umcarbctrlsw_0",
-          "host_dff_instance": "NeedFreqAdj_reg",
-          "bridge_port_names": {"se_in": "ECO_9868_SE_in", "si_in": "ECO_9868_SI_in", "q_out": "ECO_9868_Q_out"},
-          "parent_module": "ddrss_umccmd_t_umcarb_0",
-          "parent_bridge_wires": {"se_bridge": "eco9868_se_bridge", "si_bridge": "eco9868_si_bridge", "q_bridge": "eco9868_q_bridge"},
-          "sibling_module_for_buffer": "ddrss_umccmd_t_umcdcqarb_0_0",
-          "sibling_bridge_ports": {"se_out": "ECO_9868_SE_out", "si_out": "ECO_9868_SI_out", "q_in": "ECO_9868_Q_in"},
-          "sibling_buffer_source_se": {
-            "wire_name": "FxPrePlace_HFSNET_61327",
-            "parent_driver_pp":    "FxPrePlace_HFSNET_33188",
-            "parent_driver_route": "FxPlace_HFSNET_30406",
-            "pp_route_match": false,
-            "selection_rationale": "Common port name across stages but parent driver differs (CTS rename)"
-          },
-          "sibling_buffer_source_si": {
-            "wire_name": "test_so1027",
-            "parent_driver_pp":    "internal_local_wire",
-            "parent_driver_route": "internal_local_wire",
-            "pp_route_match": true,
-            "selection_rationale": "Local Q output of multibit reg — driver internal to DCQARB, stable"
-          },
-          "sibling_se_consolidation_targets": [
-            {"inst_name": "DcqPc_reg_63__MB_DcqPc_reg_62__MB_...", "current_se_wire": "FxPlace_HFSNET_47825"},
-            ...10 entries...
-          ],
-          "sibling_q_consumer": null      ← MISSING per GAP-4c → contract validator flags
+          "host_module": "<parent_module>",
+          "target_submodule": "<child_module>",
+          "gate_chain_to_relocate": ["eco_<jira>_d001", "eco_<jira>_d002"],
+          "new_output_port": "n_eco_<jira>_d_last"
         },
-        "verification_after_fix": "grep -c '\\.SE ( ECO_9868_SE_out )' in umcdcqarb_0_0 == 10"
+        "verification_after_fix": "child module port list contains n_eco_<jira>_d_last; parent .D wires through new port"
       }
     ],
     "constraints": {
-      "scope_module": "ddrss_umccmd_t_umcdcqarb_0_0",
-      "do_not_modify_modules": ["ddrss_umccmd_t_umcdcqarb_1_0"],
-      "do_not_touch_signals": ["test_so1027 (already used as buffer .I)"]
+      "scope_module": "<child_module>",
+      "do_not_touch_signals": []
     },
-    "previous_round_attempts": [
-      {"round": 1, "action": "fix_scan_stitching", "result": "Bridge added but pp_route_match=false on SE source, q_consumer missing"}
-    ]
+    "previous_round_attempts": []
   }
 }
 ```
-
-The validator catches `pp_route_match: false` AND `sibling_q_consumer: null` → forces analyzer to either find a stable wire or downgrade `applicability_score`.
 
 ### Example 2: ABORT_LINK missing port
 
@@ -471,8 +360,8 @@ The validator catches `pp_route_match: false` AND `sibling_q_consumer: null` →
 {
   "stage": "ALL",
   "action": "force_port_decl",
-  "signal_name": "ECO_9868_Q_in",
-  "module_name": "ddrss_umccmd_t_umcdcqarb_0_0",
+  "signal_name": "<eco_port_name>",
+  "module_name": "<child_module>",
   "declaration_type": "input",
   "rationale": "...",
   "evidence_for_studier": {
@@ -481,7 +370,7 @@ The validator catches `pp_route_match: false` AND `sibling_q_consumer: null` →
     "load_bearing_reason": "none (abort, no compare ran)",
     "first_divergent_point": {
       "kind": "missing_port",
-      "what": "ECO_9868_Q_in on instance DCQARB",
+      "what": "<eco_port_name> on instance <child_inst>",
       "exists_in_ref_cone": false,
       "exists_in_impl_cone": false,
       "evidence_path_refs": [
@@ -494,8 +383,8 @@ The validator catches `pp_route_match: false` AND `sibling_q_consumer: null` →
         "kind": "force_reapply_port_decl",
         "applicability_score": 0.95,
         "required_inputs_for_studier": {
-          "signal_name": "ECO_9868_Q_in",
-          "module_name": "ddrss_umccmd_t_umcdcqarb_0_0",
+          "signal_name": "<eco_port_name>",
+          "module_name": "<child_module>",
           "declaration_type": "input",
           "stage_scope": ["Route"],
           "force_reapply": true,
@@ -503,11 +392,11 @@ The validator catches `pp_route_match: false` AND `sibling_q_consumer: null` →
           "port_in_port_list_header": false,
           "previous_already_applied_reason": "found in file (NOT in port list)"
         },
-        "verification_after_fix": "PostEco/Route.v.gz module ddrss_umccmd_t_umcdcqarb_0_0 port list contains ECO_9868_Q_in"
+        "verification_after_fix": "PostEco/Route.v.gz module <child_module> port list contains <eco_port_name>"
       }
     ],
     "constraints": {
-      "scope_module": "ddrss_umccmd_t_umcdcqarb_0_0",
+      "scope_module": "<child_module>",
       "do_not_modify_modules": []
     }
   }

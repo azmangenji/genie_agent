@@ -151,9 +151,6 @@ For each failing point (or abort cause):
        - black-boxed submodule     → cell_blackboxed shows cell absent in P&R
        - wrong gate function       → polarity check; needs Mode A Check D
        - missing port declaration  → ABORT_LINK or false-APPLIED port_decl
-       - bridge port plumbing gap  → SE/SI uses bridge port but parent doesn't drive it
-       - sibling SE not consolidated → bridge buffer exists, but DFFs in sibling
-                                       still use CTS-renamed wires (not bridge_out)
 
   Q5. What netlist edit converges the divergence?
        Don't pick the action yet — just describe in plain words what would fix it.
@@ -173,7 +170,7 @@ For each failing point, record:
   "load_bearing": true|false,
   "load_bearing_reason": "<which directive shadows OR none>",
   "first_divergent_point": {
-    "kind": "undriven_cut|cts_rename|blackbox|wrong_gate|missing_port|bridge_gap|se_not_consolidated|other",
+    "kind": "undriven_cut|cts_rename|blackbox|wrong_gate|missing_port|other",
     "what": "<specific net/cell/wire>",
     "evidence_link": "<key in evidence/xstage JSON>"
   },
@@ -196,11 +193,11 @@ Multiple hypotheses can co-exist for one failing point (e.g., wrong polarity AND
 
 These are quick disqualifications/confirmations that cut investigation time. Apply BEFORE the full Q1-Q5 walk:
 
-- **Failing inst matches `eco_<jira>_*`**: hard rule fires — cannot be Mode E. Constrain hypotheses to A/H/D/I/S only.
+- **Failing inst matches `eco_<jira>_*`**: hard rule fires — cannot be Mode E. Constrain hypotheses to A/H/D/I only.
 - **`evidence.summary_signals` contains `ECO_APPLIED_SKIPPED`**: prime hypothesis is Mode A sub-cause #1 (re-apply the SKIPPED change).
 - **`evidence.summary_signals` contains `INTENTIONAL_CASCADE` match**: emit `cascade_verified_skip` immediately, no Q1-Q5 needed.
 - **`xstage.deltas.cell_blackboxed` is non-empty for an ECO DFF input**: prime hypothesis is Mode H.
-- **All 3 stages show same SE pin = `1'b0`**: the SE cone is trivially equivalent — failing point is on D/CP, not SE.
+- **All 3 stages show SE pin = `1'b0`**: SE cone is trivially equivalent — failing point is on D/CP, not SE. (SE/SI are hardwired to 1'b0 on every new ECO DFF, so SE/SI cone divergence is never the root cause.)
 
 ---
 
@@ -209,7 +206,7 @@ These are quick disqualifications/confirmations that cut investigation time. App
 For each Phase 3 hypothesis, look up matching entries in `eco_fm_pattern_library.md`:
 
 - For `RERUN_SAME_ROUND` verdict → consult **§B-ABORT** entries (B-ABORT-1 through B-ABORT-4)
-- For `ADVANCE_NEXT_ROUND` verdict → consult **§B-FAIL** entries (B-FAIL-A through B-FAIL-SCAN_CHAIN_MISMATCH)
+- For `ADVANCE_NEXT_ROUND` verdict → consult **§B-FAIL** entries (B-FAIL-A through B-FAIL-T)
 
 ### Consultation procedure
 
@@ -312,7 +309,7 @@ Every `revised_changes[i]` (except `cascade_verified_skip` and `manual_only`) MU
 
 The contract defines:
 - Universal block fields (failing_pin, first_divergent_point, candidate_fix_recipes, constraints)
-- Per-action required fields (Mode S, Mode H, Mode F1, GAP-4 bridge, ABORT_LINK schemas in contract §2)
+- Per-action required fields (Mode H, Mode F1, ABORT_LINK schemas in contract §2)
 - Validator script `script/eco_scripts/eco_validate_analyzer_evidence_contract.py` enforces compliance as a pre-FM gate
 
 The block is the structured handoff to `eco_netlist_re_studier`. Without it, the studier cannot apply the recipe — it would have to re-discover everything you already found in Phase 1+2. That defeats the investigative model.
@@ -406,7 +403,7 @@ If any check fails: fix the issue before writing. Do NOT emit a JSON that violat
 These are common failure modes the OLD analyzer fell into. Avoid them.
 
 - ❌ **Skipping evidence walk** because "the failure looks obvious" — always run helper scripts; visual inspection misses 80% of cone divergences
-- ❌ **Pattern-matching the failure_mode from the failing-point cell type alone** — DFF0X can be Mode A, H, I, or S; only cone analysis disambiguates
+- ❌ **Pattern-matching the failure_mode from the failing-point cell type alone** — DFF0X can be Mode A, H, or I; only cone analysis disambiguates
 - ❌ **Reading only `__failing_points.rpt.gz`** — miss the entire `__analyze_points.rpt.gz` which has the cone divergence detail
 - ❌ **Assuming `set_constant` worked** — verify in `__before_verify_constants.rpt.gz` AND `_user_added_constants.rpt.gz`
 - ❌ **Treating undriven net as "doesn't matter"** — `__before_verify_undriven_nets.rpt.gz` lists FM cut-points that ARE the failure cause
@@ -420,60 +417,49 @@ These are common failure modes the OLD analyzer fell into. Avoid them.
 
 ## Example: minimal walk-through
 
-A well-formed analyzer run for a Route FM failure on `NeedFreqAdj_reg`:
+A well-formed analyzer run for a Route FM failure on a wire_swap target:
 
 ```
 Phase 1: Run eco_fm_evidence_walk.py
   → evidence.loop_verdict = "ADVANCE_NEXT_ROUND"
   → evidence.per_target["FmEqvEcoRouteVsEcoPrePlace"].failing_diagnostics
       .per_dff_dossiers[0] = {
-        instance_name: "NeedFreqAdj_reg",
+        instance_name: "<reg>_reg",
         is_eco_inserted: false,
         cone_analysis: {
-          unmatched_cone_inputs: [{net: ".../NeedFreqAdj_reg/SE", desc: "Is globally unmatched"}],
-          failing_reverse_clock_gating: [{latcg_path: ".../I_CHGATER_*/lat.00*"}]
+          unmatched_cone_inputs: [{net: ".../<reg>_reg/D", desc: "Is globally unmatched"}]
         }
       }
-  → evidence.tune_directives_status: SE=0 set_constant DID apply
+  → evidence.summary_signals contains "ECO_APPLIED_SKIPPED" for Route stage
 
 Phase 2: Run eco_fm_xstage_compare.py
-  → xstage.per_failing_dff["NeedFreqAdj_reg"].deltas.pin_changes = [
-        {pin: "SE", stages: {Synth: "1'b0", PrePlace: "ECO_9868_SE_in", Route: "ECO_9868_SE_in"}}
+  → xstage.per_failing_dff["<reg>_reg"].deltas.pin_changes = [
+        {pin: "D", stages: {Synth: "<n_eco_*>", PrePlace: "<n_eco_*>", Route: "<old_net>"}}
      ]
-  → xstage.deltas.wire_present_per_stage = [
-        {wire: "ECO_9868_SE_in", Synth: false, PrePlace: true, Route: true}
-     ]
+  → xstage.deltas.cell_blackboxed = []
 
 Phase 3: Hypotheses
-  H1: SE cone load-bearing despite set_constant
-      first_divergent_point: bridge_gap (ECO_9868_SE_in's parent driver differs PP vs Route)
-      convergence_edit_plan: "Mirror engineer pattern — replace 10 sibling DCQARB DFF
-                              .SE pins to use ECO_9868_SE_out for scan-domain consolidation"
+  H1: Route stage skipped the rewire (Mode A sub-cause #1)
+      first_divergent_point: missing_port (rewire_failed for Route entry)
+      convergence_edit_plan: "Re-apply the Route-stage rewire entry; eco_applier
+                              skipped it due to old_net regex miss after CTS rename"
       confidence: high
-      supporting: cone analysis + xstage pin_changes + reference to GAP-4
+      supporting: ECO_APPLIED_SKIPPED signal + pin_changes shows D reverted in Route
 
 Phase 4: Library consultation
-  → Match: B-FAIL-S (Mode S — bridge port + sibling SE consolidation)
-  → Recipe: action="fix_scan_stitching" with mode_S_hint about sibling consolidation
+  → Match: B-FAIL-A (Mode A — applier skip / partial rewire)
+  → Recipe: action="reapply_rewire" with corrected old_net regex per stage
 
 Phase 5: revised_changes
   [{
     stage: "Route",
-    action: "fix_scan_stitching",
-    cell_name: "NeedFreqAdj_reg",
-    mode_S_hint: "Bridge port present but sibling DCQARB DFFs not consolidated to use ECO_9868_SE_out.
-                  Identify N=10 DFFs in DCQARB sharing scan_en domain and rewrite their .SE.",
-    rationale: "evidence.per_target.FmEqvEcoRouteVsEcoPrePlace.failing_diagnostics
-                .per_dff_dossiers[0].cone_analysis.unmatched_cone_inputs[0] shows SE
-                globally unmatched. xstage.deltas.wire_present_per_stage shows
-                ECO_9868_SE_in absent from Synth (expected) but present in PP/Route.
-                set_constant SE=0 applied per evidence.tune_directives_status, so the
-                cone divergence is shadowed for the SE pin compare itself — but the
-                analyze_points report shows LatCG cone asymmetry triggered by the SE
-                source, which is fixable only by consolidating sibling DFF SE pins to
-                share the bridge wire (engineer's pattern).",
-    fallback_action: "tune_file_update",
-    eco_preeco_study_update: {action: "rebuild_per_stage_stitching_with_sibling_consolidation"}
+    action: "reapply_rewire",
+    cell_name: "<reg>_reg",
+    rationale: "evidence.summary_signals shows ECO_APPLIED_SKIPPED for Route.
+                xstage.deltas.pin_changes confirms D pin reverted to old_net in
+                Route only — applier matched in Synth/PP but missed in Route
+                because CTS renamed the cell carrying old_net.",
+    fallback_action: "tune_file_update"
   }]
 
 Phase 6: Output JSON with all phases linked

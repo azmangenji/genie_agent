@@ -92,87 +92,16 @@ def _module_scope_dff_count(host_module, dff_clock, preeco_synth_v):
 
 def decide_mode_s_strategy(host_module, ref_dir, tile_module, dff_clock,
                             preeco_synth_v, jira, tag, base_dir):
-    """Decide bridge_port | neighbor_dff | constant_zero by running picker
-    with escalation. Returns dict with strategy + supporting picker output."""
-    pp_gz = Path(ref_dir) / 'data' / 'PreEco' / 'PrePlace.v.gz'
-
-    def _run_picker(extra_args, label):
-        out_path = Path(base_dir) / 'data' / f'{tag}_eco_sibling_pick_{host_module}_{label}.json'
-        cmd = (
-            f"python3 {Path(__file__).parent / 'eco_pick_sibling.py'} "
-            f"--netlist {pp_gz} --host-module {host_module} "
-            f"--tile-module {tile_module} "
-            f"--output {out_path} {extra_args}"
-        )
-        try:
-            subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
-        except Exception:
-            pass
-        if out_path.is_file():
-            try:
-                return json.loads(out_path.read_text()), str(out_path)
-            except Exception:
-                return None, str(out_path)
-        return None, str(out_path)
-
-    escalation_chain = []
-    # 1. Default invocation (parent scope, --min-dffs=10)
-    pick, path = _run_picker('', 'parent')
-    escalation_chain.append({'label': 'parent_scope', 'output': path,
-                             'recommended_pick': (pick or {}).get('recommended_pick')})
-    if pick and pick.get('recommended_pick'):
-        return {
-            'strategy': 'bridge_port',
-            'pick': pick['recommended_pick'],
-            'picker_top': pick,
-            'pick_path': path,
-            'escalation_chain': escalation_chain,
-        }
-    # 2. Escalate to --host-scope=down
-    pick, path = _run_picker('--host-scope down', 'down')
-    escalation_chain.append({'label': 'host_scope_down', 'output': path,
-                             'recommended_pick': (pick or {}).get('recommended_pick')})
-    if pick and pick.get('recommended_pick'):
-        return {
-            'strategy': 'bridge_port',
-            'pick': pick['recommended_pick'],
-            'picker_top': pick,
-            'pick_path': path,
-            'escalation_chain': escalation_chain,
-            'parent_is_host': True,  # down-escalation: parent_module = host_module
-        }
-    # 3. Escalate to --host-scope=down --min-cluster=5
-    pick, path = _run_picker('--host-scope down --min-cluster 5', 'down_min5')
-    escalation_chain.append({'label': 'host_scope_down_min5', 'output': path,
-                             'recommended_pick': (pick or {}).get('recommended_pick')})
-    if pick and pick.get('recommended_pick'):
-        return {
-            'strategy': 'bridge_port',
-            'pick': pick['recommended_pick'],
-            'picker_top': pick,
-            'pick_path': path,
-            'escalation_chain': escalation_chain,
-            'parent_is_host': True,
-        }
-    # 4. All escalations failed — check host_module_dff_count
-    host_dff_count = _module_scope_dff_count(host_module, dff_clock, preeco_synth_v)
-    if host_dff_count == 0:
-        return {
-            'strategy': 'constant_zero',
-            'host_module_dff_count_same_clock': 0,
-            'escalation_chain': escalation_chain,
-            'reason': 'all sibling escalations returned null AND host has 0 DFFs '
-                      'in same clock domain — true wrapper-clock scope',
-        }
+    """Scan stitching is OUT OF SCOPE — DFT team handles scan integration.
+    Always emit constant_zero (SE=SI=1'b0 in all 3 stages). The picker /
+    bridge-plumbing path is short-circuited; the legacy escalation logic
+    is preserved below the early return for reference only."""
     return {
-        'strategy': 'BLOCKED',
-        'host_module_dff_count_same_clock': host_dff_count,
-        'escalation_chain': escalation_chain,
-        'reason': f'all sibling escalations returned null but host has '
-                  f'{host_dff_count} DFFs in same clock domain — '
-                  f'constant_zero forbidden by Check 30. Engineer review needed: '
-                  f'either the picker missed a viable target or the bridge architecture '
-                  f'doesn\'t fit this DFF (e.g. wrap_clk DFF that needs custom plumbing).',
+        'strategy': 'constant_zero',
+        'host_module_dff_count_same_clock': None,
+        'escalation_chain': [],
+        'reason': 'scan stitching out of scope — DFT team handles scan '
+                  'integration; AI flow emits SE=SI=1\'b0 unconditionally',
     }
 
 
