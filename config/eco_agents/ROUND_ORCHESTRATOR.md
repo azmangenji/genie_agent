@@ -196,11 +196,27 @@ for stage in Synthesize PrePlace Route:
 python3 -c "
 import json, sys
 a = json.load(open('data/<TAG>_eco_fm_analysis_round<ROUND>.json'))
-required = ['loop_verdict', 'next_round', 'failure_mode', 'revised_changes', 'diagnosis']
+required = [
+    'loop_verdict',          # RERUN_SAME_ROUND | ADVANCE_NEXT_ROUND | CONVERGED
+    'next_round',            # integer: next round number
+    'failure_mode',          # A-H or ABORT_* or UNKNOWN
+    'revised_changes',       # list (may be empty for CONVERGED)
+    'diagnosis',             # one-sentence root cause
+    'root_cause_reasoning',  # narrative tying hypothesis to evidence
+    'alternatives_considered', # list of ruled-out hypotheses
+    'evidence_summary',      # dict with evidence_walk_json + xstage_compare_json paths
+    'failing_points_count',  # dict per target
+]
 missing = [f for f in required if f not in a]
 if missing:
     print(f'FAIL: eco_fm_analyzer JSON missing required fields: {missing}')
     sys.exit(1)
+# Validate evidence_for_studier present on every non-exempt revised_change
+exempt_actions = {'cascade_verified_skip', 'manual_only'}
+for i, rc in enumerate(a.get('revised_changes', [])):
+    if rc.get('action') not in exempt_actions and 'evidence_for_studier' not in rc:
+        print(f'FAIL: revised_changes[{i}] action={rc.get(\"action\")} missing evidence_for_studier block')
+        sys.exit(1)
 print('eco_fm_analyzer output schema OK')
 "
 ```

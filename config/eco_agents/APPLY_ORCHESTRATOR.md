@@ -584,6 +584,7 @@ Then write `<BASE_DIR>/data/<TAG>_eco_fixer_state`:
   "base_dir": "<BASE_DIR>",
   "ai_eco_flow_dir": "<REF_DIR>/AI_ECO_FLOW_<TAG>",
   "max_rounds": 5,
+  "rerun_count_in_round": 0,
   "strategies_tried": [],
   "fm_results_per_round": [
     {
