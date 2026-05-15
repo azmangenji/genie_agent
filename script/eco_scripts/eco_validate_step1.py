@@ -988,6 +988,10 @@ def main():
                 for inp in (g.get('inputs') or []):
                     if not isinstance(inp, str): continue
                     base = inp.split('[')[0]
+                    # PENDING_ECO_PORT signals are VALID — new ECO ports are stage-stable
+                    # (they exist after ECO application). Do NOT flag these.
+                    if 'PENDING_ECO_PORT' in base:
+                        continue
                     # PENDING_FM_RESOLUTION signals are explicitly stage-unstable —
                     # flag them directly instead of skipping
                     if 'PENDING_FM_RESOLUTION' in base:

@@ -646,19 +646,29 @@ Add `target_register` (the DFF output Q signal) to `nets_to_query` with `fallbac
 
 **Target net selection — MANDATORY rules (all must be true, or fall through to E4c):**
 
-1. **NOT the pivot net itself** — the pivot net (SEQMAP_NET_*, DFF.D driver) is NEVER the driver_substitution target. Walk 2-5 hops UPSTREAM from the pivot net to find the target.
-2. **Named, not synthesis-internal** — must match `ctmn_*`, `phfnn_` patterns from RTL-named wires, NOT synthesis-internal `N<6-digit>` or`phfnn_*` auto-generated nets.
+1. **NOT the pivot net itself** — the pivot net (SEQMAP_NET_*, DFF.D driver) is NEVER the target. Walk 2-5 hops UPSTREAM from the pivot net.
+
+2. **The net implementing the OLD DEFAULT EXPRESSION** — the target is the specific net whose gate-level value equals the RTL's old fallback expression (e.g. BothArbPickCmds). Identify it by tracing the backward cone: the OLD expression in RTL maps to a specific gate output in the backward cone. That gate output net is the target.
+   - `ctmn_*` nets ARE valid targets — they are synthesis-named stable intermediates, NOT synthesis-internal. Do NOT reject `ctmn_*` as synthesis-internal.
+   - `N<6-digit>` and `phfnn_*` ARE synthesis-internal — reject these.
+   - When multiple `ctmn_*` nets exist in the cone, pick the one whose driving gate computes the OLD RTL expression — typically the one 2-4 hops upstream of the pivot net, not the one closest to the pivot.
+
 3. **One consumer on pivot path** — exactly one cell downstream of the target net lies on the path toward the pivot net/DFF.
-4. **Exists in ALL 3 PreEco stages** — verify with `zgrep -c <net> PreEco/{Synthesize,PrePlace,Route}.v.gz` — ALL counts must be > 0. If any stage returns 0, this net is NOT a valid target (fall through to E4c).
+
+4. **Exists in ALL 3 PreEco stages** — verify with `zgrep -c <net> PreEco/{Synthesize,PrePlace,Route}.v.gz` — ALL counts must be > 0. If any stage returns 0, fall through to E4c.
+
 5. **Driven by a named gate cell** — the driver of the target net must be identifiable by instance name in PreEco Synth.
 
 **If driver_substitution target found and ALL 5 rules pass:**
 1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<net>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`
 2. The new gate chain: renames the target net's driver output → `ECO_<jira>_net_orig`, adds compound gates (OA12/OAI21/AN3/ND3) that output the original net name
-3. The compound gates use ONLY stage-stable signals: new ECO ports from `new_port`/`port_promotion` changes, and existing primary inputs — NEVER:
-   - Synthesis-internal signals: `phfnn_*`, `N<6-digit>`, `ctmn_*` (use only as the renamed original, not as new inputs)
-   - Signals marked `PENDING_FM_RESOLUTION` — these are stage-unstable by definition; if a condition requires such a signal, driver_substitution CANNOT be used for that condition → fall through to E4c
-   - Any signal with 0 occurrences in any PreEco stage
+3. The compound gates use ONLY stage-stable signals:
+   - **ALLOWED:** New ECO ports from `new_port`/`port_promotion` changes (e.g. DcqArb0/1_PhArbFineGater). These may be marked `PENDING_ECO_PORT` in the chain — this is valid since they exist after ECO application and are stage-stable.
+   - **ALLOWED:** Existing primary inputs of the module (e.g. SplitActCtr, SplitActInProgCmd0/1).
+   - **ALLOWED:** `ctmn_*` nets only as the renamed original (`ECO_<jira>_net_orig`) feeding the DEFAULT case — never as new condition gate inputs.
+   - **FORBIDDEN:** `PENDING_FM_RESOLUTION` signals — stage-unstable; if a condition requires one, driver_substitution CANNOT be used for that condition → fall through to E4c.
+   - **FORBIDDEN:** `phfnn_*`, `N<6-digit>` synthesis-internal signals as new gate inputs.
+   - **FORBIDDEN:** Any signal with 0 occurrences in any PreEco stage.
 4. **NO MUX2 cascade** — driver_substitution replaces the target net's driver directly. MUX cascade logic belongs to `intermediate_net_insertion` only.
 5. The old expression (`ECO_<jira>_net_orig`) feeds the new chain as the DEFAULT input (when no new condition is true)
 6. Pivot net (SEQMAP_NET_*, A2150336, DFF.D) — completely untouched
