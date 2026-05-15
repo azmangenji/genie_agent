@@ -768,18 +768,33 @@ def main():
     # AND2→OR2, etc.) when a compound exists creates intermediate wires that FM must
     # trace back to RTL without SVF → compare point failures on downstream DFFs.
     _COMPOUND_PATTERNS = {
+        # OR + AND family → OA/OAI
         ('OR2',  'AND2')  : 'OA21/OA12',
         ('OR2',  'AN2')   : 'OA21/OA12',
         ('OR3',  'AND2')  : 'OA31',
+        ('OR2',  'AND3')  : 'OA211',
+        # AND + OR family → AO/AOI
         ('AND2', 'OR2')   : 'AO21',
+        ('AND2', 'OR3')   : 'AO211',
+        ('AND3', 'OR2')   : 'AO31',
+        # OR + NAND/NOR → OAI/AOI
         ('OR2',  'NAND2') : 'OAI21',
         ('OR2',  'ND2')   : 'OAI21',
+        ('OR3',  'NAND2') : 'OAI31',
         ('AND2', 'NOR2')  : 'AOI21',
         ('AND2', 'NR2')   : 'AOI21',
-        ('OR3',  'NAND2') : 'OAI31',
         ('AND3', 'NOR2')  : 'AOI31',
-        ('AND2', 'OR3')   : 'AO211',
-        ('OR2',  'AND3')  : 'OA211',
+        # INV + AND/NAND → NAND (De Morgan: ~(A&B) = NAND2)
+        ('INV',  'AND2')  : 'NAND2/INR2 (INV input absorbed into NAND)',
+        ('INV',  'AN2')   : 'NAND2/INR2 (INV input absorbed into NAND)',
+        ('INV',  'AND3')  : 'NAND3/INR3 (INV input absorbed into NAND)',
+        # INV + OR/NOR → NOR (De Morgan: ~(A|B) = NOR2)
+        ('INV',  'OR2')   : 'NOR2/INR2 (INV input absorbed into NOR)',
+        ('INV',  'NOR2')  : 'AND2 (double inversion: INV+NOR = AND)',
+        ('INV',  'NR2')   : 'AND2 (double inversion)',
+        # XOR/XNOR patterns
+        ('INV',  'XNOR2') : 'XOR2 (INV+XNOR = XOR)',
+        ('INV',  'XOR2')  : 'XNOR2 (INV+XOR = XNOR)',
     }
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         for chain_field in ('new_condition_gate_chain', 'd_input_gate_chain'):
