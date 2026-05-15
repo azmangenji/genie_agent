@@ -54,11 +54,25 @@ def main():
                 issues.append(f"CRITICAL: {stage} missing d-input gate chain entries for {target}: {missing} — run eco_expand_chains.py")
 
     # ── 3. DFF entries have port_connections_per_stage for all 3 stages ─────
+    # Only flag STATEFUL entries (DFFs with .Q output, .CP, scan pins). Skip:
+    #   - bridge buffer cells (bridge_port_role ends in '_driver') — these are
+    #     Route-only single-stage BUF cells with .I/.Z only, no per-stage variants
+    #   - combinational gates without DFF semantics (no Q output pin)
     for stage in ['Synthesize', 'PrePlace', 'Route']:
         for e in study.get(stage, []):
             if e.get('change_type') not in ('new_logic_dff', 'new_logic'):
                 continue
             if not e.get('confirmed', True):
+                continue
+            # Skip bridge driver buffers (Route-only, no per-stage variations needed)
+            role = e.get('bridge_port_role', '') or ''
+            if role.endswith('_driver'):
+                continue
+            # Skip non-DFF entries (no Q pin in port_connections → not a sequential cell)
+            top_pcs = e.get('port_connections') or {}
+            has_q_pin = 'Q' in top_pcs or 'QN' in top_pcs
+            is_dff_change = e.get('change_type') == 'new_logic_dff'
+            if not (is_dff_change or has_q_pin):
                 continue
             inst = e.get('instance_name', '?')
             pcs = e.get('port_connections_per_stage', {})
