@@ -98,13 +98,15 @@ def _banner(verdict: str, reason: str, next_r: Any, round_n: int, rerun_count: i
 def fm_results_table(fm_verify: dict | None) -> str:
     if not fm_verify:
         return "<p><i>FM verify JSON not available.</i></p>"
+    # Support both nested schema (per_target dict) and flat top-level schema
+    nested = fm_verify.get("per_target", {}) or {}
     rows = []
     for tgt in ("FmEqvEcoSynthesizeVsSynRtl",
                 "FmEqvEcoPrePlaceVsEcoSynthesize",
                 "FmEqvEcoRouteVsEcoPrePlace"):
-        det = fm_verify.get(tgt)
+        det = nested.get(tgt) or fm_verify.get(tgt)
         if isinstance(det, dict):
-            status = det.get("status", "?")
+            status = det.get("status") or det.get("verdict", "?")
             count  = det.get("failing_count", "—")
         else:
             status = str(det) if det is not None else "MISSING"
@@ -130,8 +132,11 @@ def fm_results_table(fm_verify: dict | None) -> str:
 def failing_points_detail(fm_verify: dict | None, max_lines: int = 30) -> str:
     if not fm_verify:
         return "<p><i>No data.</i></p>"
+    # Support both nested schema (per_target dict) and flat top-level schema
+    nested = fm_verify.get("per_target", {}) or {}
+    source = nested if nested else fm_verify
     blocks = []
-    for tgt, det in fm_verify.items():
+    for tgt, det in source.items():
         if not isinstance(det, dict):
             continue
         fp = det.get("failing_points", [])
