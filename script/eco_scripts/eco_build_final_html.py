@@ -11,8 +11,14 @@ Usage:
         --ai-eco-flow-dir <AI_ECO_FLOW_DIR> \
         [--ref-dir <REF_DIR>] [--output <path>]
 """
-import argparse, html, json, re, sys
+import argparse, html, json, re, sys, os
 from pathlib import Path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from eco_html_design import (
+    FONT, F_BASE, F_SMALL, F_CODE, BODY_STYLE, CONTAINER,
+    TH_STYLE, TD_STYLE, TD_ALT, TABLE_ATTRS,
+    SECTION_TITLE_STYLE, SECTION_BODY_STYLE, PRE_STYLE
+)
 
 # ── Design System (all inline — email-safe) ────────────────────────────────
 FONT    = "font-family:Arial,Helvetica,sans-serif"

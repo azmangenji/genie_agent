@@ -23,6 +23,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Shared design constants — keeps round + final emails visually consistent
+import os as _os
+sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from eco_html_design import (
+    esc as _esc_design, badge, section_wrap, tbl as design_tbl,
+    pre_block as design_pre, BODY_STYLE, CONTAINER, F_BASE, F_SMALL,
+    TH_STYLE, TD_STYLE, TD_ALT, TABLE_ATTRS
+)
+
 
 # -----------------------------------------------------------------------------
 # I/O helpers
@@ -157,8 +166,8 @@ def fm_results_table(fm_verify: dict | None) -> str:
             f"<td style='text-align:right'>{esc(count)}</td></tr>"
         )
     return f"""
-<table border="1" cellpadding="6" style="border-collapse:collapse;margin:8px 0">
-  <tr style='background:#f5f5f5'><th>Target</th><th>Status</th><th>Failing Points</th></tr>
+<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0">
+  <tr><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Target</th><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Status</th><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Failing Points</th></tr>
   {''.join(rows)}
 </table>
 """
@@ -299,7 +308,7 @@ def evidence_summary_section(evidence: dict | None) -> str:
         )
         if rows:
             out.append("<h4 style='margin-bottom:4px'>Tune directives applied (set_constant)</h4>")
-            out.append(f"<table border='1' cellpadding='4' style='border-collapse:collapse;font-size:12px'>"
+            out.append(f"<table >"
                        f"<tr style='background:#f5f5f5'><th>Target</th><th># constants</th></tr>{rows}</table>")
     return "\n".join(out)
 
@@ -354,9 +363,9 @@ def xstage_section(xstage: dict | None) -> str:
             blocks.append(f"<h4 style='margin-bottom:4px'><code>{esc(inst)}</code></h4>"
                           f"<p style='color:#616161;font-size:12px;margin:0'><i>No structural deltas (cone match across stages)</i></p>")
         else:
+            tbl_attr = 'cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0"'
             blocks.append(f"<h4 style='margin-bottom:4px'><code>{esc(inst)}</code></h4>"
-                          f"<table border='1' cellpadding='4' style='border-collapse:collapse;font-size:12px;margin-bottom:12px'>"
-                          f"{''.join(rows)}</table>")
+                          f"<table {tbl_attr}>{''.join(rows)}</table>")
     return "\n".join(blocks)
 
 
@@ -383,7 +392,7 @@ def diagnosis_section(analysis: dict | None) -> str:
             for a in alts
         )
         out.append(f"<h4 style='margin-bottom:4px;margin-top:12px'>Alternatives Considered</h4>"
-                   f"<table border='1' cellpadding='4' style='border-collapse:collapse;font-size:12px'>"
+                   f"<table >"
                    f"<tr style='background:#f5f5f5'><th>Hypothesis</th><th>Rejected because</th></tr>"
                    f"{rows}</table>")
     return "\n".join(out)
@@ -469,7 +478,8 @@ def contract_section(contract: dict | None) -> str:
         f"<tr><td><code>{esc(v.get('ctx'))}</code></td><td>{esc(v.get('violation'))}</td></tr>"
         for v in contract.get("violations", [])[:30]
     )
-    return (f"{summary}<table border='1' cellpadding='4' style='border-collapse:collapse;font-size:11px'>"
+    _TA = 'cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0"'
+    return (f"{summary}<table {_TA}>"
             f"<tr style='background:#f5f5f5'><th>Context</th><th>Violation</th></tr>{rows}</table>")
 
 
@@ -500,7 +510,7 @@ def companion_files_section(base_dir: Path, ai_eco_flow_dir: Path | None,
         color = "#2e7d32" if path.exists() else "#c62828"
         rows.append(f"<tr><td><span style='color:{color}'>{exists}</span> {esc(label)}</td>"
                     f"<td><code style='font-size:11px'>{esc(path)}</code></td></tr>")
-    return (f"<table border='1' cellpadding='4' style='border-collapse:collapse;font-size:12px'>"
+    return (f"<table >"
             f"<tr style='background:#f5f5f5'><th>Artifact</th><th>Path</th></tr>{''.join(rows)}</table>")
 
 
@@ -542,41 +552,48 @@ def build_html(args) -> str:
     verdict = (analysis or {}).get("loop_verdict", "UNKNOWN")
     subject = f"[ECO Round {round_n}] {tag} {overall_status} [{verdict}] - {args.jira} ({args.tile})"
 
+    # Title bar
+    title_bar = (
+        f'<div style="background:#2c3e50;color:white;padding:16px 20px;border-radius:6px 6px 0 0">'
+        f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:18px;font-weight:bold">'
+        f'ECO Round {round_n} — JIRA {esc(args.jira)} ({esc(args.tile)})</div>'
+        f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;opacity:0.8;margin-top:4px">'
+        f'Tag: {esc(tag)} &nbsp;|&nbsp; FM Tag: {esc(eco_fm_tag)} &nbsp;|&nbsp; Status: {esc(overall_status)}'
+        f'</div></div>'
+    )
+
     # Assemble HTML
     parts = [
         f"<!-- subject: {subject} -->",
-        f"<html><body style='font-family:Arial,sans-serif;margin:20px;color:#212121;max-width:1100px'>",
-        f"<h2 style='margin-bottom:4px'>ECO Round {round_n} — JIRA {esc(args.jira)} ({esc(args.tile)})</h2>",
-        f"<p style='color:#616161;margin-top:0;font-size:13px'>"
-        f"Tag: <code>{esc(tag)}</code> &middot; eco_fm_tag: <code>{esc(eco_fm_tag)}</code> &middot; Status: <b>{esc(overall_status)}</b></p>",
-
+        f"<!DOCTYPE html><html><head><meta charset='utf-8'></head>",
+        f"<body style='{BODY_STYLE}'>",
+        f"<div {CONTAINER}>",
+        title_bar,
         verdict_banner(analysis, fixer_state, round_n),
     ]
 
     if pre_fm_check_failed:
         parts += [
-            "<h3>Pre-FM Check FAILED — FM was not submitted this round</h3>",
-            f"<pre style='background:#fff8e1;padding:10px;border-left:4px solid #f57c00;font-size:12px'>{esc(pre_fm_text)}</pre>",
+            section_wrap("Pre-FM Check FAILED — FM was not submitted this round",
+                         design_pre(pre_fm_text), color="#e67e22"),
         ]
     else:
         parts += [
-            "<h3>1. FM Results</h3>",       fm_results_table(fm_verify),
-            "<h3>2. Failing Points Detail</h3>", failing_points_detail(fm_verify, evidence=evidence),
-            "<h3>3. Evidence Walk Summary</h3>", evidence_summary_section(evidence),
-            "<h3>4. Cross-Stage Netlist Deltas</h3>", xstage_section(xstage),
-            "<h3>5. ECO Changes Applied This Round</h3>", eco_changes_summary(eco_applied),
-            "<h3>6. Pre-FM Check (first 30 lines)</h3>",
-            f"<pre style='background:#fafafa;padding:8px;font-size:11px;max-height:300px;overflow:auto'>{esc(pre_fm_text)}</pre>",
-            "<h3>7. Failure Diagnosis</h3>", diagnosis_section(analysis),
-            "<h3>8. Revised Changes + Evidence For Studier</h3>", revised_changes_section(analysis),
-            "<h3>9. Analyzer Evidence Contract</h3>", contract_section(contract),
+            section_wrap("1. FM Results",                fm_results_table(fm_verify)),
+            section_wrap("2. Failing Points Detail",     failing_points_detail(fm_verify, evidence=evidence)),
+            section_wrap("3. Evidence Walk Summary",     evidence_summary_section(evidence)),
+            section_wrap("4. Cross-Stage Netlist Deltas", xstage_section(xstage)),
+            section_wrap("5. ECO Changes Applied",       eco_changes_summary(eco_applied)),
+            section_wrap("6. Pre-FM Check",              design_pre(pre_fm_text, 2000)),
+            section_wrap("7. Failure Diagnosis",         diagnosis_section(analysis)),
+            section_wrap("8. Revised Changes",           revised_changes_section(analysis)),
+            section_wrap("9. Analyzer Evidence Contract", contract_section(contract)),
         ]
 
     parts += [
-        "<h3>10. Companion Artifacts</h3>",
-        companion_files_section(base_dir, ai_eco_flow_dir, tag, round_n),
-        f"<hr><p style='color:#9e9e9e;font-size:11px'>Generated by eco_build_round_html.py — round {round_n} of TAG {esc(tag)}</p>",
-        "</body></html>"
+        section_wrap("10. Companion Artifacts", companion_files_section(base_dir, ai_eco_flow_dir, tag, round_n)),
+        f"<p style='{F_SMALL};margin-top:16px'>Generated by eco_build_round_html.py — Round {round_n} | {esc(tag)}</p>",
+        "</div></body></html>"
     ]
 
     return "\n".join(parts)
