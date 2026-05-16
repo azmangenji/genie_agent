@@ -18,12 +18,12 @@ CONTAINER  = 'style="width:700px;margin:0 auto"'
 TH_STYLE = (f"background:#3498db;color:white;padding:8px 10px;text-align:left;"
             f"{FONT};font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap")
 TD_STYLE = (f"padding:6px 10px;{FONT};font-size:12px;color:#333;"
-            f"border:1px solid #ddd;vertical-align:top;background:#ffffff;"
+            f"border:1px solid #cccccc;vertical-align:top;background:#ffffff;"
             f"word-break:break-word;word-wrap:break-word")
 TD_ALT   = (f"padding:6px 10px;{FONT};font-size:12px;color:#333;"
-            f"border:1px solid #ddd;vertical-align:top;background:#f0f4f8;"
+            f"border:1px solid #cccccc;vertical-align:top;background:#eef4fb;"
             f"word-break:break-word;word-wrap:break-word")
-TABLE_ATTRS = 'cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0"'
+TABLE_ATTRS = 'border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;border-color:#ddd"'
 
 # Section wrap
 SECTION_TITLE_STYLE = (f"background:#3498db;color:white;padding:10px 16px;"
@@ -69,11 +69,12 @@ def section_wrap(title, content, top_margin="16px", color="#3498db"):
 
 
 def tbl(headers, rows):
-    hdr = "".join(f'<th style="{TH_STYLE}">{h}</th>' for h in headers)
+    hdr = "".join(f'<th bgcolor="#3498db" style="{TH_STYLE}">{h}</th>' for h in headers)
     body = ""
     for i, row in enumerate(rows):
         st = TD_ALT if i % 2 else TD_STYLE
-        body += "<tr>" + "".join(f'<td style="{st}">{c}</td>' for c in row) + "</tr>"
+        bg = 'bgcolor="#eef4fb"' if i % 2 else 'bgcolor="#ffffff"'
+        body += f"<tr {bg}>" + "".join(f'<td style="{st}">{c}</td>' for c in row) + "</tr>"
     return f'<table {TABLE_ATTRS}><tr>{hdr}</tr>{body}</table>'
 
 
