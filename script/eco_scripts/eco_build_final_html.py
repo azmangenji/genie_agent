@@ -61,19 +61,21 @@ def section_wrap(title, content, top_margin="24px", color="#3498db", font_size="
 
 def table(headers, rows, col_widths=None):
     """Consistent table with alternating row shading."""
+    # Use one unified th_style — all header cells identical
     th_style = (f"background:#34495e;color:white;padding:8px 12px;text-align:left;"
-                f"{FONT};font-size:12px;font-weight:bold;border:1px solid #2c3e50")
-    td_style  = f"padding:7px 12px;{FONT};font-size:12px;color:#333;border:1px solid #ddd;vertical-align:top"
-    td_alt    = f"padding:7px 12px;{FONT};font-size:12px;color:#333;border:1px solid #ddd;vertical-align:top;background:#f8f9fa"
+                f"{FONT};font-size:12px;font-weight:bold;"
+                f"border:1px solid #2c3e50;white-space:nowrap")
+    td_style = (f"padding:7px 12px;{FONT};font-size:12px;color:#333;"
+                f"border:1px solid #ddd;vertical-align:top;background:#ffffff")
+    td_alt   = (f"padding:7px 12px;{FONT};font-size:12px;color:#333;"
+                f"border:1px solid #ddd;vertical-align:top;background:#f0f4f8")
 
-    width_attr = ('width="100%"' if not col_widths else
-                  'style="width:100%;border-collapse:collapse"')
     hdr = "".join(f'<th style="{th_style}">{h}</th>' for h in headers)
     body = ""
     for i, row in enumerate(rows):
-        td = td_alt if i % 2 else td_style
-        body += "<tr>" + "".join(f'<td style="{td}">{c}</td>' for c in row) + "</tr>"
-    return (f'<table {width_attr} style="border-collapse:collapse;width:100%;margin:8px 0">'
+        st = td_alt if i % 2 else td_style
+        body += "<tr>" + "".join(f'<td style="{st}">{c}</td>' for c in row) + "</tr>"
+    return (f'<table style="border-collapse:collapse;width:100%;margin:8px 0">'
             f'<tr>{hdr}</tr>{body}</table>')
 
 def pre_block(text, max_chars=5000):
