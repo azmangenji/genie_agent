@@ -135,6 +135,25 @@ def build_html(args):
                     "#e74c3c" if verdict_word=="FAIL" else "#e67e22")
     subject = f"[ECO {jira} FINAL] {tile} — {verdict_word} ({tag})"
 
+    # ── FM FINAL STATUS — read from last round's RPT ───────────────────────
+    fm_rows = []
+    for rnd in range(total, 0, -1):  # latest round first
+        rpt = read(data / f"{tag}_eco_step6_fm_verify_round{rnd}.rpt")
+        if rpt:
+            results = parse_fm_rpt(rpt)
+            if results:
+                for t, st, cnt in results:
+                    cnt_str = str(cnt) if cnt else ("0" if st == "PASS" else "—")
+                    fm_rows.append([e(t), badge(st), cnt_str])
+                break   # use latest round that has FM results
+
+    fm_status_tbl = ""
+    if fm_rows:
+        fm_status_tbl = (
+            f'<p style="{F_BASE}"><b>Final FM Verification Status (Round {rnd}):</b></p>'
+            + table(["FM Target", "Status", "Failing Points"], fm_rows)
+        )
+
     # ── HEADER INFO TABLE ──────────────────────────────────────────────────
     header_tbl = table(
         ["Tag", "JIRA", "Tile", "Total Rounds", "Final Verdict"],
@@ -374,6 +393,7 @@ def build_html(args):
         + title_div + '\n'
         + header_div + '\n'
         + banner
+        + (section_wrap("Final FM Verification Status", fm_status_tbl, top_margin="8px", color="#1a6fa8") if fm_status_tbl else "")
         + phase1_header + '\n'
         + step1 + step2 + step3
         + phase2_header + '\n'
