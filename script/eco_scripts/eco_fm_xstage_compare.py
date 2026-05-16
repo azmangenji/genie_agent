@@ -77,18 +77,19 @@ def read_gz_text(path: Path) -> str:
         return ""
 
 
-def find_inst_block(text: str, inst_name: str) -> tuple[str, str] | None:
+def find_inst_block(text: str, inst_name: str,
+                    hint_pos: int | None = None) -> tuple[str, str] | None:
     """Find a cell instance block in the text. Returns (cell_type, block_text) or None.
 
-    A block is from the cell-type line through the matching `) ;` terminator.
-    Handles multi-line port lists.
+    hint_pos: if provided, start search from this position (from index) — avoids
+              scanning the full 500MB text each time.
     """
-    # Search for an instance line that ends with `inst_name (` (with whitespace tolerance)
     pat = re.compile(
         r"^[ \t]*([A-Z][A-Z0-9_]+)\s+" + re.escape(inst_name) + r"\s*\(",
         re.MULTILINE,
     )
-    m = pat.search(text)
+    search_start = max(0, hint_pos - 20) if hint_pos is not None else 0
+    m = pat.search(text, search_start)
     if not m:
         return None
     start = m.start()
@@ -210,13 +211,16 @@ def cell_present(text: str, inst_name: str) -> bool:
     return bool(pat.search(text))
 
 
-def compare_dff(inst_name: str, stage_texts: dict[str, str], depth: int = 5) -> dict:
+def compare_dff(inst_name: str, stage_texts: dict[str, str], depth: int = 2,
+                stage_index: dict[str, dict[str, int]] | None = None) -> dict:
     """Build per-stage pin map + driver chain + decl status for one failing DFF."""
     per_stage: dict[str, dict] = {}
     pin_changes: list[dict] = []
 
     for stage, text in stage_texts.items():
-        block_info = find_inst_block(text, inst_name)
+        # Use pre-built index to jump directly to the instance position (avoids full scan)
+        hint = (stage_index or {}).get(stage, {}).get(inst_name)
+        block_info = find_inst_block(text, inst_name, hint_pos=hint)
         if not block_info:
             per_stage[stage] = {"present": False}
             continue
@@ -351,7 +355,7 @@ def main() -> int:
     p.add_argument("--evidence-json", default=None,
                    help="Path to eco_fm_evidence_round<N>.json (default: derived)")
     p.add_argument("--output", default=None)
-    p.add_argument("--depth", type=int, default=5, help="Driver chain walk depth")
+    p.add_argument("--depth", type=int, default=2, help="Driver chain walk depth")
     p.add_argument("--max-dffs", type=int, default=20,
                    help="Limit analysis to N failing DFFs (0 = no limit). "
                         "Uses top modules (by failing count) as priority filter.")
@@ -414,16 +418,31 @@ def main() -> int:
         print(f"NOTE: no failing DFFs in evidence — wrote empty stub {out_path}")
         return 0
 
-    # Read all 3 stage netlists once
+    # Read all 3 stage netlists and build per-instance position index for fast lookup.
+    # Instead of regex-scanning 500MB per DFF, we build a dict {inst_name: (start, end)}
+    # so find_inst_block can jump directly to the right position.
     stage_texts: dict[str, str] = {}
+    stage_inst_index: dict[str, dict[str, int]] = {}  # stage → {inst_name → start_pos}
+
     for stage in STAGES:
-        stage_texts[stage] = read_gz_text(ref_dir / "data" / "PostEco" / f"{stage}.v.gz")
-        size_kb = len(stage_texts[stage]) // 1024
-        print(f"  loaded {stage}: {size_kb}KB")
+        text = read_gz_text(ref_dir / "data" / "PostEco" / f"{stage}.v.gz")
+        stage_texts[stage] = text
+        size_kb = len(text) // 1024
+        print(f"  loaded {stage}: {size_kb}KB — building instance index ...", end=" ", flush=True)
+        # Build index: scan once, record start position of every instance declaration
+        idx: dict[str, int] = {}
+        for m in INST_START_RE.finditer(text):
+            iname = m.group(2)
+            if iname not in idx:   # keep first occurrence
+                idx[iname] = m.start()
+        stage_inst_index[stage] = idx
+        print(f"{len(idx)} instances indexed")
+    print()
 
     per_failing_dff = {}
     for inst in sorted(failing_insts):
-        per_failing_dff[inst] = compare_dff(inst, stage_texts, depth=args.depth)
+        per_failing_dff[inst] = compare_dff(inst, stage_texts, depth=args.depth,
+                                            stage_index=stage_inst_index)
         print(f"  compared {inst}: "
               f"pin_changes={len(per_failing_dff[inst]['deltas']['pin_changes'])}, "
               f"wire_deltas={len(per_failing_dff[inst]['deltas']['wire_present_per_stage'])}, "
