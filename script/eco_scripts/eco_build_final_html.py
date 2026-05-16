@@ -170,21 +170,73 @@ def build_html(args):
     step2 = section_wrap("Step 2 — Find Equivalent Nets (Fenets)", pre_block(fenets_rpt, 3000))
 
     # ── STEP 3 — Study ────────────────────────────────────────────────────
-    synth_n = len(study_json.get("Synthesize", []))
-    pp_n    = len(study_json.get("PrePlace", []))
-    rt_n    = len(study_json.get("Route", []))
-    study_rpt   = read(data / f"{tag}_eco_step3_netlist_study_round1.rpt")
-    verify_rpt  = read(data / f"{tag}_eco_step3_netlist_verify.rpt")
+    from collections import Counter as _Counter
+    synth_entries = study_json.get("Synthesize", [])
+    pp_entries    = study_json.get("PrePlace", [])
+    rt_entries    = study_json.get("Route", [])
+    synth_n, pp_n, rt_n = len(synth_entries), len(pp_entries), len(rt_entries)
+
+    # Summary: entry type counts per stage
+    ct_synth = _Counter(e.get("change_type","?") for e in synth_entries)
+    ct_pp    = _Counter(e.get("change_type","?") for e in pp_entries)
+    ct_rt    = _Counter(e.get("change_type","?") for e in rt_entries)
+    all_types = sorted(set(ct_synth) | set(ct_pp) | set(ct_rt))
+    summary_rows = [[e(t), str(ct_synth.get(t,0)), str(ct_pp.get(t,0)), str(ct_rt.get(t,0))]
+                    for t in all_types]
+    summary_rows.append([f'<b>Total</b>', f'<b>{synth_n}</b>', f'<b>{pp_n}</b>', f'<b>{rt_n}</b>'])
+
+    # Gate chain entries (new_logic_gate) — use Synthesize as reference
+    gate_entries = [en for en in synth_entries if en.get("change_type") == "new_logic_gate"]
+    gate_rows = [
+        [e(en.get("instance_name","")),
+         e(en.get("gate_function","")),
+         e(en.get("cell_type","").split("D")[0] if en.get("cell_type") else ""),  # family only
+         e(en.get("output_net","")),
+         e(en.get("instance_scope",""))]
+        for en in gate_entries
+    ]
+
+    # Rewire entries
+    rewire_entries = [en for en in synth_entries if en.get("change_type") == "rewire"]
+    rewire_rows = [
+        [e(en.get("cell_name","") or en.get("instance_name","")),
+         e(en.get("cell_type","").split("D")[0] if en.get("cell_type") else ""),
+         e(en.get("pin","")),
+         e(en.get("old_net","")),
+         e(en.get("new_net","")),
+         e(en.get("instance_scope",""))]
+        for en in rewire_entries
+    ]
+
+    # Port changes (declaration + connection + promotion)
+    port_entries = [en for en in synth_entries if en.get("change_type") in
+                    ("port_declaration","port_connection","port_promotion","new_port")]
+    port_rows = [
+        [e(en.get("change_type","")),
+         e(en.get("signal_name","") or en.get("port_name","") or en.get("net_name","")),
+         e(en.get("module_name","")),
+         e(en.get("instance_name","") or en.get("instance_scope",""))]
+        for en in port_entries
+    ]
+
     study_content = (
-        table(["Stage","Study Entries"],
-              [["Synthesize", str(synth_n)],
-               ["PrePlace",   str(pp_n)],
-               ["Route",      str(rt_n)]])
-        + (f'<p style="{F_BASE}"><b>Study Report:</b></p>' + pre_block(study_rpt, 2000) if study_rpt else "")
-        + (f'<p style="{F_BASE}"><b>Netlist Verifier:</b></p>' + pre_block(verify_rpt, 2000) if verify_rpt else "")
+        f'<p style="{F_BASE}"><b>Entry Type Breakdown per Stage:</b></p>'
+        + table(["Change Type","Synthesize","PrePlace","Route"], summary_rows)
+
+        + (f'<p style="{F_BASE}"><b>New Logic Gates ({len(gate_entries)}) — Synthesize reference:</b></p>'
+           + table(["Instance","Gate Function","Cell Family","Output Net","Scope"], gate_rows)
+           if gate_rows else "")
+
+        + (f'<p style="{F_BASE}"><b>Rewire Entries ({len(rewire_entries)}):</b></p>'
+           + table(["Cell","Family","Pin","Old Net","New Net","Scope"], rewire_rows)
+           if rewire_rows else "")
+
+        + (f'<p style="{F_BASE}"><b>Port Changes ({len(port_entries)}):</b></p>'
+           + table(["Type","Signal/Port","Module","Instance"], port_rows)
+           if port_rows else "")
     )
     step3 = section_wrap(
-        f"Step 3 — Netlist Study (Synth:{synth_n} / PP:{pp_n} / Route:{rt_n} entries)",
+        f"Step 3 — Netlist Study ({synth_n} entries per stage)",
         study_content)
 
     # ── PER-ROUND BREAKDOWN ────────────────────────────────────────────────
