@@ -128,14 +128,16 @@ def _banner(verdict: str, reason: str, next_r: Any, round_n: int, rerun_count: i
                   if verdict == "RERUN_SAME_ROUND"
                   else f"Round {next_r}" if verdict == "ADVANCE_NEXT_ROUND"
                   else "—")
-    return f"""
-<div style="background:{color};color:white;padding:14px 20px;border-radius:6px;margin-bottom:18px">
-  <div style="font-size:14px;opacity:0.85">LOOP VERDICT (this round = {round_n})</div>
-  <div style="font-size:22px;font-weight:bold;margin-top:4px">{esc(verdict)}</div>
-  <div style="font-size:13px;margin-top:6px;opacity:0.95">{esc(reason)}</div>
-  <div style="font-size:12px;margin-top:8px">Next: <b>{esc(next_label)}</b></div>
-</div>
-"""
+    banner_cls = {"CONVERGED":"banner-pass","ADVANCE_NEXT_ROUND":"banner-info",
+                  "RERUN_SAME_ROUND":"banner-warn"}.get(verdict, "banner-fail")
+    return (
+        f"\n<div class='banner {banner_cls}'>\n"
+        f"<strong>{esc(verdict)}</strong>"
+        f" &nbsp;<span class='meta'>round={round_n}</span><br>\n"
+        f"<span style='font-size:12px'>{esc(reason)}</span><br>\n"
+        f"<span class='meta'>Next: {esc(next_label)}</span>\n"
+        f"</div>\n"
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -383,22 +385,27 @@ def diagnosis_section(analysis: dict | None) -> str:
     diag  = analysis.get("diagnosis", "")
     reasoning = analysis.get("root_cause_reasoning", "")
     alts = analysis.get("alternatives_considered", [])
-    out = [f"<p><b>Failure Mode:</b> <code>{esc(fmode)}</code></p>",
-           f"<p><b>Diagnosis:</b> {esc(diag)}</p>"]
+    out = [
+        f"<p><b>Failure Mode:</b> <code>{esc(fmode)}</code></p>\n",
+        f"<p><b>Diagnosis:</b><br>\n{esc(diag[:300])}</p>\n"
+    ]
     if reasoning:
-        out.append(f"<h4>Root Cause Reasoning</h4>"
-                   "<div class='box'>"
-                   f"{esc(reasoning)}</div>")
+        out.append(
+            f"<h4>Root Cause Reasoning</h4>\n"
+            f"<div class='box'>\n{esc(reasoning[:600])}\n</div>\n"
+        )
     if alts:
-        rows = "".join(
-            f"<tr><td>{esc(a.get('hypothesis') if isinstance(a, dict) else a)}</td>"
-            f"<td>{esc(a.get('rejected_because','') if isinstance(a, dict) else '')}</td></tr>"
+        rows = "\n".join(
+            f"  <tr>\n"
+            f"    <td>{esc(a.get('hypothesis','') if isinstance(a,dict) else a)}</td>\n"
+            f"    <td>{esc(a.get('rejected_because','') if isinstance(a,dict) else '')}</td>\n"
+            f"  </tr>"
             for a in alts
         )
-        out.append(f"<h4>Alternatives Considered</h4>"
-                   "<table>"
-                   f"{_th_row('Hypothesis','Rejected because')}"
-                   f"{rows}</table>")
+        out.append(
+            f"<h4>Alternatives Considered</h4>\n"
+            f"<table>\n{_th_row('Hypothesis','Rejected because')}\n{rows}\n</table>\n"
+        )
     return "\n".join(out)
 
 
@@ -511,11 +518,15 @@ def companion_files_section(base_dir: Path, ai_eco_flow_dir: Path | None,
     rows = []
     for label, path in items:
         exists = "✓" if path.exists() else "✗"
-        color = "#2e7d32" if path.exists() else "#c62828"
-        rows.append(f"<tr><td><span style='color:{color}'>{exists}</span> {esc(label)}</td>"
-                    f"<td><code style='font-size:11px'>{esc(path)}</code></td></tr>")
-    return ("<table>"
-            f"{_th_row('Artifact','Path')}{''.join(rows)}</table>")
+        cls = "pass" if path.exists() else "fail"
+        fname = path.name  # filename only — keeps lines short
+        rows.append(
+            f"\n  <tr>\n"
+            f"    <td><span class='{cls}'>{exists}</span> {esc(label)}</td>\n"
+            f"    <td><code>{esc(fname)}</code></td>\n"
+            f"  </tr>"
+        )
+    return f"<table>\n{_th_row('Artifact','File')}\n{''.join(rows)}\n</table>\n"
 
 
 # -----------------------------------------------------------------------------

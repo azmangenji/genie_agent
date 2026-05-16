@@ -268,7 +268,8 @@ def build_html(args):
     artifacts_section = ""
     if ai_flow and ai_flow.exists():
         files = sorted(f for f in ai_flow.iterdir() if f.is_file())
-        art_rows = [[esc(f.name), f"{f.stat().st_size//1024} KB"] for f in files]
+        # Truncate long filenames to keep table cell lines short
+        art_rows = [[esc(f.name[:80]), f"{f.stat().st_size//1024} KB"] for f in files]
         artifacts_section = (
             f"<h2>AI_ECO_FLOW Artifacts ({len(files)} files)</h2>"
             f"<p class='meta'>{esc(str(ai_flow))}</p>"

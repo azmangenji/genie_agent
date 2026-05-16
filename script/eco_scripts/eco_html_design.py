@@ -64,17 +64,18 @@ def section_wrap(title, content, level=2):
     return f'<{tag}>{esc(title)}</{tag}><div class="section">{content}</div>'
 
 def tbl(headers, rows):
-    hdr = "".join(f"<th>{h}</th>" for h in headers)
+    hdr = "\n  " + "\n  ".join(f"<th>{h}</th>" for h in headers)
     body = ""
     for row in rows:
-        body += "<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>"
-    return f"<table><tr>{hdr}</tr>{body}</table>"
+        cells = "\n    ".join(f"<td>{c}</td>" for c in row)
+        body += f"\n  <tr>\n    {cells}\n  </tr>"
+    return f"<table>\n  <tr>{hdr}\n  </tr>{body}\n</table>\n"
 
 def pre_block(text, max_chars=5000):
     if not text:
         return '<p class="meta"><i>Not available</i></p>'
     text = text[:max_chars] + ("\n…" if len(text) > max_chars else "")
-    return f"<pre>{esc(text)}</pre>"
+    return f"<pre>\n{esc(text)}\n</pre>\n"
 
 def html_wrap(subject, body_content, tag="", jira="", tile=""):
     # <!DOCTYPE html> MUST be the very first line — genie_cli.py send_email()
