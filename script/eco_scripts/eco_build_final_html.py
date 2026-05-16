@@ -62,8 +62,8 @@ def section_wrap(title, content, top_margin="24px", color="#3498db", font_size="
 def table(headers, rows, col_widths=None):
     """Consistent table with alternating row shading."""
     # Use one unified th_style — all header cells identical
-    th_style = (f"background:#34495e;color:white;padding:8px 10px;text-align:left;"
-                f"{FONT};font-size:12px;font-weight:bold;border:1px solid #2c3e50;"
+    th_style = (f"background:#3498db;color:white;padding:8px 10px;text-align:left;"
+                f"{FONT};font-size:12px;font-weight:bold;border:1px solid #2980b9;"
                 f"white-space:nowrap")
     td_style = (f"padding:6px 10px;{FONT};font-size:12px;color:#333;"
                 f"border:1px solid #ddd;vertical-align:top;background:#ffffff;"
@@ -349,12 +349,12 @@ def build_html(args):
         f'padding:14px 16px;margin-bottom:4px">' + header_tbl + '</div>'
     )
     phase1_header = (
-        f'<div style="background:#34495e;color:white;padding:8px 14px;'
+        f'<div style="background:#1a252f;color:white;padding:8px 14px;'
         f'border-radius:4px;{FONT};font-size:14px;font-weight:bold;margin-top:20px">'
         f'STUDY PHASE — Steps 1-3</div>'
     )
     phase2_header = (
-        f'<div style="background:#34495e;color:white;padding:8px 14px;'
+        f'<div style="background:#1a252f;color:white;padding:8px 14px;'
         f'border-radius:4px;{FONT};font-size:14px;font-weight:bold;margin-top:24px">'
         f'APPLY &amp; FM PHASE — Steps 4-6 (Per Round)</div>'
     )
