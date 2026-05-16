@@ -77,9 +77,14 @@ def pre_block(text, max_chars=5000):
     return f"<pre>{esc(text)}</pre>"
 
 def html_wrap(subject, body_content, tag="", jira="", tile=""):
+    # <!DOCTYPE html> MUST be the very first line — genie_cli.py send_email()
+    # checks if content starts with <!DOCTYPE or <html to detect complete HTML.
+    # If it starts with <!-- comment --> it falls through to spec_to_html() which
+    # strips <head><style> and outputs raw CSS as text in the email body.
     return (
+        f"<!DOCTYPE html>\n"
         f"<!-- subject: {subject} -->\n"
-        f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        f"<html><head><meta charset='utf-8'>"
         f"<title>ECO {jira} — {tile}</title>"
         f"<style>{CSS}</style></head>\n"
         f"<body><div class='container'>\n"
