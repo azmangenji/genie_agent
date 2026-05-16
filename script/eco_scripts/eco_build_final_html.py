@@ -268,6 +268,44 @@ def build_html(args):
         f"Step 3 — Netlist Study ({synth_n} entries per stage)",
         study_content)
 
+    # ── STRATEGY TIMELINE (from eco_fixer_state) ──────────────────────────
+    fixer_state  = readj(data / f"{tag}_eco_fixer_state") or {}
+    strat_tried  = fixer_state.get("strategies_tried", [])
+    fm_per_round = {r["round"]: r for r in fixer_state.get("fm_results_per_round", [])}
+
+    strategy_rows = []
+    for st in strat_tried:
+        rnd       = st.get("round", "?")
+        fm_mode   = st.get("failure_mode", "—")
+        diag      = st.get("diagnosis", "—")
+        actions   = st.get("actions", [])
+        # FM result for this round
+        fm_r = fm_per_round.get(rnd, {})
+        fc   = fm_r.get("failing_count", {})
+        synth_c = fc.get("FmEqvEcoSynthesizeVsSynRtl", "—")
+        pp_c    = fc.get("FmEqvEcoPrePlaceVsEcoSynthesize", "—")
+        rt_c    = fc.get("FmEqvEcoRouteVsEcoPrePlace", "—")
+        fm_summary = f"Synth:{synth_c} | PP:{pp_c} | Route:{rt_c}"
+        progress = fm_r.get("progress_note", "")
+        actions_str = "<br>".join(e(a) for a in actions[:6])
+        strategy_rows.append([
+            str(rnd),
+            e(fm_mode),
+            e(diag[:200]),
+            actions_str,
+            e(fm_summary),
+            f'<span style="font-size:11px;color:#555">{e(progress[:150])}</span>' if progress else "—"
+        ])
+
+    strategy_section = ""
+    if strategy_rows:
+        strategy_section = section_wrap(
+            "Strategy Timeline (per round)",
+            table(["Round", "Failure Mode", "Diagnosis", "Actions Taken", "FM Result", "Progress Note"],
+                  strategy_rows),
+            top_margin="20px", color="#1a6fa8"
+        )
+
     # ── PER-ROUND BREAKDOWN ────────────────────────────────────────────────
     all_rounds = ""
     for rnd in range(1, total + 1):
@@ -394,6 +432,7 @@ def build_html(args):
         + header_div + '\n'
         + banner
         + (section_wrap("Final FM Verification Status", fm_status_tbl, top_margin="8px", color="#1a6fa8") if fm_status_tbl else "")
+        + strategy_section
         + phase1_header + '\n'
         + step1 + step2 + step3
         + phase2_header + '\n'
