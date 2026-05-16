@@ -127,11 +127,28 @@ def find_driver(text: str, net: str) -> dict | None:
     """Find a cell instance whose output (Z/ZN/Q/...) drives `net`. Return one driver."""
     if not net or net.startswith("1'b") or net.startswith("0'b"):
         return None
-    # Find any line matching `.{Z|ZN|ZN1|Q...}( <net> )`
-    needle = re.compile(
+    # Fast pre-filter: use str.find to locate the net name, then check only
+    # a small window around each occurrence for the output pin pattern.
+    # This avoids a full 500MB regex scan for every net lookup.
+    needle_pat = re.compile(
         r"\.\s*(Z|ZN|ZN1|Q|Q1|Q2|Q3|Q4|Q5|Q6|Q7|Q8)\s*\(\s*" + re.escape(net) + r"\s*\)"
     )
-    m = needle.search(text)
+    search_str = net
+    pos = 0
+    m = None
+    while True:
+        pos = text.find(search_str, pos)
+        if pos == -1:
+            break
+        # Check a small window: output pin pattern appears just before the net name
+        window_start = max(0, pos - 20)
+        window = text[window_start: pos + len(net) + 5]
+        lm = needle_pat.search(window)
+        if lm:
+            # Re-search in original text at this position to get the full match object
+            m = needle_pat.search(text, window_start, pos + len(net) + 5)
+            break
+        pos += len(net)
     if not m:
         # Could also be an `assign net = expr;`
         assign_re = re.compile(r"\bassign\s+" + re.escape(net) + r"\s*=\s*([^;]+);")
@@ -213,12 +230,14 @@ def cell_present(text: str, inst_name: str) -> bool:
 
 def compare_dff(inst_name: str, stage_texts: dict[str, str], depth: int = 2,
                 stage_index: dict[str, dict[str, int]] | None = None) -> dict:
-    """Build per-stage pin map + driver chain + decl status for one failing DFF."""
+    """Build per-stage pin map for one failing DFF. Fast path: pin extraction only.
+    No cone walk — the FM analyzer uses pattern_summary for aggregate diagnosis.
+    """
     per_stage: dict[str, dict] = {}
-    pin_changes: list[dict] = []
+    pin_changes: list[str] = []   # plain strings — faster to build
 
     for stage, text in stage_texts.items():
-        # Use pre-built index to jump directly to the instance position (avoids full scan)
+        # Use pre-built index to jump directly to the instance position
         hint = (stage_index or {}).get(stage, {}).get(inst_name)
         block_info = find_inst_block(text, inst_name, hint_pos=hint)
         if not block_info:
@@ -226,65 +245,36 @@ def compare_dff(inst_name: str, stage_texts: dict[str, str], depth: int = 2,
             continue
         cell_type, block = block_info
         pins = {pin: extract_pin(block, pin) for pin in PIN_PATTERNS}
-        chain_d = trace_chain(text, pins["D"], depth=depth) if pins["D"] else []
         per_stage[stage] = {
             "present": True,
             "cell_type": cell_type,
             "pins": pins,
-            "driver_chain_D": chain_d,
         }
 
-    # Compute pin deltas across stages
+    # Compute pin deltas across stages (fast — only uses already-extracted pin dict)
     if all(per_stage.get(s, {}).get("present") for s in STAGES):
         for pin in PIN_PATTERNS:
             vals = {s: per_stage[s]["pins"].get(pin, "") for s in STAGES}
-            uniq = set(vals.values())
-            if len(uniq) > 1:
-                pin_changes.append({"pin": pin, "stages": vals})
+            if len(set(vals.values())) > 1:
+                pin_changes.append(
+                    f"{pin} differs: " + " vs ".join(f"{s}={v}" for s, v in vals.items())
+                )
 
-    # Wire decl status for each pin's net per stage
-    wire_decls: dict[str, dict] = {}
-    interesting_wires = set()
-    for s in STAGES:
-        ps = per_stage.get(s, {})
-        if ps.get("present"):
-            for v in ps["pins"].values():
-                if v and not v.startswith("1'b") and not v.startswith("0'b"):
-                    interesting_wires.add(v)
+    # Wire-presence delta using fast str.find (no full regex scan)
+    # Check whether D-pin nets differ in presence across stages
+    d_nets = {s: per_stage.get(s, {}).get("pins", {}).get("D", "") for s in STAGES}
+    wire_present_delta: dict[str, dict] = {}
+    for net in set(d_nets.values()):
+        if not net or net.startswith("1'b"):
+            continue
+        wire_present_delta[net] = {
+            s: bool(stage_texts[s].find(net) != -1) for s in STAGES
+        }
 
-    for w in interesting_wires:
-        wire_decls[w] = {s: wire_decl_status(stage_texts[s], w) for s in STAGES}
-
-    # Cell-present matrix for cells appearing in driver chains
-    cells_in_chain = set()
-    for s in STAGES:
-        ps = per_stage.get(s, {})
-        for hop in ps.get("driver_chain_D", []):
-            d = hop.get("driver")
-            if d and d.get("driver_kind") == "cell":
-                cells_in_chain.add(d["instance"])
-    cell_presence = {
-        c: {s: cell_present(stage_texts[s], c) for s in STAGES}
-        for c in cells_in_chain
-    }
-    blackboxed = []
-    for c, presence in cell_presence.items():
-        # Present in Synth but missing in P&R → potential black-box
-        if presence.get("Synthesize") and not (presence.get("PrePlace") and presence.get("Route")):
-            missing = [s for s in ("PrePlace", "Route") if not presence.get(s)]
-            blackboxed.append({"cell": c, "missing_in": missing})
-
-    # Wire-presence delta
-    wire_present_delta = []
-    for w, statuses in wire_decls.items():
-        present = {s: statuses[s]["declared_as"] != "absent" for s in STAGES}
-        if len(set(present.values())) > 1:
-            wire_present_delta.append({"wire": w, **present})
+    blackboxed: list = []   # skipped — requires full cone walk
 
     return {
         "stages": per_stage,
-        "wire_decls_per_stage": wire_decls,
-        "cell_presence_per_stage": cell_presence,
         "deltas": {
             "pin_changes": pin_changes,
             "wire_present_per_stage": wire_present_delta,
@@ -418,9 +408,9 @@ def main() -> int:
         print(f"NOTE: no failing DFFs in evidence — wrote empty stub {out_path}")
         return 0
 
-    # Read all 3 stage netlists and build per-instance position index for fast lookup.
-    # Instead of regex-scanning 500MB per DFF, we build a dict {inst_name: (start, end)}
-    # so find_inst_block can jump directly to the right position.
+    # Read all 3 stage netlists.
+    # Build a TARGETED index: only locate the specific failing DFF instances we need
+    # (not all 1.5M instances). This avoids a full regex scan over 500MB per stage.
     stage_texts: dict[str, str] = {}
     stage_inst_index: dict[str, dict[str, int]] = {}  # stage → {inst_name → start_pos}
 
@@ -428,15 +418,29 @@ def main() -> int:
         text = read_gz_text(ref_dir / "data" / "PostEco" / f"{stage}.v.gz")
         stage_texts[stage] = text
         size_kb = len(text) // 1024
-        print(f"  loaded {stage}: {size_kb}KB — building instance index ...", end=" ", flush=True)
-        # Build index: scan once, record start position of every instance declaration
+        print(f"  loaded {stage}: {size_kb}KB", flush=True)
+
+    # Build targeted index using fast str.find() — avoids 350MB regex per instance.
+    # str.find() uses C-level Boyer-Moore (~1GB/s) vs Python regex (~100MB/s).
+    print(f"  indexing {len(failing_insts)} target instances (str.find) ...", flush=True)
+    verify_pat = re.compile(r"^[ \t]*[A-Z][A-Z0-9_]+\s+" + r"({insts})" + r"\s*\(",
+                            re.MULTILINE)
+    for stage, text in stage_texts.items():
         idx: dict[str, int] = {}
-        for m in INST_START_RE.finditer(text):
-            iname = m.group(2)
-            if iname not in idx:   # keep first occurrence
-                idx[iname] = m.start()
+        for inst in failing_insts:
+            # Fast pre-scan: find " inst_name (" or "\tinst_name ("
+            search_str = inst + " ("
+            pos = text.find(search_str)
+            while pos != -1:
+                # Verify it's actually a cell instantiation (uppercase cell type before it)
+                line_start = text.rfind("\n", 0, pos) + 1
+                line = text[line_start: pos + len(search_str) + 5]
+                if re.match(r"^[ \t]*[A-Z][A-Z0-9_]+\s+" + re.escape(inst), line):
+                    idx[inst] = line_start
+                    break
+                pos = text.find(search_str, pos + 1)
         stage_inst_index[stage] = idx
-        print(f"{len(idx)} instances indexed")
+        print(f"    {stage}: {len(idx)}/{len(failing_insts)} found", flush=True)
     print()
 
     per_failing_dff = {}
