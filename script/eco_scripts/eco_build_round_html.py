@@ -163,12 +163,10 @@ def fm_results_table(fm_verify: dict | None) -> str:
         else:
             status = str(det) if det is not None else "MISSING"
             count  = "—"
-        color = {"PASS": "#c8e6c9", "FAIL": "#ffcdd2",
-                 "ABORT": "#ffe0b2"}.get(status, "#eeeeee")
         rows.append(
             f"<tr><td>{esc(tgt)}</td>"
-            f"<td style='background:{color};text-align:center'><b>{esc(status)}</b></td>"
-            f"<td style='text-align:right'>{esc(count)}</td></tr>"
+            f"<td>{badge(status)}</td>"
+            f"<td>{esc(count)}</td></tr>"
         )
     return f"""
 <table>
@@ -218,7 +216,7 @@ def failing_points_detail(fm_verify: dict | None, max_lines: int = 30,
                 lines.append(f"... + {more} more ({total} total)")
             listing = "\n".join(esc(l) for l in lines)
             blocks.append(f"<h4>{esc(tgt)}</h4>"
-                          f"<pre style='background:#fafafa;padding:8px;font-size:11px;max-height:200px;overflow:auto'>{listing}</pre>")
+                          f"<pre>{listing}</pre>")
         if blocks:
             return "\n".join(blocks)
 
@@ -261,7 +259,7 @@ def eco_changes_summary(eco_applied: dict | None) -> str:
                     counts[st] += 1
         summary = counts
     chips = "  ".join(
-        f"<span style='background:#e3f2fd;padding:3px 8px;border-radius:10px;font-size:12px'>"
+        "<span class='chip'>"
         f"<b>{esc(k)}:</b> {esc(v)}</span>"
         for k, v in summary.items()
     )
@@ -389,7 +387,7 @@ def diagnosis_section(analysis: dict | None) -> str:
            f"<p><b>Diagnosis:</b> {esc(diag)}</p>"]
     if reasoning:
         out.append(f"<h4>Root Cause Reasoning</h4>"
-                   f"<div style='background:#fafafa;padding:10px;border-left:4px solid #1565c0;font-size:13px;line-height:1.5'>"
+                   "<div class='box'>"
                    f"{esc(reasoning)}</div>")
     if alts:
         rows = "".join(
