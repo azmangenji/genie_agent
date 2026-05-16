@@ -48,14 +48,14 @@ def readj(p):
         return json.loads(p.read_text()) if p.exists() else None
     except: return None
 
-def section_wrap(title, content, top_margin="24px"):
+def section_wrap(title, content, top_margin="24px", color="#3498db", font_size="15px"):
     """A titled section box."""
     return (
         f'<div style="margin-top:{top_margin}">'
-        f'<div style="background:#3498db;color:white;padding:8px 14px;'
-        f'border-radius:4px 4px 0 0;{FONT};font-size:13px;font-weight:bold">{title}</div>'
+        f'<div style="background:{color};color:white;padding:10px 16px;'
+        f'border-radius:4px 4px 0 0;{FONT};font-size:{font_size};font-weight:bold">{title}</div>'
         f'<div style="background:white;border:1px solid #d6e4f7;border-top:none;'
-        f'padding:12px 14px;border-radius:0 0 4px 4px">{content}</div>'
+        f'padding:14px 16px;border-radius:0 0 4px 4px">{content}</div>'
         f'</div>'
     )
 
@@ -266,7 +266,8 @@ def build_html(args):
             + fm_tbl
             + analysis_block
         )
-        all_rounds += section_wrap(f"Round {rnd}", round_content, top_margin="12px")
+        all_rounds += section_wrap(f"Round {rnd}", round_content,
+                                    top_margin="12px", color="#1a6fa8", font_size="15px")
 
     # ── AI_ECO_FLOW ARTIFACTS ──────────────────────────────────────────────
     artifacts_section = ""
