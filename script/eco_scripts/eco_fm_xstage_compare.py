@@ -352,6 +352,9 @@ def main() -> int:
                    help="Path to eco_fm_evidence_round<N>.json (default: derived)")
     p.add_argument("--output", default=None)
     p.add_argument("--depth", type=int, default=5, help="Driver chain walk depth")
+    p.add_argument("--max-dffs", type=int, default=20,
+                   help="Limit analysis to N failing DFFs (0 = no limit). "
+                        "Uses top modules (by failing count) as priority filter.")
     p.add_argument("--ai-eco-flow-dir", default=None,
                    help="If set, also write a companion .rpt summary to this dir")
     args = p.parse_args()
@@ -395,6 +398,13 @@ def main() -> int:
             if d.get("instance_name"):
                 failing_insts.add(d["instance_name"])
 
+    # Apply max-dffs limit (prioritize first encountered, which are the most-reported)
+    max_dffs = getattr(args, "max_dffs", 0)
+    total_insts = len(failing_insts)
+    if max_dffs > 0 and len(failing_insts) > max_dffs:
+        failing_insts = set(sorted(failing_insts)[:max_dffs])
+        print(f"  NOTE: --max-dffs={max_dffs} applied; analyzing {len(failing_insts)}/{total_insts} DFFs")
+
     if not failing_insts:
         out_path.write_text(json.dumps(
             {"tag": args.tag, "round": args.round, "per_failing_dff": {},
@@ -425,6 +435,8 @@ def main() -> int:
         "loop_verdict": verdict,
         "depth": args.depth,
         "failing_dff_count": len(failing_insts),
+        "total_failing_dff_count": total_insts if max_dffs > 0 else len(failing_insts),
+        "truncated_to": max_dffs if max_dffs > 0 and total_insts > max_dffs else None,
         "per_failing_dff": per_failing_dff,
         "input_artifacts": {
             "evidence_json": str(evidence_path),
