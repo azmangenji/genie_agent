@@ -62,20 +62,22 @@ def section_wrap(title, content, top_margin="24px", color="#3498db", font_size="
 def table(headers, rows, col_widths=None):
     """Consistent table with alternating row shading."""
     # Use one unified th_style — all header cells identical
-    th_style = (f"background:#34495e;color:white;padding:8px 12px;text-align:left;"
-                f"{FONT};font-size:12px;font-weight:bold;"
-                f"border:1px solid #2c3e50;white-space:nowrap")
-    td_style = (f"padding:7px 12px;{FONT};font-size:12px;color:#333;"
-                f"border:1px solid #ddd;vertical-align:top;background:#ffffff")
-    td_alt   = (f"padding:7px 12px;{FONT};font-size:12px;color:#333;"
-                f"border:1px solid #ddd;vertical-align:top;background:#f0f4f8")
+    th_style = (f"background:#34495e;color:white;padding:8px 10px;text-align:left;"
+                f"{FONT};font-size:12px;font-weight:bold;border:1px solid #2c3e50;"
+                f"white-space:nowrap")
+    td_style = (f"padding:6px 10px;{FONT};font-size:12px;color:#333;"
+                f"border:1px solid #ddd;vertical-align:top;background:#ffffff;"
+                f"word-break:break-word;word-wrap:break-word;max-width:300px")
+    td_alt   = (f"padding:6px 10px;{FONT};font-size:12px;color:#333;"
+                f"border:1px solid #ddd;vertical-align:top;background:#f0f4f8;"
+                f"word-break:break-word;word-wrap:break-word;max-width:300px")
 
     hdr = "".join(f'<th style="{th_style}">{h}</th>' for h in headers)
     body = ""
     for i, row in enumerate(rows):
         st = td_alt if i % 2 else td_style
         body += "<tr>" + "".join(f'<td style="{st}">{c}</td>' for c in row) + "</tr>"
-    return (f'<table style="border-collapse:collapse;width:100%;margin:8px 0">'
+    return (f'<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0">'
             f'<tr>{hdr}</tr>{body}</table>')
 
 def pre_block(text, max_chars=5000):
@@ -356,13 +358,13 @@ def build_html(args):
         f'border-radius:4px;{FONT};font-size:14px;font-weight:bold;margin-top:24px">'
         f'APPLY &amp; FM PHASE — Steps 4-6 (Per Round)</div>'
     )
-    body_style = f'background:#f0f3f7;{FONT};font-size:13px;color:#333;margin:0;padding:20px'
+    body_style = f'background:#f0f3f7;{FONT};font-size:13px;color:#333;margin:0;padding:10px'
     html_out = (
         f'<!-- subject: {subject} -->\n'
         f'<!DOCTYPE html>\n'
         f'<html><head><meta charset="utf-8"><title>ECO Final — {e(jira)}</title></head>\n'
         f'<body style="{body_style}">\n'
-        f'<div style="max-width:1100px;margin:0 auto">\n'
+        f'<div style="width:700px;margin:0 auto">\n'
         + title_div + '\n'
         + header_div + '\n'
         + banner
