@@ -218,7 +218,25 @@ cp <BASE_DIR>/data/<TAG>_eco_summary.rpt <AI_ECO_FLOW_DIR>/
 
 ## STEP 7b — Write Final HTML Report
 
-Write `<BASE_DIR>/data/<TAG>_eco_report.html`. The HTML must contain the **same level of detail as eco_summary.rpt** — every step documented, not just a high-level summary.
+Write `<BASE_DIR>/data/<TAG>_eco_report.html` **using the deterministic script — do NOT write HTML manually**:
+
+```bash
+cd <BASE_DIR>
+python3 script/eco_scripts/eco_build_final_html.py \
+    --tag <TAG> --jira <JIRA> --tile <TILE> \
+    --base-dir <BASE_DIR> \
+    --total-rounds <TOTAL_ROUNDS> \
+    --ai-eco-flow-dir <AI_ECO_FLOW_DIR>
+# → writes data/<TAG>_eco_report.html with correct CSS/structure
+# → syncs to AI_ECO_FLOW_DIR automatically
+```
+
+> **FORBIDDEN:** Do NOT write the HTML file manually. The script produces consistent,
+> well-styled HTML with correct CSS inside `<head><style>`. Agent-written HTML
+> has caused raw CSS to appear in email bodies and inconsistent styling.
+
+The script reads eco_summary.rpt, all per-round FM verify RPTs, eco_rtl_diff.json,
+and eco_fm_analysis_round<N>.json automatically.
 
 **Generation algorithm — follow this order exactly:**
 1. Read `eco_summary.rpt` (already written in Step 7a) — use its content as the canonical text source for all sections
