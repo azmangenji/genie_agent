@@ -27,20 +27,13 @@ from typing import Any
 import os as _os
 sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from eco_html_design import (
-    esc as _esc_design, badge, section_wrap, tbl as design_tbl,
-    pre_block as design_pre, BODY_STYLE, CONTAINER, F_BASE, F_SMALL,
-    TH_STYLE, TD_STYLE, TD_ALT, TABLE_ATTRS
+    esc as _esc_shared, badge, section_wrap, tbl as design_tbl,
+    pre_block as design_pre, html_wrap
 )
 
 # Email-safe table header cell (avoids double-quote in f-string)
-def _th(text):
-    return ('<th bgcolor="#3498db" style="background:#3498db;color:white;padding:8px 10px;'
-            'text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;'
-            'font-weight:bold;border:1px solid #2980b9;white-space:nowrap">'
-            + str(text) + '</th>')
-
-def _th_row(*headers):
-    return '<tr>' + ''.join(_th(h) for h in headers) + '</tr>'
+def _th(text): return f'<th>{text}</th>'
+def _th_row(*headers): return '<tr>' + ''.join(_th(h) for h in headers) + '</tr>'
 
 
 
@@ -178,8 +171,8 @@ def fm_results_table(fm_verify: dict | None) -> str:
             f"<td style='text-align:right'>{esc(count)}</td></tr>"
         )
     return f"""
-<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;border-color:#ddd">
-  <tr><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Target</th><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Status</th><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Failing Points</th></tr>
+<table>
+  <tr><th>Target</th><th>Status</th><th>Failing Points</th></tr>
   {''.join(rows)}
 </table>
 """
@@ -298,7 +291,7 @@ def evidence_summary_section(evidence: dict | None) -> str:
         items = by_level.get(lvl, [])
         if not items:
             continue
-        out.append(f"<h4 style='color:{badge[lvl]};margin-bottom:4px'>{lvl.upper()} ({len(items)})</h4>")
+        out.append(f"<h4>{lvl.upper()} ({len(items)})</h4>")
         out.append("<ul style='margin-top:0'>")
         for s in items[:15]:
             out.append(f"<li><b>{esc(s.get('type'))}</b>: {esc(s.get('hint',''))}")
@@ -319,10 +312,9 @@ def evidence_summary_section(evidence: dict | None) -> str:
             for t, c in tune.get("user_added_constants_per_target", {}).items()
         )
         if rows:
-            out.append("<h4 style='margin-bottom:4px'>Tune directives applied (set_constant)</h4>")
-            out.append('<table ' + TABLE_ATTRS + '>'
-                       '<tr><th bgcolor="#3498db" style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Target</th>'
-                       '<th bgcolor="#3498db" style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap"># constants</th></tr>'
+            out.append("<h4>Tune directives applied (set_constant)</h4>")
+            out.append('<table>'
+                       '<tr><th>Target</th><th># constants</th></tr>'
                        + rows + '</table>')
     return "\n".join(out)
 
@@ -374,12 +366,12 @@ def xstage_section(xstage: dict | None) -> str:
                 elif isinstance(bb, str):
                     rows.append(f"<tr><td colspan='2'>blackboxed: {esc(bb)}</td></tr>")
         if not rows:
-            blocks.append(f"<h4 style='margin-bottom:4px'><code>{esc(inst)}</code></h4>"
+            blocks.append(f"<h4><code>{esc(inst)}</code></h4>"
                           f"<p style='color:#616161;font-size:12px;margin:0'><i>No structural deltas (cone match across stages)</i></p>")
         else:
-            tbl_attr = 'border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;border-color:#ddd"'
-            blocks.append(f"<h4 style='margin-bottom:4px'><code>{esc(inst)}</code></h4>"
-                          f"<table {tbl_attr}>{''.join(rows)}</table>")
+            tbl_attr = ''
+            blocks.append(f"<h4><code>{esc(inst)}</code></h4>"
+                          f"<table>{''.join(rows)}</table>")
     return "\n".join(blocks)
 
 
@@ -396,7 +388,7 @@ def diagnosis_section(analysis: dict | None) -> str:
     out = [f"<p><b>Failure Mode:</b> <code>{esc(fmode)}</code></p>",
            f"<p><b>Diagnosis:</b> {esc(diag)}</p>"]
     if reasoning:
-        out.append(f"<h4 style='margin-bottom:4px'>Root Cause Reasoning</h4>"
+        out.append(f"<h4>Root Cause Reasoning</h4>"
                    f"<div style='background:#fafafa;padding:10px;border-left:4px solid #1565c0;font-size:13px;line-height:1.5'>"
                    f"{esc(reasoning)}</div>")
     if alts:
@@ -405,8 +397,8 @@ def diagnosis_section(analysis: dict | None) -> str:
             f"<td>{esc(a.get('rejected_because','') if isinstance(a, dict) else '')}</td></tr>"
             for a in alts
         )
-        out.append(f"<h4 style='margin-bottom:4px;margin-top:12px'>Alternatives Considered</h4>"
-                   f"<table {TABLE_ATTRS}>"
+        out.append(f"<h4>Alternatives Considered</h4>"
+                   "<table>"
                    f"{_th_row('Hypothesis','Rejected because')}"
                    f"{rows}</table>")
     return "\n".join(out)
@@ -492,8 +484,8 @@ def contract_section(contract: dict | None) -> str:
         f"<tr><td><code>{esc(v.get('ctx'))}</code></td><td>{esc(v.get('violation'))}</td></tr>"
         for v in contract.get("violations", [])[:30]
     )
-    _TA = 'border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;border-color:#ddd"'
-    return (f"{summary}<table {_TA}>"
+    _TA = ''
+    return (f"{summary}<table>"
             f"{_th_row('Context','Violation')}{rows}</table>")
 
 
@@ -524,7 +516,7 @@ def companion_files_section(base_dir: Path, ai_eco_flow_dir: Path | None,
         color = "#2e7d32" if path.exists() else "#c62828"
         rows.append(f"<tr><td><span style='color:{color}'>{exists}</span> {esc(label)}</td>"
                     f"<td><code style='font-size:11px'>{esc(path)}</code></td></tr>")
-    return (f"<table {TABLE_ATTRS}>"
+    return ("<table>"
             f"{_th_row('Artifact','Path')}{''.join(rows)}</table>")
 
 
@@ -567,32 +559,19 @@ def build_html(args) -> str:
     subject = f"[ECO Round {round_n}] {tag} {overall_status} [{verdict}] - {args.jira} ({args.tile})"
 
     # Title bar
+    # Assemble with dark theme via html_wrap
     title_bar = (
-        f'<div style="background:#2c3e50;color:white;padding:16px 20px;border-radius:6px 6px 0 0">'
-        f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:18px;font-weight:bold">'
-        f'ECO Round {round_n} — JIRA {esc(args.jira)} ({esc(args.tile)})</div>'
-        f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;opacity:0.8;margin-top:4px">'
-        f'Tag: {esc(tag)} &nbsp;|&nbsp; FM Tag: {esc(eco_fm_tag)} &nbsp;|&nbsp; Status: {esc(overall_status)}'
-        f'</div></div>'
+        f"<h1>ECO Round {round_n} — JIRA {esc(args.jira)} ({esc(args.tile)})</h1>"
+        f"<p class='meta'>Tag: {esc(tag)} &nbsp;|&nbsp; FM Tag: {esc(eco_fm_tag)} &nbsp;|&nbsp; Status: {esc(overall_status)}</p>"
     )
 
-    # Assemble HTML
-    parts = [
-        f"<!-- subject: {subject} -->",
-        f"<!DOCTYPE html><html><head><meta charset='utf-8'></head>",
-        f"<body style='{BODY_STYLE}'>",
-        f"<div {CONTAINER}>",
-        title_bar,
-        verdict_banner(analysis, fixer_state, round_n),
-    ]
-
     if pre_fm_check_failed:
-        parts += [
+        body_sections = [
             section_wrap("Pre-FM Check FAILED — FM was not submitted this round",
-                         design_pre(pre_fm_text), color="#e67e22"),
+                         design_pre(pre_fm_text)),
         ]
     else:
-        parts += [
+        body_sections = [
             section_wrap("1. FM Results",                fm_results_table(fm_verify)),
             section_wrap("2. Failing Points Detail",     failing_points_detail(fm_verify, evidence=evidence)),
             section_wrap("3. Evidence Walk Summary",     evidence_summary_section(evidence)),
@@ -604,13 +583,13 @@ def build_html(args) -> str:
             section_wrap("9. Analyzer Evidence Contract", contract_section(contract)),
         ]
 
-    parts += [
+    body_sections += [
         section_wrap("10. Companion Artifacts", companion_files_section(base_dir, ai_eco_flow_dir, tag, round_n)),
-        f"<p style='{F_SMALL};margin-top:16px'>Generated by eco_build_round_html.py — Round {round_n} | {esc(tag)}</p>",
-        "</div></body></html>"
+        f"<hr><p class='meta'>Generated by eco_build_round_html.py — Round {round_n} | {esc(tag)}</p>",
     ]
 
-    return "\n".join(parts)
+    body = title_bar + verdict_banner(analysis, fixer_state, round_n) + "\n".join(body_sections)
+    return html_wrap(subject, body, tag=tag, jira=args.jira, tile=args.tile)
 
 
 def main() -> int:
