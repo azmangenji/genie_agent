@@ -64,7 +64,7 @@ This ensures task data, logs, and run scripts go to the correct user-isolated di
 | `--to EMAIL` | | Override email recipients — **MUST be used together with `--email`**, e.g. `--email --to Azman.BinBabah@amd.com` |
 | `--analyze` | `-a` | Claude monitors and analyzes results (static checks) |
 | `--analyze-only TAG` | | Skip running check — analyze existing results for TAG directly |
-| `--analyze-fixer` | | Analyze + auto-apply constraint fixes + rerun loop until clean (max 5 rounds) |
+| `--analyze-fixer` | | Analyze + auto-apply constraint fixes + rerun loop until clean (max 10 rounds) |
 | `--analyze-fixer-only TAG` | | Skip running check — run analyze-fixer on existing results for TAG directly |
 | `--list` | `-l` | List all available instructions |
 | `--status TAG` | `-s` | Check task status by tag |
@@ -483,7 +483,7 @@ HANDOFF_PATH=<base_dir>/data/<tag>_phase_a_handoff.json
 
 **Trigger:** `ROUND_PHASE_READY` block in output AND prior phase's exit sentinel exists (APPLY's for round 2, ROUND_<N-1>'s for round N+1).
 
-Loop while next_phase = ROUND, max 5 rounds total:
+Loop while next_phase = ROUND, max 10 rounds total:
 
 1. Spawn ROUND agent (background):
    ```
@@ -526,7 +526,7 @@ Loop while next_phase = ROUND, max 5 rounds total:
 
 4. Branch:
    - `ROUND` AND round_count < 5 → loop, spawn ROUND_<N+1>
-   - `ROUND` AND round_count >= 5 → say `"ECO max rounds (5) hit without convergence."`, STOP
+   - `ROUND` AND round_count >= 10 → say `"ECO max rounds (10) hit without convergence."`, STOP
    - `FINAL` → say `"ECO analysis complete. Email sent."` (ROUND already spawned FINAL inline)
    - `STOP`  → say `"ECO analysis stopped: <reason>"`
 

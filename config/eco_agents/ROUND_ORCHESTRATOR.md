@@ -782,9 +782,9 @@ Read `data/<TAG>_eco_fm_tag_round<NEXT_ROUND>.tmp` to get `eco_fm_tag` — save 
 
 > **HARD RULE: Read eco_fm_verify.json ONCE, decide `next_phase`, signal/spawn per phase, write exit sentinel, EXIT. Do not loop within this orchestrator.**
 > - `status: "PASS"` on ALL targets → `next_phase: FINAL` (spawn FINAL_ORCHESTRATOR inline)
-> - `status: "FAIL"` on ANY target AND next round ≤ 5 → `next_phase: ROUND` (emit `ROUND_PHASE_READY` signal, main session spawns next ROUND in fresh context)
-> - `status: "ABORT"` on ANY target AND rerun_count < 3 AND next round ≤ 5 → `next_phase: ROUND` (analyzer's RERUN_SAME_ROUND verdict reuses the SAME round number)
-> - max rounds (5) hit → `next_phase: FINAL` with `status: MAX_ROUNDS`
+> - `status: "FAIL"` on ANY target AND next round ≤ 10 → `next_phase: ROUND` (emit `ROUND_PHASE_READY` signal, main session spawns next ROUND in fresh context)
+> - `status: "ABORT"` on ANY target AND rerun_count < 3 AND next round ≤ 10 → `next_phase: ROUND` (analyzer's RERUN_SAME_ROUND verdict reuses the SAME round number)
+> - max rounds (10) hit → `next_phase: FINAL` with `status: MAX_ROUNDS`
 > - NEVER re-submit FM here. NEVER apply patches here. NEVER re-run eco_applier here.
 > - NEVER spawn ROUND_ORCHESTRATOR yourself — main session does that after seeing the signal.
 
@@ -818,7 +818,7 @@ Update `<BASE_DIR>/data/<TAG>_round_handoff.json`:
   "loop_verdict": "<RERUN_SAME_ROUND|ADVANCE_NEXT_ROUND|CONVERGED>",
   "rerun_count_in_round": <N>,
   "next_phase": "<ROUND|FINAL|STOP>",
-  "next_phase_reason": "<short note: e.g. 'FM PASS — converged', 'FAIL on FmEqvEcoRouteVsEcoPrePlace — needs round N+1 re-study', 'MAX_ROUNDS (5) reached'>"
+  "next_phase_reason": "<short note: e.g. 'FM PASS — converged', 'FAIL on FmEqvEcoRouteVsEcoPrePlace — needs round N+1 re-study', 'MAX_ROUNDS (10) reached'>"
 }
 ```
 
@@ -831,10 +831,10 @@ Compute NEXT_ROUND first:
 | Condition | `next_phase` |
 |---|---|
 | FM PASS on all targets (CONVERGED) | `FINAL` |
-| FM FAIL or ABORT, AND `NEXT_ROUND ≤ 5` | `ROUND` |
-| FM FAIL or ABORT, AND `NEXT_ROUND > 5` (CURRENT_ROUND == 5 for ADVANCE) | `FINAL` (with `status: MAX_ROUNDS`) |
+| FM FAIL or ABORT, AND `NEXT_ROUND ≤ 10` | `ROUND` |
+| FM FAIL or ABORT, AND `NEXT_ROUND > 10` (CURRENT_ROUND == 10 for ADVANCE) | `FINAL` (with `status: MAX_ROUNDS`) |
 | Max rounds (5) hit on RERUN_SAME_ROUND (rerun_count ≥ 4) | `FINAL` (with `status: MAX_ROUNDS`) |
-| Pre-FM check failed AND `NEXT_ROUND ≤ 5` | `STOP` (applier issue — not ROUND) |
+| Pre-FM check failed AND `NEXT_ROUND ≤ 10` | `STOP` (applier issue — not ROUND) |
 | Unrecoverable error (no FM verdict, etc.) | `STOP` |
 
 **CRITICAL: `ai_eco_flow_dir` MUST be in every round_handoff.json** — every subsequent ROUND_ORCHESTRATOR and FINAL_ORCHESTRATOR reads it. The value never changes across rounds — always `<REF_DIR>/AI_ECO_FLOW_<TAG>`.
