@@ -378,7 +378,8 @@ def diagnosis_section(analysis: dict | None) -> str:
                    f"{esc(reasoning)}</div>")
     if alts:
         rows = "".join(
-            f"<tr><td>{esc(a.get('hypothesis'))}</td><td>{esc(a.get('rejected_because'))}</td></tr>"
+            f"<tr><td>{esc(a.get('hypothesis') if isinstance(a, dict) else a)}</td>"
+            f"<td>{esc(a.get('rejected_because','') if isinstance(a, dict) else '')}</td></tr>"
             for a in alts
         )
         out.append(f"<h4 style='margin-bottom:4px;margin-top:12px'>Alternatives Considered</h4>"
