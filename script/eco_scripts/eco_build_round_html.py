@@ -32,6 +32,18 @@ from eco_html_design import (
     TH_STYLE, TD_STYLE, TD_ALT, TABLE_ATTRS
 )
 
+# Email-safe table header cell (avoids double-quote in f-string)
+def _th(text):
+    return ('<th bgcolor="#3498db" style="background:#3498db;color:white;padding:8px 10px;'
+            'text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;'
+            'font-weight:bold;border:1px solid #2980b9;white-space:nowrap">'
+            + str(text) + '</th>')
+
+def _th_row(*headers):
+    return '<tr>' + ''.join(_th(h) for h in headers) + '</tr>'
+
+
+
 
 # -----------------------------------------------------------------------------
 # I/O helpers
@@ -166,7 +178,7 @@ def fm_results_table(fm_verify: dict | None) -> str:
             f"<td style='text-align:right'>{esc(count)}</td></tr>"
         )
     return f"""
-<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0">
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;border-color:#ddd">
   <tr><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Target</th><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Status</th><th style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Failing Points</th></tr>
   {''.join(rows)}
 </table>
@@ -308,8 +320,10 @@ def evidence_summary_section(evidence: dict | None) -> str:
         )
         if rows:
             out.append("<h4 style='margin-bottom:4px'>Tune directives applied (set_constant)</h4>")
-            out.append(f"<table >"
-                       f"<tr style='background:#f5f5f5'><th>Target</th><th># constants</th></tr>{rows}</table>")
+            out.append('<table ' + TABLE_ATTRS + '>'
+                       '<tr><th bgcolor="#3498db" style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap">Target</th>'
+                       '<th bgcolor="#3498db" style="background:#3498db;color:white;padding:8px 10px;text-align:left;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;border:1px solid #2980b9;white-space:nowrap"># constants</th></tr>'
+                       + rows + '</table>')
     return "\n".join(out)
 
 
@@ -363,7 +377,7 @@ def xstage_section(xstage: dict | None) -> str:
             blocks.append(f"<h4 style='margin-bottom:4px'><code>{esc(inst)}</code></h4>"
                           f"<p style='color:#616161;font-size:12px;margin:0'><i>No structural deltas (cone match across stages)</i></p>")
         else:
-            tbl_attr = 'cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0"'
+            tbl_attr = 'border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;border-color:#ddd"'
             blocks.append(f"<h4 style='margin-bottom:4px'><code>{esc(inst)}</code></h4>"
                           f"<table {tbl_attr}>{''.join(rows)}</table>")
     return "\n".join(blocks)
@@ -392,8 +406,8 @@ def diagnosis_section(analysis: dict | None) -> str:
             for a in alts
         )
         out.append(f"<h4 style='margin-bottom:4px;margin-top:12px'>Alternatives Considered</h4>"
-                   f"<table >"
-                   f"<tr style='background:#f5f5f5'><th>Hypothesis</th><th>Rejected because</th></tr>"
+                   f"<table {TABLE_ATTRS}>"
+                   f"{_th_row('Hypothesis','Rejected because')}"
                    f"{rows}</table>")
     return "\n".join(out)
 
@@ -478,9 +492,9 @@ def contract_section(contract: dict | None) -> str:
         f"<tr><td><code>{esc(v.get('ctx'))}</code></td><td>{esc(v.get('violation'))}</td></tr>"
         for v in contract.get("violations", [])[:30]
     )
-    _TA = 'cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0"'
+    _TA = 'border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;table-layout:fixed;margin:8px 0;border-color:#ddd"'
     return (f"{summary}<table {_TA}>"
-            f"<tr style='background:#f5f5f5'><th>Context</th><th>Violation</th></tr>{rows}</table>")
+            f"{_th_row('Context','Violation')}{rows}</table>")
 
 
 # -----------------------------------------------------------------------------
@@ -510,8 +524,8 @@ def companion_files_section(base_dir: Path, ai_eco_flow_dir: Path | None,
         color = "#2e7d32" if path.exists() else "#c62828"
         rows.append(f"<tr><td><span style='color:{color}'>{exists}</span> {esc(label)}</td>"
                     f"<td><code style='font-size:11px'>{esc(path)}</code></td></tr>")
-    return (f"<table >"
-            f"<tr style='background:#f5f5f5'><th>Artifact</th><th>Path</th></tr>{''.join(rows)}</table>")
+    return (f"<table {TABLE_ATTRS}>"
+            f"{_th_row('Artifact','Path')}{''.join(rows)}</table>")
 
 
 # -----------------------------------------------------------------------------
