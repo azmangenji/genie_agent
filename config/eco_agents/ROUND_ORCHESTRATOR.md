@@ -598,7 +598,7 @@ study = load(f"data/{TAG}_eco_preeco_study.json")
 # Exit ONLY when MAX_ROUNDS is reached.
 if NEXT_ROUND > max_rounds:
     update_handoff(status="MAX_ROUNDS", next_phase="FINAL", next_phase_reason="MAX_ROUNDS reached")
-    spawn FINAL_ORCHESTRATOR inline with TOTAL_ROUNDS=<NEXT_ROUND>
+    spawn a sub-agent (general-purpose) with FINAL_ORCHESTRATOR.md prepended, TOTAL_ROUNDS=<NEXT_ROUND>  # do NOT write HTML/RPT/email yourself
     write <TAG>_round<CURRENT_ROUND>_phase_exited.marker
     EXIT
 
@@ -858,14 +858,18 @@ The next ROUND_ORCHESTRATOR also reads `loop_verdict` and `rerun_count_in_round`
 
 ### Mandatory Step B — Signal OR spawn per `next_phase`
 
-#### `next_phase: FINAL` → spawn FINAL_ORCHESTRATOR inline (foreground, short task)
+#### `next_phase: FINAL` → spawn FINAL_ORCHESTRATOR as a sub-agent (do NOT do FINAL work yourself)
 
-**Spawn FINAL_ORCHESTRATOR** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
+**CRITICAL: Do NOT write eco_summary.rpt, eco_report.html, or send email yourself.** All of that belongs to FINAL_ORCHESTRATOR. Your only job here is to spawn it.
+
+**Do NOT emit `ROUND_PHASE_READY` when `next_phase=FINAL`.** The two branches are mutually exclusive — emitting the round signal AND doing FINAL work is a protocol violation.
+
+**Spawn a sub-agent (general-purpose)** with `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
 - `TOTAL_ROUNDS`: `<current ROUND>`
 
-FINAL is short — fine to run inline before the EXIT sentinel.
+Wait for the sub-agent to complete before writing the exit sentinel.
 
 #### `next_phase: ROUND` → emit `ROUND_PHASE_READY` signal block + EXIT (no spawn)
 

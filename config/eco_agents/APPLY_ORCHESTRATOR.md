@@ -545,14 +545,18 @@ If missing or empty — write it again. Do NOT proceed until confirmed on disk.
 
 ### Mandatory Step B — Signal OR spawn per `next_phase`
 
-#### `next_phase: FINAL` → spawn FINAL_ORCHESTRATOR inline (foreground, short task)
+#### `next_phase: FINAL` → spawn FINAL_ORCHESTRATOR as a sub-agent (do NOT do FINAL work yourself)
 
-**Spawn FINAL_ORCHESTRATOR** with content of `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
+**CRITICAL: Do NOT write eco_summary.rpt, eco_report.html, or send email yourself.** All of that belongs to FINAL_ORCHESTRATOR. Your only job here is to spawn it.
+
+**Do NOT emit `ROUND_PHASE_READY` when `next_phase=FINAL`.** The two branches are mutually exclusive.
+
+**Spawn a sub-agent (general-purpose)** with content of `config/eco_agents/FINAL_ORCHESTRATOR.md` prepended. Pass:
 - `TAG`, `REF_DIR`, `TILE`, `JIRA`, `BASE_DIR`
 - `ROUND_HANDOFF_PATH`: `<BASE_DIR>/data/<TAG>_round_handoff.json`
 - `TOTAL_ROUNDS`: 1
 
-FINAL is short (report compilation + email) — fine to run inline before EXIT sentinel.
+Wait for the sub-agent to complete before writing the exit sentinel.
 
 #### `next_phase: ROUND` → emit `ROUND_PHASE_READY` signal block + EXIT (no spawn)
 
