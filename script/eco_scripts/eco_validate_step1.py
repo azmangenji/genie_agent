@@ -988,11 +988,30 @@ def main():
                 )
                 overall_pass = False
 
+    # Check: intermediate_net_insertion must not use MUX2 cascade.
+    # MUX2 cascade creates structural cone divergence from SynRtl — FM sees
+    # globally unmatched cut-points in the MUX select paths → thousands of failures.
+    # Use compound gates (OA12/OAI21/AN3/ND3) instead.
+    and_term_mux_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('fallback_strategy') != 'intermediate_net_insertion':
+            continue
+        chain = c.get('new_condition_gate_chain') or []
+        mux2_gates = [g.get('gate_function','') for g in chain
+                      if g.get('gate_function','').upper().startswith('MUX')]
+        if mux2_gates:
+            and_term_mux_issues.append(
+                f"changes[{idx}] [FAIL/INTERMED-MUX2]: intermediate_net_insertion "
+                f"new_condition_gate_chain contains {len(mux2_gates)} MUX2 gate(s). "
+                f"MUX2 cascade causes structural cone divergence from SynRtl — FM sees "
+                f"globally unmatched cut-points → thousands of Synth failures. "
+                f"Use compound gates (OA12/OAI21/AN3/ND3) matching synthesis output instead.")
+            overall_pass = False
+
     # Check: and_term changes must record old_driver_inverting.
     # The rtl_diff_analyzer must grep the PreEco Synthesize netlist to find the gate
     # driving old_token and record its cell type + polarity. Without this, the Step 3
     # boolean function check cannot run and wrong gate choices go undetected.
-    and_term_mux_issues = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'and_term':
             continue

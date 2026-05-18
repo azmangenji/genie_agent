@@ -2394,13 +2394,14 @@ def main():
                     mismatch = True; break
             if mismatch: break
         if mismatch:
-            inv_str = 'inverting' if old_inv else 'non-inverting'
+            pol_str = 'FM(-) → renamed=~old' if old_inv else 'FM(+) → renamed=+old'
             issues.append(
                 f"CRITICAL/AND-TERM-BOOL: and_term gate chain for '{old_token}' produces "
-                f"wrong boolean function (old driver is {inv_str}). "
+                f"wrong boolean function (old_driver_inverting={old_inv}, {pol_str}). "
                 f"Chain must output 'old_expression & ~new_term'. "
-                f"If inverting driver: use NOR2(renamed_out, new_term) with NO prior INV. "
-                f"INV+NOR2 after inverting driver gives ~old&~new — WRONG.")
+                f"FM(-)/inverting: use NOR2(renamed, new_term) directly. "
+                f"FM(+)/non-inverting: use INR2(renamed, new_term). "
+                f"old_driver_inverting must be set from FM polarity (+/-), not cell type prefix.")
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0

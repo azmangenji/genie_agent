@@ -100,18 +100,18 @@ After FM resolves the gate driving `old_token`, record in the change entry:
 "old_driver_cell_type": "<cell_type_from_FM>",
 "old_driver_inverting": true|false
 ```
-`old_driver_inverting` = true if the cell type starts with an inverting prefix (AOI, OAI, NOR, NAND, INV, NR, ND, IND, XNOR, XNR).
+`old_driver_inverting` = true when the FM `(-)` polarity result is returned for the old driver's qualifying impl line — meaning the renamed output is `~old_expression`. False when FM returns `(+)` — renamed output is `+old_expression`. **Do NOT derive from cell type prefix alone** — INR3, AOI12 etc. can output +old_expression despite having "inverting" prefixes. FM polarity `(+)/(-)` is authoritative.
 
-**Gate chain selection rule (critical — wrong polarity caused 3000 FM failures in real run):**
+**Gate chain selection rule (critical — wrong polarity caused thousands of FM failures):**
 
-The chain must compute: `output = old_expression & ~new_term`. The renamed old driver output carries either `~old_expression` (inverting driver) or `old_expression` (non-inverting driver). Choose the final gate accordingly:
+The chain must compute: `output = old_expression & ~new_term`. Choose gate based on FM polarity of the old driver's qualifying impl line:
 
-| Old driver | Renamed output value | Correct final gate (no extra INV) | With extra INV first |
+| FM polarity | Renamed output value | Correct final gate (no extra INV) | With extra INV first |
 |---|---|---|---|
-| **Inverting** (AOI/NOR/NAND/INV) | `~old_expression` | `NOR2(renamed, new_term)` → `old & ~new` ✓ | INV then `INR2(old, new_term)` → `old & ~new` ✓ |
-| **Non-inverting** (AND/OR/BUF) | `old_expression` | `INR2(renamed, new_term)` → `old & ~new` ✓ | — |
+| `(-)` negative → `old_driver_inverting=true` | `~old_expression` | `NOR2(renamed, new_term)` → `old & ~new` ✓ | INV then `INR2(old, new_term)` ✓ |
+| `(+)` positive → `old_driver_inverting=false` | `+old_expression` | `INR2(renamed, new_term)` → `old & ~new` ✓ | — |
 
-**Common mistake:** For an inverting old driver, inserting `INV` first (to get `old_expression`) and then using `NOR2` gives `~(old | new) = ~old & ~new` — **WRONG**. After an INV the gate must switch from NOR2 to INR2.
+**Common mistake:** Using cell type prefix (AOI/INR → "inverting") instead of FM polarity — AOI12/INR3 can output `+old_expression` at `(+)` polarity, requiring INR2 not NOR2.
 
 **CRITICAL — `and_term` vs `wire_swap + intermediate_net_insertion`:**  
 `and_term` is ONLY for simple single-gate gating (one new term added to one existing expression). If the RTL diff shows **multiple new conditions prepended before the old expression as a default fallback** (priority chain pattern: `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expr>`), this is **NOT `and_term`** — it MUST be classified as `wire_swap` with `fallback_strategy: "intermediate_net_insertion"`. The key test: if the `new_condition_gate_chain` requires MUX2 gates, it is `wire_swap + intermediate_net_insertion`, not `and_term`. Misclassifying as `and_term` causes the studier to do a simple gate modification and skip the full MUX cascade — the ECO logic is never applied.
@@ -613,6 +613,7 @@ Read `driver_sub_target_net` + `driver_sub_target_cell_type` directly. The scrip
 2. Keep ALL conditions in `new_condition_gate_chain`. Mark synthesis-internal condition signals as `PENDING_FM_RESOLUTION:<signal>` and add to `condition_inputs_to_query`.
 3. Last gate MUST output `driver_sub_target_net` directly — same net as the drvsub script identified. No rename of the original driver needed if using a fresh insertion point.
 4. Step 2 (fenets) resolves the PENDING_FM_RESOLUTION signals via Mode H; Step 3 substitutes per-stage equivalents using `port_connections_per_stage`.
+5. **Use compound gates (OA12/OAI21/AN3/ND3), NOT MUX2 cascade.** MUX2 cascade creates structural cone divergence from SynRtl synthesis output — FM cannot verify the cone because cut-point DFFs in the MUX select paths become globally unmatched. Compound gates directly match what synthesis produces for the same RTL priority chain → FM verifies cleanly.
 
 **Final gate is a COMPOUND (OA12/OAI21/AO21)** combining condition trigger outputs + `ECO_<jira>_net_orig`. Pattern for 2 stage-stable conditions:
 ```
