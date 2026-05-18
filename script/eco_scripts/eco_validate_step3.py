@@ -2141,6 +2141,41 @@ def main():
                     f"polarity-correct wire (e.g. the DFF Q output directly, "
                     f"or FM's resolved pin location's actual wire).")
 
+    # ── port_promotion buffer chain check ────────────────────────────────────
+    # Every port_promotion must result in the promoted signal being driven — either
+    # by an existing driver cell in PreEco Synthesize OR by a new_logic_gate in
+    # the study. flat_net_confirmed:true is not enough — the signal must have a
+    # driver (ZN/Z/Q output pin), not just appear as a wire/input reference.
+    import subprocess as _sp
+    _pre_synth_gz = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz') \
+                    if args.ref_dir else ''
+    for stage in ('Synthesize',):
+        gate_output_nets = {e.get('output_net', '') for e in study.get(stage, [])
+                            if e.get('change_type') in ('new_logic_gate', 'new_logic')}
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'port_promotion':
+                continue
+            sig = e.get('signal_name') or e.get('new_token') or '?'
+            if sig in gate_output_nets:
+                continue  # driven by ECO gate
+            # Check if PreEco already has a driver cell for this signal
+            has_preeco_driver = False
+            if _pre_synth_gz and os.path.exists(_pre_synth_gz):
+                try:
+                    r = _sp.run(f'zgrep -cE "\\.({"{"}ZN|Z|Q{"}"})\\s*\\({" "}{sig}{" "}\\)" {_pre_synth_gz}',
+                                shell=True, capture_output=True, text=True, timeout=30)
+                    has_preeco_driver = int(r.stdout.strip() or 0) > 0
+                except Exception:
+                    pass
+            if not has_preeco_driver:
+                issues.append(
+                    f"CRITICAL/PORT-PROMO-NO-DRIVER: port_promotion for '{sig}' — "
+                    f"no driver cell found in PreEco Synthesize and no new_logic_gate "
+                    f"in study drives '{sig}'. Studier must check for actual driver "
+                    f"(ZN/Z/Q pin), not just signal existence. Emit INV+INV buffer chain "
+                    f"entries directly into study JSON (not via verifier). Undriven output "
+                    f"port → FM globally unmatched → cascading failures.")
+
     # ── and_term companion rewire check ──────────────────────────────────────
     # Every new_logic_gate with an input ending in _orig (renamed intermediate net)
     # must have a companion rewire entry that creates that net. Without the rewire

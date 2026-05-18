@@ -489,9 +489,9 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 ### 0i — Process `port_promotion` changes → `port_promotion` study entries
 
 1. Check Synthesize: `grep -cw "<signal_name>" /tmp/eco_study_<TAG>_Synthesize.v`
-   - If ≥ 1 → `flat_net_confirmed: true`, record with `declaration_type: "output"`.
+   - If ≥ 1 → signal exists in file. **Also verify it has a driver cell:** `grep -c "\.\(ZN\|Z\|Q\)( <signal_name> )" /tmp/eco_study_<TAG>_Synthesize.v`. If driver found → `flat_net_confirmed: true`, no buffer chain needed. If signal exists but has NO driver → treat as undriven → proceed to step 2 (emit buffer chain).
 2. If 0 (net absent in gate-level — synthesis merged it into cone): find the D-input net of `<signal_name>_reg` or `<signal_name>_d1_reg` in Synthesize module scope → that is the combinational driver net. Record `driver_net: <found_net>`, `needs_buffer_chain: true`, `flat_net_confirmed: false`.
-   - eco_netlist_verifier Check 7 will auto-add a `new_logic_gate` INV+INV buffer chain entry: `INV(<driver_net>) → <tmp_net>`, `INV(<tmp_net>) → <signal_name>`, using cell types discovered from PreEco neighbours. This drives the new output port from the internal combinational value without modifying the DFF.
+   - **The studier itself MUST emit the buffer chain** — do NOT rely on the verifier. Emit two `new_logic_gate` entries directly into the study JSON: `INV(<driver_net>) → n_eco_<jira>_<signal>_inv1`, `INV(n_eco_<jira>_<signal>_inv1) → <signal_name>`. Use INV cell types from PreEco neighbours. Without these entries the output port is undriven → FM globally unmatched → thousands of failures.
 3. If `<signal_name>_reg` also absent → `flat_net_confirmed: false`, `reason: "net and reg both absent — port_promotion cannot be auto-applied"`. Log for engineer review.
 
 ### Phase 0e — Process `enable_swap` changes
