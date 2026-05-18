@@ -459,28 +459,11 @@ Pass that JSON path (not the original SPEC_SOURCES dict) to eco_netlist_re_studi
 
 ---
 
-## STEP 6.5-TUNE — Apply Tune File Update (conditional)
+## STEP 6.5-TUNE — PROHIBITED
 
-**Run this step ONLY if `eco_fm_analysis_round<ROUND>.json` has `"action": "tune_file_update"` entries.**
+**Tune file updates are PROHIBITED. The AI flow must NEVER modify any file under `tune/`.**
 
-For each `tune_file_update` action:
-1. Read `target` and `reason` from the action
-2. **Read the FM analyze_points report** for that target to get the EXACT FM hierarchy paths:
-   `zcat <REF_DIR>/rpts/<target>/<target>__analyze_points.rpt.gz | grep -E "globally unmatched|failing compare|r:/FMWORK|i:/FMWORK"`
-3. **Use the paths FM itself reports** — never hardcode or guess paths. FM's analyze_points output contains the exact `r:/FMWORK.../DFF` and `i:/FMWORK.../DFF` paths that are guaranteed to exist in FM's database.
-4. Build TCL using those exact paths:
-   ```tcl
-   # AI ECO Flow Round <ROUND> — <reason>
-   set x [get_pins -quiet {<exact_path_from_FM_report>/SE}]
-   if {[sizeof_collection $x] > 0} { set_constant -type pin $x 0 }
-   ```
-5. Append to `<REF_DIR>/tune/FmTargets/Fm.<ShortTarget>.before.preverify.tcl`
-
-**Critical rules:**
-- Only add directives for STRUCTURAL failures (clock gating, scan chain SE, DFF matching) — never for logical netlist errors
-- **Always use paths from FM's own analyze_points output** — hardcoded paths silently fail with AMD-WARN if FM's elaboration differs from what was assumed
-- Never modify `EcoChange.svf`
-- If FM analyze_points doesn't show the path → skip and diagnose in next round
+If `eco_fm_analysis_round<ROUND>.json` contains `"action": "tune_file_update"` entries, **skip them entirely**. Do NOT read or write any `tune/FmTargets/*.tcl` file. Escalate to MANUAL_ONLY and stop the fix loop. An engineer must apply tune directives manually if required.
 
 ---
 

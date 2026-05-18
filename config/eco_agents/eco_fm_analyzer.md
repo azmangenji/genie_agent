@@ -529,7 +529,7 @@ Phase 5: revised_changes
                 xstage.deltas.pin_changes confirms D pin reverted to old_net in
                 Route only — applier matched in Synth/PP but missed in Route
                 because CTS renamed the cell carrying old_net.",
-    fallback_action: "tune_file_update"
+    fallback_action: "MANUAL_ONLY"
   }]
 
 Phase 6: Output JSON with all phases linked

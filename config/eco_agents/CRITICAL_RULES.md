@@ -537,14 +537,16 @@ FM ABORTS (N/A)
 
 `set_dont_verify`, `set_user_match`, and `guide_eco_change` are SVF commands. The AI flow must NEVER write them to `EcoChange.svf` or any `eco_svf_entries.tcl`. Step 4b (eco_svf_updater) is permanently disabled. `svf_update_needed` is always `false`.
 
+**Tune file updates are PROHIBITED. The AI flow must NEVER modify any file under `tune/`.** This includes `tune/FmTargets/*.tcl` and any other tune directory file. Do not write, append, or create any tune file under any circumstances — including `set_constant`, `set_dont_verify`, `set_svf -append`, or any other FM directive. If a tune file change appears necessary, escalate to MANUAL_ONLY and stop.
+
 **Priority order for every FM failing point:**
 
 | Priority | Action | When |
 |----------|--------|------|
-| **1 — Netlist fix** | Rewire, re-insert, fix_named_wire, correct port connections | ALWAYS try this first — every round |
-| **2 — Tune file update** | Add FM verification directives to `tune/FmTargets/*.tcl` | Only when same FM failure persists across multiple rounds AND netlist analysis confirms the failure is structural (clock gating asymmetry, scan chain SE mismatch, DFF auto-match) NOT a logical netlist error. The agent reads the FM log to determine WHAT to add — no hardcoded entries. |
-| **3 — MANUAL_ONLY** | Report to engineer; stop the fix loop | Only when both Priority 1 and 2 are exhausted |
-| **NEVER** | SVF updates (`set_dont_verify`, `set_user_match` in EcoChange.svf) | The AI flow is prohibited from modifying EcoChange.svf |
+| **1 — Netlist fix** | Rewire, re-insert, fix_named_wire, correct port connections | ALWAYS — this is the only valid fix |
+| **2 — MANUAL_ONLY** | Report to engineer; stop the fix loop | When Priority 1 is exhausted |
+| **NEVER** | Tune file update (`tune/FmTargets/*.tcl`) | AI flow is PROHIBITED from touching tune files |
+| **NEVER** | SVF updates (`set_dont_verify`, `set_user_match` in EcoChange.svf) | AI flow is PROHIBITED from modifying EcoChange.svf |
 
 **HFS net rename = netlist fix, not SVF:**
 When an ECO-inserted gate uses a net in Synthesize that is renamed by P&R (HFS distribution, CTS buffering), the fix is `fix_named_wire` — rewire the gate input to the correct P&R net name. Do NOT suppress with `set_dont_verify`. The named wire approach makes the ECO structurally correct in P&R stages. Using suppression means the ECO gate has a wrong input in P&R stages — it just passes FM without being correct.
