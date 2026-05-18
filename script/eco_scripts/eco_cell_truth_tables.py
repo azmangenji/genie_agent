@@ -46,6 +46,9 @@ ABSTRACT_GATE_FUNCTIONS = {
     "NOR2":  {"ZN": "~(A1 | A2)"},
     "NOR3":  {"ZN": "~(A1 | A2 | A3)"},
     "NOR4":  {"ZN": "~(A1 | A2 | A3 | A4)"},
+    "NR2":   {"ZN": "~(A1 | A2)"},  # alias: NR2 = NOR2 (TSMC short-form naming)
+    "NR3":   {"ZN": "~(A1 | A2 | A3)"},  # alias: NR3 = NOR3
+    "NR4":   {"ZN": "~(A1 | A2 | A3 | A4)"},  # alias: NR4 = NOR4
     "XOR2":  {"Z":  "A1 ^ A2"},
     "XNOR2": {"ZN": "~(A1 ^ A2)"},
     "INR2":  {"ZN": "A1 & ~B1"},
@@ -53,6 +56,8 @@ ABSTRACT_GATE_FUNCTIONS = {
     "IINR3": {"ZN": "A1 & A2 & ~B1"},
     "IND2":  {"ZN": "~(~A1 & B1)"},
     "IND3":  {"ZN": "~(A1 & (B1 | B2))"},
+    "IAOI21": {"ZN": "~(A1 | (A2 & B))"},
+    "IOAI21": {"ZN": "~(A1 & (A2 | B))"},
     "AOI21": {"ZN": "~((A1 & A2) | B)"},
     "AOI22": {"ZN": "~((A1 & A2) | (B1 & B2))"},
     "OAI21": {"ZN": "~((A1 | A2) & B)"},

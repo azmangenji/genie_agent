@@ -437,7 +437,7 @@ For each `wire_swap` change, process FM fenets results per stage.
 
 **MANDATORY PRE-PHASE 1 — `wire_swap + fallback_strategy: "intermediate_net_insertion"` with non-empty `new_condition_gate_chain`** (run BEFORE the rename_map lookup that produces the rewire entry, so gate entries appear alongside it):
 1. Emit `new_logic_gate` per chain gate (instance_name, gate_function, per-stage inputs, output_net, instance_scope = declaring module).
-2. Resolve PENDING_FM_RESOLUTION inputs via rename map (Step 2 condition_inputs_to_query).
+2. Resolve PENDING_FM_RESOLUTION inputs via rename map (Step 2 condition_inputs_to_query). If a signal resolves to **different nets per stage** (e.g., Synth net differs from PP/Route net), emit `port_connections_per_stage` for that gate instead of a single `port_connections`. Each stage entry maps the PENDING_FM_RESOLUTION input to its stage-specific resolved net.
 3. Apply Mode H Route fallback for unresolvable Route inputs.
 4. Last gate (`c_mux_final` etc.) MUST output to `<pivot_net>` — NOT a new `n_eco_*`.
 

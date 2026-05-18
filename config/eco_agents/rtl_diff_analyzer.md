@@ -539,20 +539,27 @@ Read `driver_sub_target_net` + `driver_sub_target_cell_type` directly. The scrip
 
 **Verify:** `stage_stable: true`; `driver_sub_target_cell_type` not AOI/OAI/MUX (script enforces); use returned `driver_sub_target_net` verbatim.
 
-**MANDATORY — if `stage_stable: true` → `fallback_strategy` MUST be `"driver_substitution"`. NO EXCEPTIONS.**
-Using `intermediate_net_insertion` after the script returned a valid stable target is detected by validator Check **9g-DRVSUB-SCRIPT-IGNORED** and causes immediate FAIL. Do NOT substitute a different signal. Do NOT revert to intermediate_net_insertion. Do NOT second-guess the script. The validator will reject and force a re-run.
+**Strategy selection — `stage_stable: true`:**
+
+- **All conditions use stage-stable signals** (exist in all 3 PreEco stages, no `phfnn_*`/`N<6+digit>` synthesis-internals) → use `fallback_strategy: "driver_substitution"`.
+- **Any condition contains a synthesis-internal signal** (RTL signal not found as a named net in Synth, synthesizes to `phfnn_*`/`N<6+digit>` internals) → use `fallback_strategy: "intermediate_net_insertion"` instead. Keep ALL conditions in the chain including those with synthesis-internal signals — mark them `PENDING_FM_RESOLUTION:<signal>` and add to `condition_inputs_to_query` for Step 2 Mode H resolution. Do NOT drop these conditions.
 
 **Rules (eco_validate_step1.py):** target MUST NOT be the pivot (SEQMAP_NET_*); MUST NOT be synthesis-internal (`N\d{6+}`, `phfnn_*`); MUST exist in all 3 stages; driver MUST NOT be AOI/OAI compound (Check 9g-DRVSUB-CONSUMER-TARGET).
 
-**On valid target:**
+**On valid target — driver_substitution:**
 1. Set `fallback_strategy: "driver_substitution"`, `driver_sub_target_net: "<script output>"`, `driver_sub_renamed_to: "ECO_<jira>_net_orig"`.
 2. New chain renames target's driver output → `ECO_<jira>_net_orig`; adds compound gates (OA12/OAI21/AN3/ND3) that re-output the original net name.
-3. Stage-stable signals only: ALLOWED — new ECO ports from `new_port`/`port_promotion` (may be `PENDING_ECO_PORT`), existing primary inputs, `ctmn_*` ONLY as `ECO_<jira>_net_orig` for the default. FORBIDDEN — `PENDING_FM_RESOLUTION` (stage-unstable; that condition forces fall-through to E4c), `phfnn_*` / `N<6+digit>` synthesis-internals, anything with 0 occurrences in any stage.
+3. Stage-stable signals only: ALLOWED — new ECO ports from `new_port`/`port_promotion` (may be `PENDING_ECO_PORT`), existing primary inputs, `ctmn_*` ONLY as `ECO_<jira>_net_orig` for the default.
 4. **NO MUX2 cascade** — direct driver replacement. MUX cascade is for `intermediate_net_insertion` only.
 4a. **Last gate MUST output `driver_sub_target_net`** — restores the original name; otherwise undriven → FM ABORT.
-4b. **Drop PENDING_FM_RESOLUTION conditions** from chain AND from `condition_inputs_to_query`/`nets_to_query` — driver_substitution is self-contained, FM resolution of removed conditions is unused.
 5. Old expression (`ECO_<jira>_net_orig`) feeds the chain as DEFAULT.
 6. Pivot net (SEQMAP_NET_*, DFF.D) — untouched.
+
+**On valid target — intermediate_net_insertion (synthesis-internal conditions):**
+1. Set `fallback_strategy: "intermediate_net_insertion"`, record `driver_sub_target_net` from script (used only to identify the insertion point net).
+2. Keep ALL conditions in `new_condition_gate_chain`. Mark synthesis-internal condition signals as `PENDING_FM_RESOLUTION:<signal>` and add to `condition_inputs_to_query`.
+3. Last gate MUST output `driver_sub_target_net` directly — same net as the drvsub script identified. No rename of the original driver needed if using a fresh insertion point.
+4. Step 2 (fenets) resolves the PENDING_FM_RESOLUTION signals via Mode H; Step 3 substitutes per-stage equivalents using `port_connections_per_stage`.
 
 **Final gate is a COMPOUND (OA12/OAI21/AO21)** combining condition trigger outputs + `ECO_<jira>_net_orig`. Pattern for 2 stage-stable conditions:
 ```

@@ -947,16 +947,20 @@ def main():
                     # (they exist after ECO application). Do NOT flag these.
                     if 'PENDING_ECO_PORT' in base:
                         continue
-                    # PENDING_FM_RESOLUTION signals are explicitly stage-unstable —
-                    # flag them directly instead of skipping
+                    # PENDING_FM_RESOLUTION signals: allowed when the signal is listed in
+                    # condition_inputs_to_query (scheduled for Step 2 Mode H resolution).
+                    # Only fail if it is NOT queued for resolution.
                     if 'PENDING_FM_RESOLUTION' in base:
-                        raw = base.replace('PENDING_FM_RESOLUTION:', '')
-                        intermed_ins_issues.append(
-                            f"changes[{idx}] target={tgt} [FAIL/9f-PENDING-UNSTABLE]: "
-                            f"intermediate_net_insertion gate uses PENDING_FM_RESOLUTION "
-                            f"signal '{raw}' — stage-unstable by definition (FM-036 in P&R stages). "
-                            f"Use driver_substitution with only ECO ports and primary inputs.")
-                        overall_pass = False
+                        raw = base.replace('PENDING_FM_RESOLUTION:', '').split('[')[0]
+                        queued = [q.get('signal', '') for q in
+                                  (c.get('condition_inputs_to_query') or [])]
+                        if raw not in queued:
+                            intermed_ins_issues.append(
+                                f"changes[{idx}] target={tgt} [FAIL/9f-PENDING-NOT-QUEUED]: "
+                                f"intermediate_net_insertion gate uses PENDING_FM_RESOLUTION "
+                                f"signal '{raw}' but it is not in condition_inputs_to_query. "
+                                f"Add it to condition_inputs_to_query so Step 2 resolves it via Mode H.")
+                            overall_pass = False
                         continue
                     if base.startswith(("1'b", "0'b", "n_eco_", "SEQMAP_NET", "PENDING", "ECO_")): continue
                     # Check existence in all 3 PreEco stages
@@ -1007,16 +1011,30 @@ def main():
                 ds = json.load(open(dp))
                 if ds.get('stage_stable') and ds.get('driver_sub_target_net'):
                     actual_fs = c.get('fallback_strategy', '')
-                    if actual_fs != 'driver_substitution':
+                    drvsub_tgt = ds['driver_sub_target_net']
+                    if actual_fs not in ('driver_substitution', 'intermediate_net_insertion'):
                         driver_sub_issues.append(
                             f"changes[{idx}] [FAIL/9g-DRVSUB-SCRIPT-IGNORED]: "
                             f"eco_find_drvsub_target.py returned stage_stable=True "
-                            f"with target='{ds['driver_sub_target_net']}' for register '{reg}', "
+                            f"with target='{drvsub_tgt}' for register '{reg}', "
                             f"but agent chose fallback_strategy='{actual_fs}'. "
-                            f"When the drvsub script returns a valid stage-stable target, "
-                            f"driver_substitution is MANDATORY. No exceptions."
+                            f"Must use driver_substitution (all conditions stage-stable) or "
+                            f"intermediate_net_insertion (any condition has synthesis-internal signals)."
                         )
                         overall_pass = False
+                    elif actual_fs == 'intermediate_net_insertion':
+                        # Allowed when conditions have synthesis-internal signals.
+                        # Verify the final gate in the chain outputs to drvsub_tgt (same net).
+                        chain = c.get('new_condition_gate_chain') or []
+                        final_out = chain[-1].get('output_net', '') if chain else ''
+                        if final_out and final_out != drvsub_tgt:
+                            driver_sub_issues.append(
+                                f"changes[{idx}] [FAIL/9g-INTERMED-WRONG-TARGET]: "
+                                f"intermediate_net_insertion chosen but final gate outputs to "
+                                f"'{final_out}', not drvsub target '{drvsub_tgt}'. "
+                                f"Final gate MUST output to '{drvsub_tgt}'."
+                            )
+                            overall_pass = False
             except Exception:
                 pass
 

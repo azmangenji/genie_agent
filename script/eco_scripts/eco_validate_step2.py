@@ -185,6 +185,18 @@ def main():
                         sig = ci.get('signal', '')
                         if sig:
                             expected_echo.add(sig)
+                    # Bus bits previously spare/unconnected (UNCONNECTED_*) have no
+                    # named wire in PreEco, so FM returns FM-036 and echo-fallback
+                    # is the correct and expected behavior — not a validation failure.
+                    if c.get('submodule_bus_driven') and c.get('original_unconnected_net'):
+                        bp = c.get('bus_port', '')
+                        bi = c.get('bus_bit_index')
+                        if bp and bi is not None:
+                            expected_echo.add(f"{bp}_{bi}_")
+                        for gate in (c.get('d_input_gate_chain') or []):
+                            for inp in (gate.get('inputs') or []):
+                                if inp:
+                                    expected_echo.add(inp)
             real_fallbacks = [sig for sig in echo_fallbacks
                               if sig.rsplit('/', 1)[-1] not in expected_echo]
 

@@ -324,7 +324,7 @@ def synthesize_and_pattern(expr, input_syms, jira, prefix=''):
         chain.add_wire(wire)
         chain.add_cell(
             'INR2D1BWP136P5M156H3P48CPDLVT', _inst_name(jira, 1, prefix),
-            {'A1': str(pos_lits[0]), 'A2': str(neg_lits[0]), 'Z': wire},
+            {'A1': str(pos_lits[0]), 'B1': str(neg_lits[0]), 'ZN': wire},
         )
         chain.output_net = wire
         return chain

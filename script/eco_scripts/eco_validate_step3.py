@@ -1319,7 +1319,13 @@ def main():
             if len(non_empty) >= 2:
                 common = set.intersection(*non_empty.values())
                 if not common:
-                    issues.append(
+                    # Wrapper-clock swap exemption: when Check 25 approved
+                    # Synth=UCLK*/PP=wrp_clk_*/Route=CTS-renamed swap, set
+                    # `wrapper_clock_swap: true` in the study entry to exempt.
+                    if e.get('wrapper_clock_swap'):
+                        pass  # intentional wrapper-clock domain swap — Check 25 validated it
+                    else:
+                      issues.append(
                         f"HIGH/27-CLOCK-STAGE-MISMATCH: DFF {inst} per-stage CP "
                         f"references DIFFERENT clock domains: " +
                         ', '.join(f"{st}=tokens{sorted(tks)}" for st, tks in per_stage_tokens.items() if tks) +
