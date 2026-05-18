@@ -607,30 +607,42 @@ These checks run in seconds. FM-599 aborts are detected only after 1-2 hours of 
 
 ---
 
-## RULE 32 — Always Use Real RTL-Named Net, Not HFS Alias, When Both Exist
+## RULE 32 — Polarity-Verified Real RTL Net (NOT bare-name preference alone)
 
-**Applies to:** eco_netlist_studier (port_connections_per_stage), eco_applier (all passes)
+**Applies to:** eco_netlist_studier (port_connections_per_stage), eco_applier (all passes), eco_fenets_rename_map (polarity-correct emission)
 
-When selecting a net to write into any `port_connections_per_stage` entry (gate inputs, rewire targets, DFF D-input, port connections), **always prefer the real RTL-named net over any P&R-generated HFS alias** when both exist in the current stage's PostEco netlist.
+When selecting a net to write into any `port_connections_per_stage` entry, **prefer the real RTL-named net over a P&R HFS alias ONLY when both carry the same logical polarity**. P&R can add an odd number of inverters between a registered driver (e.g. DFF.Q) and the port-named wire (drive-strength optimization at module boundaries) — in that stage the bare RTL name is the INVERSE logical value of FM's resolution.
 
 | Net type | How to identify | Preference |
 |----------|----------------|-----------|
-| **Real net** | Matches `old_token` or `new_token` from RTL diff JSON. Found in RTL source files (`data/SynRtl/*.v` or `data/PreEco/SynRtl/*.v`) as a `reg`, `wire`, or port declaration. Stable across P&R runs. | **USE FIRST** |
-| **P&R alias** | Does NOT appear in RTL source. Exists only in gate-level netlists (Synthesize/PrePlace/Route). Created by P&R tools as buffer/clone nets for high-fanout signals. May change name between P&R runs. | Use ONLY if real net absent |
+| **Real net (polarity ✓)** | Matches `old_token`/`new_token` from RTL diff. Found in `data/PreEco/SynRtl/*.v` as `reg`/`wire`/port. **AND** inverter parity from the bare wire to a registered driver matches FM's resolution. | **USE FIRST** |
+| **Real net (polarity ✗)** | RTL-named wire exists in stage BUT P&R added odd INVs between the bare wire and the registered driver — bare wire is INVERTED value. | **DO NOT USE** — use FM's actual wire instead |
+| **P&R alias** | Does NOT appear in RTL source. Created by P&R tools. May change name between rounds. | Fall back when no polarity-correct real net |
 
-**Detection method — is a net a P&R alias?**
+**Detection method (3-step):**
 ```bash
-# A net is a P&R alias if it does NOT exist in the RTL source:
-grep -rw "<net_name>" <REF_DIR>/data/PreEco/SynRtl/ | grep -v "^Binary"
-# count = 0 → P&R alias (not from RTL source)
-# count > 0 → real RTL-named net
+# Step 1 — real RTL name exists in stage?
+grep -cw "<real_net>" <PostEco_stage>           # count >= 1 → real net candidate
+
+# Step 2 — get FM's per-stage resolution from rename_map
+# rename_map now emits actual_wire_<stage> (Patch #3) — use it directly if present
+jq '."<scope>/<sig>".actual_wire_Route' rename_map.json
+
+# Step 3 — polarity-parity check
+# Count INVs on the path from <real_net> back to the nearest DFF.Q (or primary input).
+# If parity differs from the path through FM's actual_wire → polarity flip → use FM's wire
 ```
 
-**Rule:** For every net connection:
-1. Check if real RTL-named net exists in current stage PostEco: `grep -cw "<real_net>" <PostEco_stage>` — if ≥ 1, use it.
-2. Only if count = 0 → fall back to P&R alias search via Priority 2/3 structural trace.
+**Rule (post-fix):**
+1. If `rename_map.actual_wire_<stage>` exists → use it verbatim (already polarity-correct).
+2. Else if real RTL name exists in stage AND polarity-parity matches across stages → use the bare name.
+3. Else fall back to FM's `<cell>/<pin>` form's wire (via `_wire_on_pin()` helper).
 
-**Why:** HFS aliases change between P&R runs. Using an alias in Round 1 that gets renamed in Round 2 causes SKIPPED/UNRESOLVABLE entries. Real RTL-named nets are stable across rounds, make eco_fm_analyzer diagnosis cleaner, and avoid false Mode H classifications.
+**Step 3 validator Check 38 enforces** the polarity parity for chain leaf inputs — HARD FAIL on cross-stage parity mismatch.
+
+**Why polarity matters:** A chain reading `.A2(ArbCtrlPeRdy)` computes `+ArbCtrlPeRdy` in stages where the wire is positive-polarity, but `~ArbCtrlPeRdy` in any stage where odd INVs flipped it → FM cone divergence → unfixable through cell-type/CP rewires. See run 20260515084942 round 6 NeedFreqAdj_reg: Route had 3 INVs between `ArbCtrlPeRdy_reg.Q` (= `aps_rename_12109_`) and the port wire `ArbCtrlPeRdy`, while Synth/PP had 0/2. Six rounds of fixes targeted clock/data symptoms while the actual cause was polarity inversion in the OR4 chain.
+
+**Why bare-name preference still exists:** HFS aliases change between P&R runs. Using an alias in Round 1 that gets renamed in Round 2 causes SKIPPED entries. The polarity-correct preference order remains stable across rounds because FM's per-stage resolution is deterministic for the same netlist.
 
 ---
 

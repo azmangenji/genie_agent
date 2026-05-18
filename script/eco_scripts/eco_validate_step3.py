@@ -1904,6 +1904,130 @@ def main():
                 f"None defeats the §0c decision tree and downstream applier can't "
                 f"tell whether to wire the dedicated reset pin or rely on the chain.")
 
+    # ── 38. CHAIN-LEAF-POLARITY-PARITY ─────────────────────────────────────
+    # For each chain leaf input net referenced by a new_logic_gate, count
+    # the inverters between the consuming gate's pin and the nearest DFF.Q
+    # (or primary input) driving that net in EACH stage's PreEco netlist.
+    # If the INV count parity differs across stages, the chain reads opposite
+    # logical values per stage → FM Route/PP mismatch.
+    #
+    # Root cause (run 20260515084942 round 6): Rule 32 picked the bare RTL
+    # name `ArbCtrlPeRdy` for Route's chain leaf, but P&R had added 3
+    # inverters between ArbCtrlPeRdy_reg.Q (= aps_rename_12109_ in Route's
+    # merged MB DFF) and the port-named wire `ArbCtrlPeRdy` for drive-
+    # strength optimization. Synth/PP had 0/2 inverters in the same path.
+    # The chain entry `.A2(ArbCtrlPeRdy)` therefore computed
+    # `OR4(...,+ArbCtrlPeRdy,...)` in Synth/PP but `OR4(...,~ArbCtrlPeRdy,...)`
+    # in Route → cone divergence → 1 failing point that survived 6 rounds.
+    #
+    # Trace strategy (depth-bounded): from the consumer gate's `.<pin>(<wire>)`,
+    # walk upstream by following each cell's output → input. INV/INVD/INV*
+    # cells add 1 to the parity count. Stop at: DFF.Q output, primary
+    # input port, or after 8 hops. Compare parity across stages.
+    _INV_RE = re.compile(r'^(INV|INVD|INVSKR|INVLLKG|INVTX|INVSK|INVFE)', re.IGNORECASE)
+    def _net_parity_in_stage(net, host_module, ref_dir, stage, max_hops=8):
+        """Return (parity, terminal_kind) where parity is 0/1 (count of INVs
+        mod 2 from net upstream to first DFF.Q / primary input). Returns
+        None if traversal stalls / can't be done deterministically."""
+        gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
+        if not gz.is_file():
+            return None
+        try:
+            cmd = (f"zcat {gz} | awk '/^module {re.escape(host_module)}"
+                   f"(?:_0)?[ \\t(]/,/^endmodule/'")
+            txt = subprocess.run(cmd, shell=True, capture_output=True,
+                                 text=True, timeout=60).stdout
+        except Exception:
+            return None
+        if not txt:
+            return None
+        # Strip Verilog comments to avoid '//' lines confusing depth scan
+        txt = re.sub(r'//[^\n]*', '', txt)
+        txt = re.sub(r'/\*.*?\*/', '', txt, flags=re.DOTALL)
+        cur = net.strip()
+        parity = 0
+        for hop in range(max_hops):
+            # Find any cell whose output pin (Z/ZN/ZN1/Q/QN/CO/S) drives `cur`
+            m = re.search(
+                rf'^\s*([A-Z][A-Z0-9_]+)\s+([A-Za-z_]\w*)\s*\(' rf'[^)]*?'
+                rf'\.\s*(Z|ZN|ZN1|Q|QN|CO|S)\s*\(\s*{re.escape(cur)}\s*\)',
+                txt, re.MULTILINE | re.DOTALL)
+            if not m:
+                # Check if it's a primary input port of the module
+                if re.search(rf'^\s*input\s+(?:\[[^\]]+\]\s+)?{re.escape(cur)}\s*[;,]',
+                             txt, re.MULTILINE):
+                    return parity, 'primary_input'
+                return parity, 'unresolved'
+            cell_type, inst_name, out_pin = m.group(1), m.group(2), m.group(3)
+            # DFF: Q/QN/CO/S terminates traversal
+            if out_pin in ('Q', 'QN', 'CO', 'S'):
+                if out_pin == 'QN':
+                    parity ^= 1
+                return parity, f'dff_{inst_name}'
+            # INV cell adds parity
+            if _INV_RE.match(cell_type):
+                parity ^= 1
+            # Step to the input pin of this cell — for INVs that's `.I`,
+            # for non-INVs we can't generically pick "the" input; bail.
+            if _INV_RE.match(cell_type):
+                # Extract .I(<wire>) from this instance block
+                blk_m = re.search(
+                    rf'\b{re.escape(inst_name)}\s*\([^)]*?\.\s*I\s*\(\s*(\w+)\s*\)',
+                    txt, re.DOTALL)
+                if not blk_m:
+                    return parity, 'unresolved_inv'
+                cur = blk_m.group(1)
+                continue
+            # Non-INV combinational cell — can't deterministically continue
+            # without ambiguity. Return current parity with marker.
+            return parity, f'comb_{cell_type[:8]}'
+        return parity, 'max_hops'
+
+    OUT_PINS_38 = ('Z', 'ZN', 'ZN1', 'Q', 'QN', 'CO', 'S')
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') != 'new_logic_gate':
+            continue
+        host = e.get('module_name', '')
+        inst = e.get('instance_name', '?')
+        pcs_synth = e.get('port_connections') or {}
+        pcs_per_stage = e.get('port_connections_per_stage') or {}
+        for pin, val in pcs_synth.items():
+            if pin in OUT_PINS_38 or not isinstance(val, str): continue
+            v = val.strip()
+            if v.startswith(("1'b","0'b","1'h","0'h","n_eco_")): continue
+            # Get per-stage net values (fall back to Synth value if absent)
+            per_stage_nets = {
+                'Synthesize': v,
+                'PrePlace':   (pcs_per_stage.get('PrePlace') or {}).get(pin) or v,
+                'Route':      (pcs_per_stage.get('Route')   or {}).get(pin) or v,
+            }
+            parities = {}
+            for stg, n in per_stage_nets.items():
+                if not n: continue
+                p = _net_parity_in_stage(n, host, args.ref_dir, stg)
+                if p is not None:
+                    parities[stg] = p
+            # Skip if we couldn't resolve all 3
+            if len(parities) < 3:
+                continue
+            # Compare parity values
+            par_vals = {stg: pv[0] for stg, pv in parities.items()}
+            if len(set(par_vals.values())) > 1:
+                terms = {stg: pv[1] for stg, pv in parities.items()}
+                issues.append(
+                    f"HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH: gate {inst}.{pin} "
+                    f"net per-stage = {per_stage_nets} but inverter-parity "
+                    f"counts DIFFER across stages: {par_vals} "
+                    f"(terminals: {terms}). The chain will compute opposite "
+                    f"logical values per stage → FM cone divergence "
+                    f"(see run 20260515084942 round 6 NeedFreqAdj_reg). "
+                    f"Cause: Rule 32 picked the bare RTL-named wire in a "
+                    f"stage where P&R added an odd number of inverters between "
+                    f"the registered driver and the port — bare name is the "
+                    f"INVERSE logical value in that stage. Fix: use a "
+                    f"polarity-correct wire (e.g. the DFF Q output directly, "
+                    f"or FM's resolved pin location's actual wire).")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}

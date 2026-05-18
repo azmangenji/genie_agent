@@ -32,7 +32,7 @@ Output schema:
       ...
     }
 """
-import argparse, glob, json, os, re, sys
+import argparse, glob, json, os, re, subprocess, sys
 from pathlib import Path
 
 # ── Raw FM rpt parser ────────────────────────────────────────────────────────
@@ -203,9 +203,53 @@ def derive_queries(rtl_diff):
 
 # ── Build rename map ─────────────────────────────────────────────────────────
 
-def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts):
+# Wire-on-pin lookup cache (per-stage): {(stage, cell_pin): wire_name}
+_WIRE_ON_PIN_CACHE = {}
+
+
+def _wire_on_pin(cell_pin, ref_dir, stage):
+    """Given `<cell_instance>/<pin>`, return the actual wire connected to
+    that pin in the stage's PreEco netlist. Caches the lookup. Returns
+    empty string on failure (caller should fall back to the cell_pin form).
+
+    This is the polarity-correct identifier for the signal at that location,
+    distinct from any bare RTL name that may have INVs inserted between the
+    pin and the RTL-named wire (P&R drive-strength optimization). Patch #3
+    of the Rule 32 polarity fix — see CRITICAL_RULES.md Rule 32 and
+    eco_validate_step3.py Check 38.
+    """
+    if not cell_pin or '/' not in cell_pin:
+        return ''
+    inst, pin = cell_pin.rsplit('/', 1)
+    if not ref_dir:
+        return ''
+    key = (stage, inst, pin)
+    if key in _WIRE_ON_PIN_CACHE:
+        return _WIRE_ON_PIN_CACHE[key]
+    gz = os.path.join(ref_dir, 'data', 'PreEco', f'{stage}.v.gz')
+    if not os.path.isfile(gz):
+        _WIRE_ON_PIN_CACHE[key] = ''
+        return ''
+    try:
+        # Find the instance block then extract `.pin(wire)` value
+        cmd = (f"zcat {gz} | grep -A20 '\\b{re.escape(inst)}\\s*(' "
+               f"| head -25")
+        r = subprocess.run(cmd, shell=True, capture_output=True,
+                           text=True, timeout=60)
+        block = r.stdout or ''
+        m = re.search(rf'\.\s*{re.escape(pin)}\s*\(\s*([A-Za-z_][\w\[\]]*)\s*\)',
+                      block)
+        result = m.group(1) if m else ''
+    except Exception:
+        result = ''
+    _WIRE_ON_PIN_CACHE[key] = result
+    return result
+
+
+def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts, ref_dir=''):
     """fm_results is dict {(stage, signal): {status, positive, inverted}} merged
-    across all parsed raw rpts."""
+    across all parsed raw rpts. ref_dir is used by _wire_on_pin for Patch #3
+    polarity-correct actual_wire emission."""
     queries = derive_queries(rtl_diff)
     rmap = {
         '_metadata': {
@@ -259,6 +303,20 @@ def build_rename_map(rtl_diff, fm_results, tag, tile, raw_rpts):
                     # across cells.
                     parts = pick.rsplit('/', 2)
                     entry[stage] = '/'.join(parts[-2:]) if len(parts) >= 2 else pick
+                    # Also emit the polarity-correct ACTUAL WIRE on that pin
+                    # (Patch #3 for Rule 32 fix). Studier should use
+                    # `actual_wire_<stage>` instead of bare RTL name whenever
+                    # they disagree. P&R may add odd inverters between a
+                    # registered driver and the port-named wire (drive-
+                    # strength optimization at module boundaries) — bare
+                    # RTL name then carries INVERSE logical value vs. the
+                    # FM-resolved pin. See run 20260515084942 round 6 for
+                    # the ArbCtrlPeRdy 3-INV polarity flip in Route.
+                    if ref_dir:
+                        cell_pin = entry[stage]
+                        actual_wire = _wire_on_pin(cell_pin, ref_dir, stage)
+                        if actual_wire:
+                            entry[f'actual_wire_{stage}'] = actual_wire
             else:
                 entry[stage] = sig
                 had_warning = True
@@ -285,6 +343,11 @@ def main():
                         '(overrides --raw-dir if both given)')
     p.add_argument('--tag',  required=True)
     p.add_argument('--tile', required=True)
+    p.add_argument('--ref-dir', default='',
+                   help='REF_DIR for per-stage PreEco netlist lookup '
+                        '(Patch #3 — actual_wire_<stage> polarity-correct '
+                        'wire-on-pin resolution to defeat Rule 32 polarity '
+                        'flips at module boundaries with odd inverter chains)')
     p.add_argument('--output', required=True)
     args = p.parse_args()
 
@@ -320,7 +383,8 @@ def main():
         print(f'FAIL: cannot read rtl_diff: {e}', file=sys.stderr)
         return 1
 
-    rmap = build_rename_map(rtl_diff, fm_results, args.tag, args.tile, raw_paths)
+    rmap = build_rename_map(rtl_diff, fm_results, args.tag, args.tile, raw_paths,
+                             ref_dir=args.ref_dir)
     Path(args.output).write_text(json.dumps(rmap, indent=2))
 
     n = len(rmap) - 1  # minus _metadata

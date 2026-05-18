@@ -133,7 +133,9 @@ for pin, net in port_connections.items():
 P&R renames DFF outputs (CTS/optimization in Route). A wire may exist in scope but be undriven → FM `X` → DFF0X. For every non-ECO input net, verify it is driven in each stage and record per-stage aliases.
 
 **Rule** — for each input net (skip `n_eco_*` and `new_port_signals`):
-0. **Rule 32 pre-check (MANDATORY).** If bare RTL name exists anywhere in `/tmp/eco_study_<TAG>_<Stage>.v` (`grep -cw` ≥ 1) but is missing from current module scope, treat as missing input port: emit `port_declaration` adding `<net>` as `input` to this module + matching `port_connection` entries up to the visible scope. Use the bare name. **Real RTL-named net always wins over P&R alias.** Only proceed to step 1 if bare name is absent from the entire file.
+0. **Rule 32 pre-check (MANDATORY, polarity-aware — see CRITICAL_RULES.md Rule 32).** Two sub-cases:
+   - (a) **Bare RTL name missing from current module scope but exists in file:** emit `port_declaration` adding `<net>` as `input` + matching `port_connection` entries up to the visible scope. Use the bare name.
+   - (b) **Bare RTL name exists in current module scope:** check fenets rename_map for `actual_wire_<stage>`. If present, USE IT VERBATIM (polarity-correct by construction). If absent, the bare RTL name is OK ONLY when inverter-parity from the bare wire to the nearest DFF.Q matches across all 3 stages. If parity differs in any stage, use FM's resolved `<cell>/<pin>` wire instead of the bare name (Step 3 Check 38 catches violations). Run 20260515084942 round 6 silently used the bare `ArbCtrlPeRdy` in Route where P&R had added 3 INVs — chain computed inverse polarity vs Synth/PP → FM Route FAIL for 6 rounds.
 1. Check driver in stage scope: `grep -P '\.(Q|Z|ZN|ZN1|CO|S)\s*\(<net>\s*\)'`. Driven → use as-is.
 2. Not driven → find the Synthesize driver instance, locate same instance in P&R stage, read its output pin → that's the alias.
 3. Driver absent in P&R → one hop upstream (grep driver's inputs in Synth, find those in P&R, read output).
