@@ -351,11 +351,39 @@ def main():
     p.add_argument('--output', required=True)
     args = p.parse_args()
 
-    # Discover raw rpts
+    # Discover raw rpts — ONLY for this run's fenets tags (avoid pollution from other runs).
+    # Each raw rpt filename starts with the fenets_tag (a timestamp), NOT the ECO tag.
+    # The eco_fenets_runner passes the exact files via --raw-files; --raw-dir is a fallback
+    # that reads the fenets_tag list from data/<TAG>_eco_fenets_queries.json to filter.
     raw_paths = list(args.raw_files)
     if not raw_paths and args.raw_dir:
-        raw_paths = sorted(glob.glob(os.path.join(args.raw_dir,
-                                                  '*find_equivalent_nets_raw*.rpt')))
+        # Try to read fenets tags from queries JSON to filter only this run's rpts
+        queries_json = os.path.join(args.raw_dir, f'{args.tag}_eco_fenets_queries.json')
+        fenets_tags = set()
+        if os.path.exists(queries_json):
+            try:
+                qdata = json.load(open(queries_json))
+                # queries JSON may list fenets_tags used
+                for entry in (qdata if isinstance(qdata, list) else []):
+                    ft = entry.get('fenets_tag') or entry.get('tag')
+                    if ft:
+                        fenets_tags.add(str(ft))
+            except Exception:
+                pass
+        if fenets_tags:
+            # Filter raw rpts to only those whose filename starts with a known fenets_tag
+            all_rpts = sorted(glob.glob(os.path.join(args.raw_dir,
+                                                      '*find_equivalent_nets_raw*.rpt')))
+            raw_paths = [p for p in all_rpts
+                         if any(os.path.basename(p).startswith(ft) for ft in fenets_tags)]
+        if not raw_paths:
+            # Final fallback: glob all — warn about potential pollution
+            raw_paths = sorted(glob.glob(os.path.join(args.raw_dir,
+                                                       '*find_equivalent_nets_raw*.rpt')))
+            if raw_paths:
+                print(f'WARN: eco_fenets_rename_map: using all {len(raw_paths)} raw rpts in '
+                      f'{args.raw_dir} — pass --raw-files for this run\'s rpts only to avoid '
+                      f'pollution from other runs.', file=sys.stderr)
     if not raw_paths:
         print('FAIL: no raw fenets rpts to parse '
               '(use --raw-dir or --raw-files)', file=sys.stderr)
