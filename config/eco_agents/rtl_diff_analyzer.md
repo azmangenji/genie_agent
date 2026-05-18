@@ -50,9 +50,20 @@ For each diff hunk, classify as ONE of:
 | `port_connection` | Port connection added on module instance | `.new_port(net)` added |
 | `enable_swap` | The clock-enable / write-enable condition of an existing DFF changes (the `else if (<condition>)` guard around the DFF assignment changes to a new expression). Emit this as a SEPARATE change entry alongside any `wire_swap`/`and_term` for the D-input if both change in the same always block. Fields: `old_enable_net`, `new_enable_net`, `new_enable_gate_chain` (MUX/AND/OR gates implementing the new enable condition), `dff_clock`. Step 2 queries `old_enable_net` via fenets to locate the CE pin; Step 3 emits a `rewire` entry for pin=CE/EN/WE on the discovered DFF cell. | `else if (en_old)` → `else if (en_new)` |
 
-**Bus combinational gate detection (MANDATORY for `new_logic_gate`):**
+**Bus flag rule — `is_bus_dff` vs `is_bus_gate` (MANDATORY — never mix):**
 
-When a diff hunk adds a `wire` assignment with a range declaration (`` wire [`MACRO] X = expr `` or `wire [N:0] X = expr`), classify as `new_logic_gate` and additionally set `is_bus_gate: true` and `bus_width_expr: "<MACRO_or_integer>"`. In gate-level, synthesis expands this into N individual gate cells (one per bit). eco_netlist_studier calls `eco_resolve_bus_width.py` then emits N per-bit gate entries (each with `is_bus_gate_bit: true`, `bus_bit_index`, and bit-indexed input/output nets). Scalar inputs to the gate (e.g. a 1-bit select signal) are shared across all N entries unchanged; bus-width inputs get `[bit]` suffix per entry.
+| Context | Correct flag |
+|---------|-------------|
+| `new_logic` adding `reg [N:0] sig` | `is_bus_dff: true` |
+| `new_logic_gate` adding `wire [N:0] sig = expr` | `is_bus_gate: true` |
+| `wire_swap` whose `d_input_gate_chain` produces a bus-width net | `is_bus_gate: true` — the chain contains bus-width combinational cells |
+| Any `wire_swap` | **NEVER `is_bus_dff: true`** — wire_swap never inserts sequential DFFs |
+
+`is_bus_dff` is exclusively for sequential register insertions. `is_bus_gate` covers all bus-width combinational gate expansion, including gate chains embedded in `wire_swap` changes.
+
+**Bus combinational gate detection (MANDATORY for `new_logic_gate` and `wire_swap` with bus chain):**
+
+When a diff hunk adds a `wire` assignment with a range declaration (`` wire [`MACRO] X = expr `` or `wire [N:0] X = expr`), classify as `new_logic_gate` and additionally set `is_bus_gate: true` and `bus_width_expr: "<MACRO_or_integer>"`. Similarly, when a `wire_swap` change has a `d_input_gate_chain` that produces a bus-width intermediate net (identified by `bus_width_expr` on the new_token), set `is_bus_gate: true` (not `is_bus_dff`) on the wire_swap entry. In gate-level, synthesis expands this into N individual gate cells (one per bit). eco_netlist_studier calls `eco_resolve_bus_width.py` then emits N per-bit gate entries (each with `is_bus_gate_bit: true`, `bus_bit_index`, and bit-indexed input/output nets). Scalar inputs to the gate (e.g. a 1-bit select signal) are shared across all N entries unchanged; bus-width inputs get `[bit]` suffix per entry.
 
 **Bus register detection (MANDATORY for `new_logic`):**
 

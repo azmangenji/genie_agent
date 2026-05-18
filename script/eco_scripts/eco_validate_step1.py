@@ -396,8 +396,22 @@ def main():
     # When is_bus_gate=true on a new_logic_gate entry, the studier must know the
     # bus width to expand to N per-bit gate entries.  Catch missing fields here
     # so the studier never silently falls back to emitting a single (wrong) gate.
+    #
+    # Also catch is_bus_dff=true on wire_swap changes — wire_swap d_input_gate_chains
+    # involving bus-width signals must use is_bus_gate (combinational), not is_bus_dff
+    # (sequential).  is_bus_dff is only valid on new_logic (reg) changes.
     bus_gate_issues = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
+        ct = c.get('change_type', '')
+        # wire_swap should never carry is_bus_dff — it means the d_input_gate_chain
+        # contains bus-width combinational gates, which requires is_bus_gate instead
+        if ct == 'wire_swap' and c.get('is_bus_dff'):
+            out = c.get('new_token') or c.get('old_token') or '?'
+            bus_gate_issues.append(
+                f"changes[{idx}] target={c.get('target_register','?')} new_token={out!r}: "
+                f"wire_swap has is_bus_dff=true — wire_swap d_input_gate_chain involves "
+                f"bus-width combinational gates; use is_bus_gate=true instead. "
+                f"is_bus_dff is reserved for new_logic (reg) insertions only.")
         if c.get('change_type') not in ('new_logic_gate', 'new_logic'):
             continue
         if not c.get('is_bus_gate'):
