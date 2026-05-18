@@ -987,95 +987,10 @@ def main():
                 f"Studier will do simple gate modification and skip the MUX cascade.")
             overall_pass = False
 
-    # Check: and_term gate chain boolean function correctness
-    # The chain must produce: output = old_expression & ~new_term.
-    # Common mistake: inverting old driver (AOI/NOR/NAND) → INV+NOR2 gives ~old&~new (WRONG).
-    # Requires old_driver_inverting field in the change (recorded from FM result in Step 1).
-    def _eval_gate(fn, inputs):
-        fn = re.sub(r'[A-Z0-9]+BWP.*', '', fn.upper()).strip()  # strip cell suffix
-        if fn in ('INV',):           return int(not inputs[0])
-        if fn in ('AND2', 'AN2'):    return int(all(inputs))
-        if fn in ('NAND2', 'ND2'):   return int(not all(inputs))
-        if fn in ('OR2',):           return int(any(inputs))
-        if fn in ('NOR2', 'NR2'):    return int(not any(inputs))
-        if fn in ('INR2',):          return int(bool(inputs[0]) and not bool(inputs[1]))
-        if fn in ('IND2',):          return int(not bool(inputs[0]) and bool(inputs[1]))
-        if fn in ('AOI21', 'AOI12'): return None  # compound — skip
-        if fn in ('OAI21', 'OA21'):  return None
-        return None
-
+    # AND-TERM-BOOL check lives in eco_validate_step3.py — the gate chain for and_term
+    # is built by the studier (Step 3), not recorded in rtl_diff.json at Step 1 time.
+    # Step 1 only enforces that old_driver_inverting is present (AND-TERM-NO-POLARITY above).
     and_term_bool_issues = []
-    for idx, c in enumerate(rtl_diff.get('changes', [])):
-        if c.get('change_type') != 'and_term':
-            continue
-        chain = c.get('new_condition_gate_chain') or []
-        if not chain:
-            continue
-        old_inv = c.get('old_driver_inverting')
-        if old_inv is None:
-            ct = c.get('old_driver_cell_type', '')
-            old_inv = is_inverting(ct) if ct else None
-        if old_inv is None:
-            continue  # can't evaluate without polarity
-        new_term = (c.get('new_token') or c.get('and_term_gate_input') or '').split('[')[0]
-        # Find renamed_net: first external input (not n_eco_*, not new_term, not constant)
-        renamed_net = None
-        for g in chain:
-            for inp in (g.get('inputs') or []):
-                base = str(inp).split('[')[0]
-                if base.startswith(("n_eco_", "1'b", 'PENDING', 'ECO_')): continue
-                if base == new_term: continue
-                renamed_net = base
-                break
-            if renamed_net:
-                break
-        if not renamed_net:
-            continue
-        mismatch = False
-        for R in (0, 1):
-            for N in (0, 1):
-                old_val = (1 - R) if old_inv else R  # old_expression value
-                expected = old_val & (1 - N)          # old & ~new_term
-                net_vals = {renamed_net: R, new_term: N}
-                ok = True
-                for g in chain:
-                    fn = g.get('gate_function', '')
-                    out_net = g.get('output_net', '')
-                    inputs_spec = g.get('inputs') or []
-                    in_vals = []
-                    for inp in inputs_spec:
-                        base = str(inp).split('[')[0]
-                        if str(inp).startswith("1'b"):
-                            in_vals.append(int(str(inp)[-1]))
-                        elif 'PENDING_ECO_PORT' in str(inp) or 'PENDING_FM' in str(inp):
-                            in_vals.append(N)
-                        elif base in net_vals:
-                            in_vals.append(net_vals[base])
-                        else:
-                            ok = False; break
-                    if not ok: break
-                    result = _eval_gate(fn, in_vals)
-                    if result is None: ok = False; break
-                    net_vals[out_net] = result
-                if not ok:
-                    continue
-                final_net = chain[-1].get('output_net', '') if chain else ''
-                actual = net_vals.get(final_net)
-                if actual is not None and actual != expected:
-                    mismatch = True
-                    break
-            if mismatch:
-                break
-        if mismatch:
-            inv_str = 'inverting (ZN=~expr)' if old_inv else 'non-inverting (Z=expr)'
-            and_term_bool_issues.append(
-                f"changes[{idx}] [FAIL/AND-TERM-BOOL]: and_term gate chain produces wrong "
-                f"boolean function. Old driver is {inv_str}. Chain must output "
-                f"'old_expression & ~new_term'. "
-                f"If old driver is inverting: use NOR2(renamed_out, new_term) directly — "
-                f"no INV needed. INV+NOR2 after inverting driver gives ~old&~new (WRONG). "
-                f"If INV is inserted first: switch NOR2 → INR2.")
-            overall_pass = False
 
     # Check: PENDING_FM_RESOLUTION on gate-structural inputs (inverted / comparison)
     # Check 9f — intermediate_net_insertion uses stage-unstable signals.
