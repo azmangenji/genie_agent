@@ -199,6 +199,31 @@ For each target T in [FmEqvEcoSynthesizeVsSynRtl, FmEqvEcoPrePlaceVsEcoSynthesiz
          - wrong gate function       → polarity check; gate output wrong in THIS target's reference
          - missing port declaration  → ABORT_LINK or false-APPLIED port_decl
          - ECO rewire skipped        → eco_applied.SKIPPED for this stage; correct cell name needed
+         - chain-leaf parity flip    → Run Check D2 (see below). Mode J. Same wire name across stages but inverted value in one stage due to P&R drive-strength buffer chain.
+
+    Q4b. Check D2 — Chain-Leaf Inverter-Parity Walk (MANDATORY when divergence is target-stage-specific and gate function is correct):
+
+         For each `new_logic_gate` input pin whose net name is identical across all 3 stages (in eco_preeco_study.json `port_connections` or `port_connections_per_stage`), walk that net upstream in each PreEco netlist counting inverters:
+
+         walker(net, stage):
+           parity = 0
+           while True:
+             driver = find_cell_whose_output_pin_drives(net, stage)
+             if driver is None or driver is DFF: stop  # terminal
+             if cell_type ~ /^(INV|INVD|INVSKR|INVLLKG|INVTX|INVSK|INVFE)/:
+               parity ^= 1
+               net = driver.I_pin_net
+             else: stop  # non-INV combinational, stop
+           return parity
+
+         If parity differs across stages (e.g. Synth=0, PrePlace=0, Route=1) → CONFIRMED Mode J.
+
+         Reference impl: eco_validate_step3.py Check 38 (`_net_parity_in_stage`). The validator runs this check on every `new_logic_gate` at study-time and emits HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH if parity diverges. If you're here at round-time, Check 38 missed it OR the study was patched between rounds without re-validation. Either way: do NOT prescribe `update_gate_function` — prescribe `rewire_gate_input` to a polarity-correct wire (see Mode J recipe in pattern library §B-FAIL-J).
+
+         Polarity-correct wire candidate selection (in priority order):
+         1. **MB DFF Q-pin direct** — walk to merged cell, decode instance name (`<reg1>_MB_<reg2>_MB_...`), find target register's position, take that Q-pin's net (e.g. `aps_rename_12109_`).
+         2. **`actual_wire_<stage>` from `eco_fenets_rename_map.json`** — if present, this is FM-resolved.
+         3. **NEVER** mid-buffer-chain nets (`FxPlace_ZINV_*` intermediates).
 
     Q5. What netlist edit converges the divergence FOR THIS TARGET?
          Describe specifically: "In Synthesize PostEco, gate X computes Y but should compute Z"

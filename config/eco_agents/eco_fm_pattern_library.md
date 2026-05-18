@@ -477,6 +477,66 @@ The submodule is BLACK-BOXED — wire renaming cannot fix submodule boundary. Pr
 }
 ```
 
+### B-FAIL-J — Chain-Leaf Inverter-Parity Flip (`Mode J`)
+
+**Bug class:** A `new_logic_gate` input pin reads a wire whose **name is identical across all stages** but whose **logical value is inverted in one stage** because P&R inserted an odd number of inverters (drive-strength buffers) between the registered driver and the port wire. Same name, opposite value → FM cone divergence in that stage only.
+
+**Symptoms / Evidence:**
+- 1 failing point on a `target_register` (RTL-changed DFF) — typically Route-only or PrePlace+Route
+- Cone trace shows the failing DFF's D-input feeds through one of the ECO's new gates
+- That gate's input pin reads a bare RTL signal name (e.g. `ArbCtrlPeRdy`, NOT `n_eco_*` or `aps_rename_*`)
+- Synth and earlier stages PASS — only the post-physical stage(s) fail
+- Mode A `update_gate_function` does NOT converge (gate function is actually correct — the wire is wrong)
+
+**Diagnosis (walk per stage, count inverters):**
+For each `new_logic_gate` input pin's net, walk upstream in each PreEco netlist until hitting a DFF output or primary input, counting INV cells (INVD/INVSKR/INVLLKG/INVTX/INVFE/...):
+
+| Stage | Bare wire | INV count | Logical value |
+|---|---|---:|---|
+| Synthesize | `<wire>` | 0 (even) | `Q` ✓ |
+| PrePlace   | `<wire>` | 0 (even) | `Q` ✓ |
+| Route      | `<wire>` | **1 or 3 (odd)** | **`~Q`** ❌ |
+
+If parity differs across stages → **Mode J confirmed**. Don't change gate function — change the input wire.
+
+**Cause:** Multi-bit (MB) DFF merge in physical stages packs registers into one cell with `Q1/Q2/Q3/Q4` outputs. Long routes to those outputs get 1-3 drive-strength inverter buffers (e.g. `FxPlace_ZINV_*`, `INVSKR*`). Bare RTL name resolves to the post-buffer net → odd INV count → flipped polarity.
+
+**Recipe:**
+```json
+{
+  "stage": "<failing_stage>",
+  "action": "rewire_gate_input",
+  "gate_instance": "<eco_new_gate_inst>",
+  "pin": "<input_pin>",
+  "old_net": "<bare_rtl_name>",
+  "new_net": "<polarity_correct_wire>",
+  "rationale": "Mode J: bare-name wire <wire> has odd INV-parity (count=<N>) in <stage> vs even parity (0) in Synth/PrePlace → carries ~Q. Replaced with <new_net> (DFF Q output direct, parity=0).",
+  "eco_preeco_study_update": {
+    "action": "update_port_connection_per_stage",
+    "gate_instance": "<inst>",
+    "pin": "<pin>",
+    "stage": "<failing_stage>",
+    "net_name": "<new_net>"
+  }
+}
+```
+
+**Polarity-correct wire selection (in priority order):**
+1. **MB DFF Q-pin direct** — walk to the merged cell, decode instance name to find the bit position of the target register, take that Q-pin's net (`aps_rename_*` style). **Permanent** — survives next P&R.
+2. **`actual_wire_<stage>` from rename map** — if `eco_fenets_rename_map.json` has `actual_wire_<stage>` field for this signal, use that. **FM-resolved**, polarity-preserving.
+3. **NEVER** tap mid-chain (`FxPlace_ZINV_*`, `FxPrePlace_*` intermediate nets) — these are placer scaffolding, renamed/removed by next P&R iteration.
+
+**Worked example (run 20260515084942 round 6, `NeedFreqAdj_reg` failure):**
+- Gate: `eco_9868_needfreqadj_d003.A2`
+- Bare net `ArbCtrlPeRdy`:
+  - Synth: drives directly from `ArbCtrlPeRdy_reg.Q` → parity 0
+  - PrePlace: through scan-rename `dftopt230` → parity 0
+  - Route: through `INVD10 → INVD10 → INVSKRD10 → aps_rename_12109_` → **parity 1**
+- MB cell `IReset_reg_dup7_MB_ArbCtrlRecRdy_reg_MB_ArbCtrlPeRdy_reg_MB_...` — position 3 = `ArbCtrlPeRdy_reg` → Q3 = `aps_rename_12109_`
+- Fix: rewire Route only `.A2(ArbCtrlPeRdy) → .A2(aps_rename_12109_)` → Route FM PASS
+
+**Cross-reference:** This mode is caught at study-time by `eco_validate_step3.py` Check 38 (HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH). If Check 38 fires on a study patch during ROUND, do NOT proceed to applier — Mode J needs a wire change, not a re-apply.
+
 ### B-FAIL-S — Scan-Stitching Incomplete on New ECO DFF (`Mode S`) — PrePlace/Route only
 
 **Mode S decision tree (BEFORE classifying Mode I or anything else):**

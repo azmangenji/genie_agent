@@ -544,7 +544,7 @@ python3 script/eco_scripts/eco_expand_chains.py \
 ```
 eco_expand_chains runs AFTER verifier (not just after re_studier) because verifier may have added new entries that reference d_input chains not yet injected.
 
-**MANDATORY: Re-validate study JSON post-expand_chains** — same contract enforcement as ORCHESTRATOR Step 3. Catches malformed chain output (Check 16 `[CHAIN_INJECTION_SCHEMA]`) before Step 4 of the next round:
+**MANDATORY: Re-validate study JSON post-expand_chains** — same contract enforcement as ORCHESTRATOR Step 3. Catches malformed chain output (Check 16 `[CHAIN_INJECTION_SCHEMA]`) AND Mode J chain-leaf polarity flips (Check 38 `[HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH]`) before Step 4 of the next round:
 ```bash
 python3 script/eco_scripts/eco_validate_step3.py \
     --study data/<TAG>_eco_preeco_study.json \
@@ -552,7 +552,39 @@ python3 script/eco_scripts/eco_validate_step3.py \
     --ref-dir <REF_DIR> --tag <TAG> \
     --output data/<TAG>_eco_validate_step3_round<NEXT_ROUND>.json
 ```
-Exit 1 → re-spawn re_studier or eco_expand_chains until passing.
+
+**Exit 1 → branch on issue type:**
+
+```python
+result = json.load(open(f"data/{TAG}_eco_validate_step3_round{NEXT_ROUND}.json"))
+mode_j_issues = [i for i in result['issues'] if 'HIGH/38-CHAIN-LEAF-POLARITY-MISMATCH' in i]
+other_issues  = [i for i in result['issues'] if i not in mode_j_issues]
+
+if mode_j_issues:
+    # Mode J — re_studier patched a gate's input wire to a bare RTL name that
+    # has odd INV-parity in one stage. update_gate_function (Mode A) will NOT
+    # converge — needs a wire change, not a function change.
+    # Re-spawn re_studier with explicit Mode J hint:
+    re_studier_extra_input = {
+      "mode_J_hints": [
+        {
+          "gate_instance": <parse from issue text>,
+          "pin": <parse>,
+          "stages_parity": <parse>,        # e.g. {Synth:0, PrePlace:0, Route:1}
+          "remediation": "rewire_gate_input to polarity-correct wire — see pattern_library §B-FAIL-J. Use MB DFF Q-pin direct (aps_rename_*) or actual_wire_<stage> from rename_map. NEVER mid-buffer-chain nets (FxPlace_ZINV_*).",
+        }
+        for issue in mode_j_issues
+      ]
+    }
+    # Re-spawn Pass 6f-A with this extra input. Do NOT proceed to applier.
+
+elif other_issues:
+    # Other validator failures (Check 16 schema, port_declaration, etc.)
+    # Re-spawn re_studier or eco_expand_chains until passing.
+    pass
+```
+
+Mode J cannot be fixed by re-applying the same gate function — applier will re-emit the same wrong wire. The re_studier must change `port_connections_per_stage[<failing_stage>][<pin>]` to a polarity-correct wire BEFORE Step 4 re-runs.
 
 **MANDATORY: Re-load study JSON before exit check** — the file was just updated by verifier + eco_expand_chains. Do NOT use any in-memory study JSON from earlier in this instance. Always load fresh from disk:
 
