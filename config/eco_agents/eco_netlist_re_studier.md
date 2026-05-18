@@ -223,6 +223,7 @@ for e in study["<Stage>"]:
 - Grep correct PostEco stage for new cell name
 - Update `cell_name` for that specific stage
 - Re-verify old_net on correct pin
+- **If grep returns 0 hits or 2+ hits:** apply `eco_netlist_verifier.md` GAP-5 Steps 2-3 — HFS alias search (0 hits) or cone check (2+ hits) — before accepting any candidate. The same wrong-cell risk applies here: picking the first grep hit without cone verification causes FM failures on unrelated DFFs.
 
 **For `rerun_fenets` actions:** Build resolution map from `condition_input_resolutions[]` where `resolved_gate_level_net` is set. For each gate entry with `PENDING_FM_RESOLUTION:<signal>`:
 
