@@ -901,14 +901,22 @@ def main():
                 )
                 overall_pass = False
 
-    # Check: and_term misclassified — should be wire_swap + intermediate_net_insertion
-    # When an and_term change has a new_condition_gate_chain containing MUX2 gates,
-    # the agent misclassified a priority chain as a simple gating term. This causes
-    # the studier to do a simple gate modification and skip the full MUX cascade.
+    # Check: and_term changes must record old_driver_inverting.
+    # The rtl_diff_analyzer must grep the PreEco Synthesize netlist to find the gate
+    # driving old_token and record its cell type + polarity. Without this, the Step 3
+    # boolean function check cannot run and wrong gate choices go undetected.
     and_term_mux_issues = []
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         if c.get('change_type') != 'and_term':
             continue
+        if c.get('old_driver_inverting') is None:
+            and_term_mux_issues.append(
+                f"changes[{idx}] [FAIL/AND-TERM-NO-POLARITY]: and_term change for "
+                f"'{c.get('old_token','?')}' missing old_driver_inverting. "
+                f"rtl_diff_analyzer must grep PreEco Synthesize netlist for the gate "
+                f"driving old_token, record old_driver_cell_type + old_driver_inverting "
+                f"(true if AOI/OAI/NOR/NAND/INV/NR/ND prefix, else false).")
+            overall_pass = False
         chain = c.get('new_condition_gate_chain') or []
         has_mux = any(g.get('gate_function', '').upper().startswith('MUX') for g in chain)
         if has_mux:

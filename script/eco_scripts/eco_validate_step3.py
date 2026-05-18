@@ -2080,6 +2080,113 @@ def main():
                     f"polarity-correct wire (e.g. the DFF Q output directly, "
                     f"or FM's resolved pin location's actual wire).")
 
+    # ── and_term gate chain boolean function check ────────────────────────────
+    # For each and_term change, find its gate chain in the Synthesize study entries
+    # and verify the boolean function = old_expression & ~new_term.
+    # old_driver_inverting from rtl_diff tells us polarity of the renamed old driver output.
+    def _inv(ct):
+        if not ct: return None
+        import re as _re
+        m = _re.match(r'^([A-Z]+)', str(ct))
+        if not m: return None
+        return any(m.group(1).startswith(p)
+                   for p in sorted(['AOI','OAI','NOR','NAND','INV','NR','ND','IND','XNOR','XNR'],
+                                   key=len, reverse=True))
+
+    def _eval_gate_fn(fn, inputs):
+        fn = str(fn).upper()
+        # strip cell library suffix
+        import re as _re
+        fn = _re.sub(r'[A-Z]+BWP.*', '', fn).strip()
+        if fn == 'INV':  return int(not inputs[0])
+        if fn in ('AND2','AN2'): return int(all(inputs[:2]))
+        if fn in ('NAND2','ND2'): return int(not all(inputs[:2]))
+        if fn in ('OR2',): return int(any(inputs[:2]))
+        if fn in ('NOR2','NR2'): return int(not any(inputs[:2]))
+        if fn in ('INR2',): return int(bool(inputs[0]) and not bool(inputs[1]))
+        if fn in ('IND2',): return int(not bool(inputs[0]) and bool(inputs[1]))
+        return None
+
+    for c in rtl_diff.get('changes', []):
+        if c.get('change_type') != 'and_term':
+            continue
+        old_inv = c.get('old_driver_inverting')
+        if old_inv is None:
+            continue  # polarity not recorded — Step 1 validator already flagged this
+        old_token = c.get('old_token', '')
+        new_term  = (c.get('new_token') or c.get('and_term_gate_input') or '').split('[')[0]
+        # Collect gate chain from Synthesize study: new_logic_gate entries leading to old_token
+        chain_entries = [e for e in study.get('Synthesize', [])
+                         if e.get('change_type') == 'new_logic_gate'
+                         and (e.get('output_net') == old_token
+                              or any(old_token in str(v) for v in (e.get('port_connections') or {}).values())
+                              or e.get('instance_name','').startswith('eco_'))]
+        if not chain_entries:
+            continue
+        # Find renamed_net: first gate input not starting with n_eco_/1'b/PENDING/ECO_
+        renamed_net = None
+        for e in chain_entries:
+            for v in (e.get('port_connections') or {}).values():
+                base = str(v).split('[')[0]
+                if base.startswith(("n_eco_","1'b",'PENDING','ECO_')): continue
+                if base == new_term: continue
+                renamed_net = base; break
+            if renamed_net: break
+        if not renamed_net:
+            continue
+        # Build net→gate map
+        gate_map = {}  # output_net → (fn, [inputs])
+        for e in chain_entries:
+            fn  = e.get('gate_function') or e.get('cell_type') or ''
+            out = e.get('output_net') or (e.get('port_connections') or {}).get('ZN') or (e.get('port_connections') or {}).get('Z') or ''
+            pcs = e.get('port_connections') or {}
+            inp_nets = [v for k, v in pcs.items() if k not in ('ZN','Z','Q','CO','Y','S')]
+            if out:
+                gate_map[out] = (fn, inp_nets)
+        # Evaluate for all 4 input combinations
+        mismatch = False
+        for R in (0, 1):
+            for N in (0, 1):
+                old_val  = (1 - R) if old_inv else R
+                expected = old_val & (1 - N)
+                net_vals = {renamed_net: R, new_term: N}
+                ok = True
+                for e in chain_entries:
+                    pcs = e.get('port_connections') or {}
+                    fn  = e.get('gate_function') or ''
+                    out = e.get('output_net') or pcs.get('ZN') or pcs.get('Z') or ''
+                    if not fn or not out: continue
+                    in_vals = []
+                    for k, v in pcs.items():
+                        if k in ('ZN','Z','Q','CO','Y','S'): continue
+                        base = str(v).split('[')[0]
+                        if str(v).startswith("1'b"):
+                            in_vals.append(int(str(v)[-1]))
+                        elif 'PENDING_ECO_PORT' in str(v) or 'PENDING_FM' in str(v):
+                            in_vals.append(N)
+                        elif base in net_vals:
+                            in_vals.append(net_vals[base])
+                        else:
+                            ok = False; break
+                    if not ok: break
+                    res = _eval_gate_fn(fn, in_vals)
+                    if res is None: ok = False; break
+                    net_vals[out] = res
+                if not ok: continue
+                final_out = chain_entries[-1].get('output_net') or ''
+                actual = net_vals.get(final_out)
+                if actual is not None and actual != expected:
+                    mismatch = True; break
+            if mismatch: break
+        if mismatch:
+            inv_str = 'inverting' if old_inv else 'non-inverting'
+            issues.append(
+                f"CRITICAL/AND-TERM-BOOL: and_term gate chain for '{old_token}' produces "
+                f"wrong boolean function (old driver is {inv_str}). "
+                f"Chain must output 'old_expression & ~new_term'. "
+                f"If inverting driver: use NOR2(renamed_out, new_term) with NO prior INV. "
+                f"INV+NOR2 after inverting driver gives ~old&~new — WRONG.")
+
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
     result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
