@@ -436,10 +436,11 @@ For each `wire_swap` change, process FM fenets results per stage.
 4. Do NOT rewire the pivot net (SEQMAP_NET_*) — never touched.
 
 **MANDATORY PRE-PHASE 1 — `wire_swap + fallback_strategy: "intermediate_net_insertion"` with non-empty `new_condition_gate_chain`** (run BEFORE the rename_map lookup that produces the rewire entry, so gate entries appear alongside it):
-1. Emit `new_logic_gate` per chain gate (instance_name, gate_function, per-stage inputs, output_net, instance_scope = declaring module).
-2. Resolve PENDING_FM_RESOLUTION inputs via rename map (Step 2 condition_inputs_to_query). If a signal resolves to **different nets per stage** (e.g., Synth net differs from PP/Route net), emit `port_connections_per_stage` for that gate instead of a single `port_connections`. Each stage entry maps the PENDING_FM_RESOLUTION input to its stage-specific resolved net.
-3. Apply Mode H Route fallback for unresolvable Route inputs.
-4. Last gate (`c_mux_final` etc.) MUST output to `<pivot_net>` — NOT a new `n_eco_*`.
+1. **If `driver_sub_renamed_to` is set**: emit a `rewire` renaming `driver_sub_target_net` → `driver_sub_renamed_to` (e.g., `ctmn_2084955` → `ECO_<jira>_net_orig`) per stage using rename_map. Any gate in `new_condition_gate_chain` whose input equals `driver_sub_target_net` MUST use `driver_sub_renamed_to` instead — otherwise the final gate outputs to the same net it reads as input, creating a combinational loop.
+2. Emit `new_logic_gate` per chain gate (instance_name, gate_function, per-stage inputs, output_net, instance_scope = declaring module).
+3. Resolve PENDING_FM_RESOLUTION inputs via rename map (Step 2 condition_inputs_to_query). If a signal resolves to **different nets per stage** (e.g., Synth net differs from PP/Route net), emit `port_connections_per_stage` for that gate instead of a single `port_connections`. Each stage entry maps the PENDING_FM_RESOLUTION input to its stage-specific resolved net.
+4. Apply Mode H Route fallback for unresolvable Route inputs.
+5. Last gate (`c_mux_final` etc.) MUST output to `<pivot_net>` — NOT a new `n_eco_*`.
 
 Without this, `<pivot_net>` is renamed `<pivot_net>_orig` with nothing driving the original → undriven DFF.D → thousands of FM cascading failures.
 
