@@ -528,9 +528,36 @@ grep -n "( <cell_output_net> )" /tmp/eco_verify_<TAG>_<Stage>.v | grep -v "\.ZN\
 **Stage Fallback (GAP-5) — for any stage with no FM result:**
 - Take all `confirmed: true` entries from best reference stage (Synthesize → PrePlace → Route)
 - Grep each cell in missing stage, verify old_net on pin
+
+**Step 1 — Direct grep (old_net name):**
+`zgrep -n "<cell_name>" PreEco/<stage>.v.gz | grep "<old_net>"` — count matches on that pin.
 - Count = 1 → `confirmed: true`, `source: "<ref>_fallback"`
-- Count = 0 → run Priority 4 structural trace (find driver cell in missing stage)
-- Still absent → `source: "stage_fallback"` using Synthesize result
+- Count > 1 → multiple candidates — apply cone-check (Step 3) to disambiguate before accepting
+- Count = 0 → old_net may be an HFS alias in this stage — proceed to Step 2
+
+**Step 2 — HFS alias search (when Count = 0):**
+In P&R stages, high-fanout signals are renamed to `FxPrePlace_HFSNET_*` / `FxPlace_*` nets. The original signal name may not appear directly on the correct cell's pin.
+
+1. From Synthesize (confirmed stage): get the confirmed cell's **output net** (e.g. `phfnn_2383543` from `.ZN`)
+2. In the missing stage: find what cell drives the **downstream consumer** of that output net.
+   - From Synth: find the cell that consumes the confirmed cell's output (1 hop forward: `zgrep "<output_net>" PreEco/Synthesize.v.gz | grep -v "\.ZN\|\.Z\s*("`)
+   - In missing stage: find the same consumer cell by instance name or equivalent, read its input pins to identify the HFS alias net
+3. Trace back from that HFS alias net to find its driver cell — that is the correct Stage Fallback cell
+4. Set `confirmed: true`, `source: "stage_fallback_hfs"`, record `old_net_alias: "<FxPrePlace_HFSNET_*>"`
+
+**Step 3 — Cone check (for Count > 1 or HFS alias candidates):**
+When multiple candidates exist, verify each candidate is in the backward cone of the target DFF:
+```bash
+# From confirmed Synth cell output net, check if it eventually feeds target DFF in missing stage
+zgrep "<candidate_output_net>" PreEco/<stage>.v.gz | head -5
+# Trace 3-5 hops forward; verify target DFF instance appears downstream
+```
+Accept only the candidate whose output reaches the target DFF within 5 hops. Reject all others.
+
+**Step 4 — Still absent:**
+→ `source: "stage_fallback"` using Synthesize result — set `confirmed: false`, flag `WARN: stage_fallback_unverified` for manual review.
+
+**CRITICAL:** Never accept the first grep match without cone verification when multiple cells use old_net. A wrong cell rewire silently passes pre-FM checks but causes FM failures on unrelated DFFs — exactly as seen in ECO 9874 Round 1 where `ctmi_1674811` (wrong) was chosen over `FxPrePlace_ctmTdsLR_1_3802113` (correct HFS alias cell).
 
 ---
 
