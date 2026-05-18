@@ -68,7 +68,7 @@ ABSTRACT_GATE_FUNCTIONS = {
     "OA22":  {"Z":  "(A1 | A2) & (B1 | B2)"},
     "AOI211": {"ZN": "~((A1 & A2) | B | C)"},
     "INR4":   {"ZN": "A1 & ~B1 & ~B2 & ~B3"},
-    "MUX2":   {"Z":  "S ? I1 : I0"},
+    "MUX2":   {"Z":  "((S & I1) | (~S & I0))"},
 }
 
 # ── Engine: regex to extract cell family from a full cell-type string ────────
