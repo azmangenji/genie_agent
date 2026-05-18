@@ -100,18 +100,16 @@ After FM resolves the gate driving `old_token`, record in the change entry:
 "old_driver_cell_type": "<cell_type_from_FM>",
 "old_driver_inverting": true|false
 ```
-`old_driver_inverting` = true when the FM `(-)` polarity result is returned for the old driver's qualifying impl line — meaning the renamed output is `~old_expression`. False when FM returns `(+)` — renamed output is `+old_expression`. **Do NOT derive from cell type prefix alone** — INR3, AOI12 etc. can output +old_expression despite having "inverting" prefixes. FM polarity `(+)/(-)` is authoritative.
+`old_driver_inverting` = best-effort at Step 1: grep PreEco Synthesize for the cell driving `old_token`, record `old_driver_cell_type`. Set `old_driver_inverting: true` if cell type starts with an inverting prefix (AOI/OAI/NOR/NAND/INV/NR/ND). This is a placeholder — **the definitive polarity is determined in Step 3 from the FM `(+)/(-)` result** (see `eco_netlist_studier.md` and_term gate chain rule).
 
-**Gate chain selection rule (critical — wrong polarity caused thousands of FM failures):**
+**Gate chain selection (Step 3 uses FM polarity, not cell type prefix):**
 
-The chain must compute: `output = old_expression & ~new_term`. Choose gate based on FM polarity of the old driver's qualifying impl line:
+The chain must compute: `output = old_expression & ~new_term`. Cell type prefix alone is unreliable — AOI12/INR3 can output `+old_expression` at FM `(+)` polarity. The studier reads the Step 2 fenets qualifying impl line polarity for the old driver to determine the correct gate:
 
-| FM polarity | Renamed output value | Correct final gate (no extra INV) | With extra INV first |
-|---|---|---|---|
-| `(-)` negative → `old_driver_inverting=true` | `~old_expression` | `NOR2(renamed, new_term)` → `old & ~new` ✓ | INV then `INR2(old, new_term)` ✓ |
-| `(+)` positive → `old_driver_inverting=false` | `+old_expression` | `INR2(renamed, new_term)` → `old & ~new` ✓ | — |
-
-**Common mistake:** Using cell type prefix (AOI/INR → "inverting") instead of FM polarity — AOI12/INR3 can output `+old_expression` at `(+)` polarity, requiring INR2 not NOR2.
+| FM polarity on old driver | Renamed output value | Correct gate |
+|---|---|---|
+| `(-)` negative | `~old_expression` | `NOR2(renamed, new_term)` ✓ |
+| `(+)` positive | `+old_expression` | `INR2(renamed, new_term)` ✓ |
 
 **CRITICAL — `and_term` vs `wire_swap + intermediate_net_insertion`:**  
 `and_term` is ONLY for simple single-gate gating (one new term added to one existing expression). If the RTL diff shows **multiple new conditions prepended before the old expression as a default fallback** (priority chain pattern: `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expr>`), this is **NOT `and_term`** — it MUST be classified as `wire_swap` with `fallback_strategy: "intermediate_net_insertion"`. The key test: if the `new_condition_gate_chain` requires MUX2 gates, it is `wire_swap + intermediate_net_insertion`, not `and_term`. Misclassifying as `and_term` causes the studier to do a simple gate modification and skip the full MUX cascade — the ECO logic is never applied.

@@ -71,6 +71,14 @@ Process ALL entries in `changes[]` in this exact order:
 4. `"port_promotion"` → `port_promotion` study entry (step 0i — flat netlist only)
 5. `"wire_swap"` → **skip here** (handled by FM find_equivalent_nets in Phase 1)
 
+**MANDATORY — `and_term` gate selection from FM polarity:**
+
+The gate type (NOR2 vs INR2) is determined by the FM `(+)/(-)` polarity of the old driver's qualifying impl line from the Step 2 fenets rpt — NOT from `old_driver_inverting` in rtl_diff (that is a cell-type-prefix estimate only):
+- FM `(-)` polarity → renamed output = `~old_expression` → use `NOR2(renamed, new_term)`
+- FM `(+)` polarity → renamed output = `+old_expression` → use `INR2(renamed, new_term)`
+
+Update `old_driver_inverting` in the study entry to match the FM polarity (true for `-`, false for `+`).
+
 **MANDATORY — `and_term` companion rewire:**
 
 For every `and_term` NOR2/INR2 gate whose A1 input is a renamed intermediate net (e.g. `eco_<jira>_andterm<N>_orig`), emit a companion `rewire` entry that renames the original driver output: `old_token → eco_<jira>_andterm<N>_orig`, per stage using the rename_map. Without this rewire the intermediate net is undriven → A1 floats → FM sees globally unmatched cone inputs → thousands of failures.
