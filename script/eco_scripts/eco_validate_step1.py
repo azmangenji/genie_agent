@@ -365,6 +365,33 @@ def main():
     if enable_swap_issues:
         overall_pass = False
 
+    # ── port_promotion hygiene ───────────────────────────────────────────────
+    # port_promotion is valid ONLY for flat netlists where an existing `reg`
+    # is being changed to `output reg` (diff hunk type `c`, not `a`).
+    # Two common misclassifications caught here:
+    #   1. Pure additions (`output wire/reg` with no old `reg` line) — must be new_port
+    #   2. `output wire` signals — wire is never a promotion; only `output reg` qualifies
+    port_promo_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'port_promotion':
+            continue
+        tok = c.get('new_token') or c.get('signal_name') or '?'
+        ctx = c.get('context_line', '') or ''
+        # output wire is never a promotion — only output reg qualifies
+        if 'output wire' in ctx or 'output wire' in (c.get('declaration_type') or ''):
+            port_promo_issues.append(
+                f"changes[{idx}] signal={tok!r}: classified as port_promotion but "
+                f"context_line contains 'output wire' — output wire is a new port, never "
+                f"a promotion. Reclassify as new_port (declaration_type=output).")
+        # flat_net_exists must be true for port_promotion to make sense
+        if not c.get('flat_net_exists'):
+            port_promo_issues.append(
+                f"changes[{idx}] signal={tok!r}: port_promotion with flat_net_exists=false — "
+                f"promotion requires the net to already exist in PreEco flat netlist. "
+                f"If this is a new signal, reclassify as new_port (declaration_type=output).")
+    if port_promo_issues:
+        overall_pass = False
+
     # ── bus combinational gate validation ────────────────────────────────────
     # When is_bus_gate=true on a new_logic_gate entry, the studier must know the
     # bus width to expand to N per-bit gate entries.  Catch missing fields here
@@ -1322,6 +1349,8 @@ def main():
         'pending_structural_issues':      pending_structural_issues,
         'enable_swap_issue_count':        len(enable_swap_issues),
         'enable_swap_issues':             enable_swap_issues,
+        'port_promo_issue_count':          len(port_promo_issues),
+        'port_promo_issues':              port_promo_issues,
         'bus_gate_issue_count':           len(bus_gate_issues),
         'bus_gate_issues':                bus_gate_issues,
         'bus_dff_issue_count':            len(bus_dff_issues),

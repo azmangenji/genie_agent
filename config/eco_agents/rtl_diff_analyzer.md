@@ -72,7 +72,19 @@ When a diff shows BOTH:
 - Old line: `reg <signal>;` (local register declaration)
 - New line: `output reg <signal>;` (promoted to output port)
 
-Classify as `port_promotion`. The key property: **the gate-level net ALREADY EXISTS in the flat PreEco netlist** (it was a reg driving internal logic). No new cell insertion is needed. The promotion only affects port connectivity at module boundaries — in a flat netlist, the net is already accessible everywhere. Record `flat_net_exists: true`.
+**MANDATORY disambiguation — `port_promotion` vs `new_port` (output):**
+
+| Diff hunk type | Old line present? | New declaration | Correct classification |
+|---|---|---|---|
+| Change (`c`) | YES — `reg <signal>` | `output reg <signal>` | `port_promotion` |
+| Addition (`a`) | NO — pure addition | `output wire/reg <signal>` | `new_port` (declaration_type=output) |
+| Any | — | `output wire <signal>` | **always `new_port`** — `output wire` is never a promotion; a promotion only changes an existing `reg` to `output reg` |
+
+A pure addition in the diff (no `<` old line, only `>` new line) means the signal **did not exist before** — classify as `new_port` (output). `port_promotion` ONLY applies when an existing `reg` is being CHANGED to `output reg` (diff shows a `c` hunk with both old and new lines).
+
+Classify as `port_promotion` only when both conditions hold. The key property: **the gate-level net ALREADY EXISTS in the flat PreEco netlist** (it was a reg driving internal logic). No new cell insertion is needed. The promotion only affects port connectivity at module boundaries — in a flat netlist, the net is already accessible everywhere. Record `flat_net_exists: true`.
+
+**CRITICAL — `port_promotion` is flat netlist only.** If the PostEco netlist is hierarchical (contains multiple `module` definitions — check `grep -c "^module " Synthesize.v.gz`), never classify as `port_promotion`. Use `new_port` (output) + `port_declaration` instead. Hierarchical netlists have explicit per-module port lists that must be updated.
 
 **`and_term` classification (Gap 4):**
 When a `wire_swap` diff adds an extra `& ~<NewSignal>` term to an existing expression but does NOT change the core logic:
