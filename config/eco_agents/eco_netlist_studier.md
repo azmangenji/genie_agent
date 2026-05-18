@@ -71,6 +71,10 @@ Process ALL entries in `changes[]` in this exact order:
 4. `"port_promotion"` → `port_promotion` study entry (step 0i — flat netlist only)
 5. `"wire_swap"` → **skip here** (handled by FM find_equivalent_nets in Phase 1)
 
+**MANDATORY — `and_term` companion rewire:**
+
+For every `and_term` NOR2/INR2 gate whose A1 input is a renamed intermediate net (e.g. `eco_<jira>_andterm<N>_orig`), emit a companion `rewire` entry that renames the original driver output: `old_token → eco_<jira>_andterm<N>_orig`, per stage using the rename_map. Without this rewire the intermediate net is undriven → A1 floats → FM sees globally unmatched cone inputs → thousands of failures.
+
 Do NOT interleave Phase 1 (wire_swap/FM) processing with Phase 0. Phase 1 depends on Phase 0 outputs being complete (new_logic output nets must exist before wire_swap FM queries are interpreted).
 
 **CRITICAL: For hierarchical PostEco netlists, `new_port` and `port_connection` changes require explicit port list updates and instance connection additions.**

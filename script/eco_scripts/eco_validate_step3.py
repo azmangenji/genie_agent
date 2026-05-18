@@ -2141,6 +2141,30 @@ def main():
                     f"polarity-correct wire (e.g. the DFF Q output directly, "
                     f"or FM's resolved pin location's actual wire).")
 
+    # ── and_term companion rewire check ──────────────────────────────────────
+    # Every new_logic_gate with an input ending in _orig (renamed intermediate net)
+    # must have a companion rewire entry that creates that net. Without the rewire
+    # the _orig net is undriven → floating A1 → thousands of FM failures.
+    rewired_nets = set()
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            if e.get('change_type') == 'rewire':
+                rewired_nets.add(e.get('new_net', ''))
+    for stage in ('Synthesize',):  # check once from Synth entries
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            pcs = e.get('port_connections') or {}
+            for pin, net in pcs.items():
+                if pin in ('Z', 'ZN', 'Q', 'CO', 'Y', 'S'): continue
+                if isinstance(net, str) and net.endswith('_orig') and net not in rewired_nets:
+                    issues.append(
+                        f"CRITICAL/ANDTERM-MISSING-REWIRE: {e.get('instance_name','?')} "
+                        f"input {pin}='{net}' is a renamed intermediate net but no rewire "
+                        f"entry creates it. Add a companion rewire: old_token → '{net}' "
+                        f"per stage using rename_map. Without it '{net}' is undriven → "
+                        f"floating pin → FM globally unmatched cone inputs.")
+
     # ── FM cell/pin format check (GAP-1) ────────────────────────────────────
     # FM returns i:/FMWORK.../<cell>/<pin> — the studier must convert to the
     # actual wire name by grepping the netlist. Any port_connections value that
