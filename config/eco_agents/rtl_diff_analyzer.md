@@ -48,6 +48,24 @@ For each diff hunk, classify as ONE of:
 | `port_promotion` | Existing local `reg` promoted to `output reg` | `reg X` → `output reg X` |
 | `new_logic` | New wire/always/assign/instance added | New always block |
 | `port_connection` | Port connection added on module instance | `.new_port(net)` added |
+| `enable_swap` | The clock-enable / write-enable condition of an existing DFF changes (the `else if (<condition>)` guard around the DFF assignment changes to a new expression). Emit this as a SEPARATE change entry alongside any `wire_swap`/`and_term` for the D-input if both change in the same always block. Fields: `old_enable_net`, `new_enable_net`, `new_enable_gate_chain` (MUX/AND/OR gates implementing the new enable condition), `dff_clock`. Step 2 queries `old_enable_net` via fenets to locate the CE pin; Step 3 emits a `rewire` entry for pin=CE/EN/WE on the discovered DFF cell. | `else if (en_old)` → `else if (en_new)` |
+
+**Bus combinational gate detection (MANDATORY for `new_logic_gate`):**
+
+When a diff hunk adds a `wire` assignment with a range declaration (`` wire [`MACRO] X = expr `` or `wire [N:0] X = expr`), classify as `new_logic_gate` and additionally set `is_bus_gate: true` and `bus_width_expr: "<MACRO_or_integer>"`. In gate-level, synthesis expands this into N individual gate cells (one per bit). eco_netlist_studier calls `eco_resolve_bus_width.py` then emits N per-bit gate entries (each with `is_bus_gate_bit: true`, `bus_bit_index`, and bit-indexed input/output nets). Scalar inputs to the gate (e.g. a 1-bit select signal) are shared across all N entries unchanged; bus-width inputs get `[bit]` suffix per entry.
+
+**Bus register detection (MANDATORY for `new_logic`):**
+
+When a `new_logic` diff hunk adds a register with a range declaration (`reg [N:0] sig` or `` reg [`MACRO] sig ``), set:
+- `is_bus_dff: true`
+- `bus_width_expr: "<MACRO_name or integer N>"` — the range expression verbatim
+- Skip D-input gate chain decomposition (bus DFFs pipeline a bus signal directly, no combinational cone)
+- Skip `d_input_expected_function` (not applicable)
+- `d_input_gate_chain: []`
+- `d_input_resolved_net`: the source bus signal name from the always block D-assignment
+
+eco_netlist_studier calls `eco_resolve_bus_width.py --macro <bus_width_expr>` to determine the integer N, then calls `eco_emit_dff_entry.py --bus-width N` to emit N per-bit DFF entries.
+
 
 **`port_promotion` classification (Gap 1):**
 When a diff shows BOTH:
@@ -91,7 +109,7 @@ For each change record:
 {
   "file": "<rtl_file.v>",
   "module_name": "<declaring_module>",
-  "change_type": "<wire_swap|and_term|new_port|port_promotion|new_logic|port_connection>",
+  "change_type": "<wire_swap|and_term|new_port|port_promotion|new_logic|port_connection|enable_swap>",
   "old_token": "<old_signal_name>",
   "new_token": "<new_signal_name>",
   "context_line": "<full RTL line containing the change>",
@@ -99,7 +117,9 @@ For each change record:
   "target_bit": "<[N] or null>",
   "flat_net_exists": "<true if port_promotion — net already in flat PreEco netlist | false otherwise>",
   "flat_net_name": "<actual net name in flat netlist for new_port inputs — resolved in Step C | null>",
-  "instances": ["<INST_A>", "<INST_B>"]
+  "instances": ["<INST_A>", "<INST_B>"],
+  "is_bus_dff": "<true when new_logic declares a vector register (reg [N:0] or reg [`MACRO] sig) — N individual DFF cells needed in gate-level | false/null otherwise>",
+  "bus_width_expr": "<the range macro name (e.g. UMC__WDBPTR_RANGE) or literal integer N — used by eco_resolve_bus_width.py | null>"
 }
 ```
 
@@ -274,6 +294,7 @@ Cleanup: `rm -f /tmp/preeco_study_rtldiff_Synthesize.v`.
 - For `port_promotion`: **skip FM query entirely** — the net ALREADY EXISTS in the flat PreEco netlist under the signal's original name; `flat_net_exists: true`; the studier will verify existence directly
 - For `new_logic`: skip the FM query for the NEW register itself — its output net does not exist in the PreEco netlist and FM cannot find equivalents for it. Instead, query any EXISTING signal that the new register's D-input depends on (the enable signal or the driving data signal from the RTL context_line). This gives eco_netlist_studier the gate-level scope so it can find where to insert the new DFF. If the D-input expression is entirely new with no existing signal reference, leave `nets_to_query` empty for this change — the studier will use the declaring module's gate-level scope directly.
 - For `port_connection`: **skip FM query** — port connections are wiring changes handled by the studier using `flat_net_name` resolved from RTL
+- For `enable_swap`: query `old_enable_net` (locates the gate-level CE/EN/WE pin to rewire). Also query each leaf input in `new_enable_gate_chain[]` that is not an `n_eco_*` net (per-stage rename resolution). **Do NOT query the target register** — same rule as `new_logic`.
 - **Avoid querying flip-flop Q outputs** — focus on driving nets and inputs
 
 **Per-instance net generation (Gap 2):** When `instances` field has multiple values, generate SEPARATE `nets_to_query` entries for each instance. Each entry uses the instance-specific hierarchy path:
@@ -879,7 +900,12 @@ Write to `<BASE_DIR>/data/<TAG>_eco_rtl_diff.json` (always use the full absolute
       "preferred_insertion_scope": null,
       "input_from_submodule": false,
       "submodule_instance": null,
-      "submodule_type": null
+      "submodule_type": null,
+      "is_bus_dff": false,
+      "bus_width_expr": null,
+      "old_enable_net": null,
+      "new_enable_net": null,
+      "new_enable_gate_chain": null
     }
   ],
   "nets_to_query": [

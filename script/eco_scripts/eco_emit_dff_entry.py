@@ -465,6 +465,10 @@ def main():
     p.add_argument('--tile-module', required=True)
     p.add_argument('--base-dir', default='.', help='Base directory for output files')
     p.add_argument('--output', required=True)
+    p.add_argument('--bus-width', type=int, default=1,
+                   help='Bus width N for vector registers (is_bus_dff=true). '
+                        'When N>1, emits N individual DFF entries with per-bit D/Q nets. '
+                        'Use eco_resolve_bus_width.py to determine N before calling.')
     args = p.parse_args()
 
     # Load rtl_change
@@ -687,6 +691,40 @@ def main():
                         # don't pre-check existence (would falsely SKIP).
                         g['input_from_unconnected_rewire'] = replacement
 
+    # ── Bus DFF expansion (--bus-width N > 1) ────────────────────────────
+    # When the RTL register is a vector (reg [N-1:0] sig), synthesis produces N
+    # individual DFF cells (one per bit).  We replicate the single-bit DFF entry
+    # N times with bit-indexed D and Q net names so the applier can insert each
+    # cell independently.  Chain entries and Mode-I extras are NOT replicated —
+    # a bus DFF passthrough has no combinational D-input chain.
+    bus_width = max(1, args.bus_width)
+    if bus_width > 1:
+        bus_dff_entries = []
+        for bit in range(bus_width):
+            import copy as _copy
+            e = _copy.deepcopy(dff_entry)
+            # Instance name follows DC synthesis convention: <reg>_reg_<bit>_
+            e['instance_name']  = f'{target_reg}_reg_{bit}_'
+            e['bus_bit_index']  = bit
+            e['is_bus_dff_bit'] = True
+            # Per-stage D and Q use bracket notation inside port_connections
+            for stage in ('Synthesize', 'PrePlace', 'Route'):
+                pcs = e.get('port_connections_per_stage', {}).get(stage, {})
+                # D input: the source bus signal at this bit
+                d_src = rtl_change.get('d_input_resolved_net') or ''
+                if d_src:
+                    pcs['D'] = f'{d_src}[{bit}]'
+                # Q output: target register bus bit
+                pcs['Q'] = f'{target_reg}[{bit}]'
+                if stage == 'Synthesize':
+                    e['port_connections'] = dict(pcs)
+            bus_dff_entries.append(e)
+        synth_entries  = bus_dff_entries + modei_extra_entries
+        pp_rte_entries = bus_dff_entries + modei_extra_entries
+    else:
+        synth_entries  = [dff_entry] + chain_entries + modei_extra_entries
+        pp_rte_entries = [dff_entry] + chain_entries + modei_extra_entries
+
     # ── Compose output ─────────────────────────────────────────────────────
     out = {
         'tag':            args.tag,
@@ -694,9 +732,10 @@ def main():
         'dff_instance':   dff_inst,
         'host_module':    host_module,
         'strategy':       strategy_info.get('strategy'),
-        'Synthesize':     [dff_entry] + chain_entries + modei_extra_entries,
-        'PrePlace':       [dff_entry] + chain_entries + modei_extra_entries,
-        'Route':          [dff_entry] + chain_entries + modei_extra_entries,
+        'bus_width':      bus_width,
+        'Synthesize':     synth_entries,
+        'PrePlace':       pp_rte_entries,
+        'Route':          pp_rte_entries,
         'diagnostics':    {
             'strategy_info':  strategy_info,
             'plumbing_error': plumbing_err,
@@ -704,6 +743,7 @@ def main():
             'expected_function': expr,
             'modei_check':    modei_diagnostics,
             'modei_entries_added': len(modei_extra_entries),
+            'bus_width':      bus_width,
         },
     }
     if plumbing:

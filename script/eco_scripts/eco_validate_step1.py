@@ -340,6 +340,66 @@ def main():
     if chain_eq_issues:
         overall_pass = False
 
+    # ── enable_swap validation ────────────────────────────────────────────────
+    # enable_swap changes rewire the clock-enable / write-enable pin of an existing
+    # DFF.  Validate that required fields are present.
+    enable_swap_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') != 'enable_swap':
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        for f in ('old_enable_net', 'new_enable_net'):
+            if not c.get(f):
+                enable_swap_issues.append(
+                    f"changes[{idx}] target={tgt}: enable_swap missing `{f}` — "
+                    f"Step 3 needs both old and new enable net names to rewire the CE pin")
+        chain = c.get('new_enable_gate_chain') or []
+        if not chain:
+            enable_swap_issues.append(
+                f"changes[{idx}] target={tgt}: enable_swap `new_enable_gate_chain` empty — "
+                f"emit the MUX/AND/OR gates implementing the new enable condition")
+        if not c.get('dff_clock'):
+            enable_swap_issues.append(
+                f"changes[{idx}] target={tgt}: enable_swap missing `dff_clock` — "
+                f"needed by Step 2 fenets to query old_enable_net in correct clock domain scope")
+    if enable_swap_issues:
+        overall_pass = False
+
+    # ── bus combinational gate validation ────────────────────────────────────
+    # When is_bus_gate=true on a new_logic_gate entry, the studier must know the
+    # bus width to expand to N per-bit gate entries.  Catch missing fields here
+    # so the studier never silently falls back to emitting a single (wrong) gate.
+    bus_gate_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic_gate', 'new_logic'):
+            continue
+        if not c.get('is_bus_gate'):
+            continue
+        out = c.get('output_net') or c.get('new_token') or '?'
+        if not c.get('bus_width_expr'):
+            bus_gate_issues.append(
+                f"changes[{idx}] output={out}: is_bus_gate=true but `bus_width_expr` is missing — "
+                f"rtl_diff_analyzer must record the range macro or integer width so "
+                f"eco_netlist_studier can call eco_resolve_bus_width.py to determine N")
+    if bus_gate_issues:
+        overall_pass = False
+
+    # ── bus DFF validation ────────────────────────────────────────────────────
+    # Same check for new_logic / new_logic_dff with is_bus_dff=true.
+    bus_dff_issues = []
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
+        if c.get('change_type') not in ('new_logic', 'new_logic_dff'):
+            continue
+        if not c.get('is_bus_dff'):
+            continue
+        tgt = c.get('target_register') or c.get('new_token') or '?'
+        if not c.get('bus_width_expr'):
+            bus_dff_issues.append(
+                f"changes[{idx}] target={tgt}: is_bus_dff=true but `bus_width_expr` is missing — "
+                f"rtl_diff_analyzer must record the range macro or integer width")
+    if bus_dff_issues:
+        overall_pass = False
+
     # Mandatory-fields check for new_logic / new_logic_dff entries — every such
     # entry MUST have dff_clock (Step 3 needs it to pick neighbor DFF for per-stage
     # CP + Mode S clock-domain match), AND must have a non-empty d_input_gate_chain
@@ -1345,6 +1405,12 @@ def main():
         'intermed_ins_issues':             intermed_ins_issues,
         'pending_structural_issue_count': len(pending_structural_issues),
         'pending_structural_issues':      pending_structural_issues,
+        'enable_swap_issue_count':        len(enable_swap_issues),
+        'enable_swap_issues':             enable_swap_issues,
+        'bus_gate_issue_count':           len(bus_gate_issues),
+        'bus_gate_issues':                bus_gate_issues,
+        'bus_dff_issue_count':            len(bus_dff_issues),
+        'bus_dff_issues':                 bus_dff_issues,
         'overall_pass':          overall_pass,
         'entries':               results,
     }
@@ -1355,6 +1421,7 @@ def main():
     print(f'  rtl_diff: {args.rtl_diff}')
     print(f'  entries:  {len(results)}  phantom_wire: {len(phantom)}  new_port_issues: {len(decl_issues)}  port_conn_issues: {len(pc_issues)}  truth_table_issues: {len(tt_issues)}  signal_in_scope_issues: {len(sis_issues)}  chain_equivalence_issues: {len(chain_eq_issues)}  new_logic_field_issues: {len(new_logic_field_issues)}  mode_i_field_issues: {len(mode_i_field_issues)}  scope_field_issues: {len(scope_field_issues)}  wire_swap_field_issues: {len(wire_swap_field_issues)}  unconnected_var_issues: {len(unconnected_var_issues)}  chain_compactness_issues: {len(chain_compact_issues)}  reset_inclusion_issues: {len(reset_inclusion_issues)}')
     print(f'  and_term_bool: {len(and_term_bool_issues)}')
+    print(f'  bus_gate_issues: {len(bus_gate_issues)}  bus_dff_issues: {len(bus_dff_issues)}')
     print(f'  overall:  {"PASS" if overall_pass else "FAIL"}')
     for p in phantom:
         print(f'    - {p}')

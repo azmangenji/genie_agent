@@ -67,6 +67,10 @@ def main():
     for change in rtl_diff.get('changes', []):
         if change.get('change_type') not in ('new_logic', 'new_logic_dff'):
             continue
+        # Bus DFFs pipeline a bus signal directly — no combinational D-input chain
+        # to expand.  N-bit entries are emitted by eco_emit_dff_entry.py --bus-width N.
+        if change.get('is_bus_dff'):
+            continue
         chain = change.get('d_input_gate_chain')
         if not chain:
             continue

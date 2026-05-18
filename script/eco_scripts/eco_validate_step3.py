@@ -85,17 +85,34 @@ def main():
                     f"CRITICAL: {stage} has {len(bit_entries)} bus DFF bit entries for '{target}' "
                     f"but expected {expected_n} — re-run eco_emit_dff_entry.py --bus-width {expected_n}")
 
-    # ── 2c. Synthesis-pruned ports: warn (do not block) ──────────────────────
-    # When a port was floating pre-ECO and synthesis pruned the driving logic,
-    # the studier emits a synthesis_pruned_port entry.  These are warnings that
-    # inform the engineer to re-run ShSynRtl; they must NOT block APPLY for
-    # the changes that can proceed.
-    pruned_count = 0
-    for stage in ['Synthesize', 'PrePlace', 'Route']:
-        for e in study.get(stage, []):
-            if e.get('change_type') == 'synthesis_pruned_port':
-                pruned_count += 1
-                break  # count once per change, not per stage
+    # ── 2d. Bus gate: verify consistent N entries per stage ──────────────────
+    # When is_bus_gate=true, the studier expands one RTL gate into N per-bit
+    # entries (is_bus_gate_bit=true).  Check that all 3 stages have the same
+    # count and that the count is > 0.  We validate consistency rather than an
+    # exact expected_n (the studier records bus_width_resolved on each entry).
+    for change in rtl_diff.get('changes', []):
+        if not change.get('is_bus_gate'):
+            continue
+        if change.get('change_type') not in ('new_logic_gate', 'new_logic'):
+            continue
+        target = change.get('output_net', '') or change.get('new_token', '')
+        import re as _re
+        target_base = _re.sub(r'\[\d+\]$', '', target)
+        counts = {}
+        for stage in ['Synthesize', 'PrePlace', 'Route']:
+            counts[stage] = sum(
+                1 for e in study.get(stage, [])
+                if e.get('is_bus_gate_bit') and
+                   _re.sub(r'\[\d+\]$', '', e.get('output_net', '')) == target_base
+            )
+        if any(c == 0 for c in counts.values()):
+            issues.append(
+                f"CRITICAL: bus gate '{target_base}' has zero entries in one or more stages "
+                f"({counts}) — eco_netlist_studier must expand to N per-bit gate entries")
+        elif len(set(counts.values())) > 1:
+            issues.append(
+                f"CRITICAL: bus gate '{target_base}' has inconsistent entry counts across stages "
+                f"({counts}) — all 3 stages must have the same N bit entries")
 
     # ── 3. DFF entries have port_connections_per_stage for all 3 stages ─────
     # Only flag STATEFUL entries (DFFs with .Q output, .CP, scan pins). Skip:
@@ -2265,16 +2282,7 @@ def main():
 
     # ── Result ───────────────────────────────────────────────────────────────
     passed = len(issues) == 0
-    result = {
-        'tag': args.tag,
-        'passed': passed,
-        'issues': issues,
-        'issue_count': len(issues),
-        # synthesis_pruned is a warning flag — does NOT block APPLY.
-        # STUDY_ORCHESTRATOR reads this to warn engineer before spawning APPLY.
-        'synthesis_pruned': pruned_count > 0,
-        'synthesis_pruned_count': pruned_count,
-    }
+    result = {'tag': args.tag, 'passed': passed, 'issues': issues, 'issue_count': len(issues)}
     Path(args.output).write_text(json.dumps(result, indent=2))
 
     marker_txt = (

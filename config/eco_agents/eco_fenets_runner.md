@@ -81,6 +81,15 @@ for idx, c in enumerate(rtl_diff["changes"]):
         if sm and port and bbi is not None:
             nets_to_query.append({"net_path": f"{scope}/{sm}/{port}[{bbi}]", "source": f"changes[{idx}].mode_I_candidate"})
     # Cat 7: new_port hierarchical hookup — TODO if rtl_diff_analyzer emits hookup hints
+    # Cat 8: enable_swap — query old_enable_net (locates CE/EN/WE pin to rewire) + chain leaf inputs
+    if ct == "enable_swap":
+        oen = c.get("old_enable_net")
+        if oen: nets_to_query.append({"net_path": f"{scope}/{oen}", "source": f"changes[{idx}].old_enable_net"})
+        for g in (c.get("new_enable_gate_chain") or []):
+            for inp in (g.get("inputs") or []):
+                base = inp.split('[')[0]
+                if base.startswith(("n_eco_", "1'b", "0'b")): continue
+                nets_to_query.append({"net_path": f"{scope}/{base}", "source": f"changes[{idx}].enable_chain[{g.get('seq')}]"})
 # Deduplicate
 seen = set(); valid_nets = []
 for n in nets_to_query:

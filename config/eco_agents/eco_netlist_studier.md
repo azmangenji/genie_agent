@@ -227,6 +227,71 @@ Log: `UNCONNECTED_RENAME: <N_syn>/<N_pp>/<N_rt> → n_eco_<jira>_<hint> | bus=<i
 
 ---
 
+### 0b-BUS-DFF — Bus register DFF expansion (MANDATORY when is_bus_dff: true)
+
+When `is_bus_dff: true` on a `new_logic` change, the register is a vector type.
+Gate-level synthesis produces N individual DFF cells (one per bit).
+
+**Step 1 — Resolve bus width:**
+```bash
+python3 script/eco_scripts/eco_resolve_bus_width.py \
+    --macro         <bus_width_expr>                    \
+    --signal        <target_register>                   \
+    --rtl-dir       <REF_DIR>/data/SynRtl               \
+    --preeco-synth  <REF_DIR>/data/PreEco/Synthesize.v.gz \
+    --output        data/<TAG>_eco_bus_width_<target>.json
+```
+Read `width` (integer N) from output. If `resolved: false` → log `BUS_WIDTH_UNRESOLVABLE` and emit a CRITICAL issue for the orchestrator. Record `bus_width_resolved: N` on the change entry in the study JSON.
+
+**Step 2 — Emit N DFF entries via eco_emit_dff_entry.py:**
+```bash
+python3 script/eco_scripts/eco_emit_dff_entry.py \
+    --rtl-change <change_json> --ref-dir <REF_DIR>      \
+    --rename-map data/<TAG>_eco_fenets_rename_map.json  \
+    --tag <TAG> --jira <JIRA> --tile-module <TILE>      \
+    --base-dir <BASE_DIR>                               \
+    --bus-width N                                       \
+    --output data/<TAG>_eco_dff_entry_<target>.json
+```
+The wrapper emits N entries (`<target>_reg_<bit>_`) with per-bit D (`<d_src>[bit]`) and Q (`<target>[bit]`) nets, plus shared CP/SI/SE derived from a sibling DFF in the same clock domain.
+
+**Step 3 — Splice all N entries per stage:**
+```python
+out = json.load(open(f'data/{TAG}_eco_dff_entry_{target}.json'))
+for stage in ('Synthesize', 'PrePlace', 'Route'):
+    study[stage].extend(out[stage])   # N entries per stage, no chain gates
+```
+
+Do NOT call `eco_expand_chains.py` for bus DFF changes — it skips them automatically.
+
+### 0b-BUS-GATE — Bus combinational gate expansion (MANDATORY when is_bus_gate: true)
+
+When a `new_logic_gate` change has `is_bus_gate: true` (e.g. `wire [N:0] X = cond ? A : B`), synthesis produces N individual gate cells — one per bit.
+
+**Step 1 — Resolve bus width** (same script as bus DFF):
+```bash
+python3 script/eco_scripts/eco_resolve_bus_width.py \
+    --macro <bus_width_expr> --signal <output_net_base> \
+    --rtl-dir <REF_DIR>/data/SynRtl \
+    --preeco-synth <REF_DIR>/data/PreEco/Synthesize.v.gz \
+    --output data/<TAG>_eco_bus_width_<output_net>.json
+```
+
+**Step 2 — Emit N gate entries.** For each bit 0..N-1:
+- `instance_name`: `eco_<jira>_<gate_seq>_bit<bit>_`
+- `is_bus_gate_bit: true`, `bus_bit_index: <bit>`
+- `output_net`: `<signal_base>[<bit>]`  (e.g. `wdbptr_org0_d2_nxt[3]`)
+- Bus-width inputs (appear as bus signals in the change set): add `[<bit>]` suffix — e.g. `.I0(wdbptr_org0_d1[<bit>])`, `.I1(wdbptr_org0_d1p5[<bit>])`
+- Scalar inputs (1-bit signals, e.g. a MUX select): **shared unchanged** across all N entries — e.g. `.S(RegPageRetEn)`
+
+**Step 3 — Splice N entries per stage** (same pattern as bus DFF):
+```python
+for stage in ('Synthesize', 'PrePlace', 'Route'):
+    study[stage].extend(bit_entries_for_stage)  # N entries per stage
+```
+
+eco_perl_spec.py automatically emits `wire [N-1:0] <signal_base> ;` after detecting the N `is_bus_gate_bit` entries — no extra action needed.
+
 ### 0b-DFF — One-shot DFF entry assembly via `eco_emit_dff_entry.py` (MANDATORY)
 
 For EVERY `new_logic` DFF change, invoke `eco_emit_dff_entry.py` ONCE and splice its per-stage output verbatim into `eco_preeco_study.json`. Do NOT call `eco_synth_chain.py` directly — the wrapper invokes it with the correct per-DFF prefix.
@@ -424,6 +489,41 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 2. If 0 (net absent in gate-level — synthesis merged it into cone): find the D-input net of `<signal_name>_reg` or `<signal_name>_d1_reg` in Synthesize module scope → that is the combinational driver net. Record `driver_net: <found_net>`, `needs_buffer_chain: true`, `flat_net_confirmed: false`.
    - eco_netlist_verifier Check 7 will auto-add a `new_logic_gate` INV+INV buffer chain entry: `INV(<driver_net>) → <tmp_net>`, `INV(<tmp_net>) → <signal_name>`, using cell types discovered from PreEco neighbours. This drives the new output port from the internal combinational value without modifying the DFF.
 3. If `<signal_name>_reg` also absent → `flat_net_confirmed: false`, `reason: "net and reg both absent — port_promotion cannot be auto-applied"`. Log for engineer review.
+
+### Phase 0e — Process `enable_swap` changes
+
+For each `enable_swap` change (clock-enable / write-enable pin rewire on an existing DFF):
+
+**Step 1 — Locate the DFF cell and its enable pin:**
+- Get the FM fenets results for `old_enable_net` (queried in Step 2 as Cat 8).
+- From the FM `(+)` impl line, extract the cell name. The enable pin (CE/EN/WE/E) is the pin that `old_enable_net` connects to — grep the PreEco Synthesize cell block:
+  ```bash
+  grep -A 20 "<cell_name>" /tmp/eco_study_<TAG>_Synthesize.v | grep -E "\.(CE|EN|WE|E)\s*\("
+  ```
+- Use `eco_cell_truth_tables.py` to confirm the enable pin name for that cell type.
+- For bus DFFs (is_bus_dff: true on the companion new_logic change): repeat for all N per-bit DFF cells; the enable net is shared across all bits.
+
+**Step 2 — Emit rewire entries:**
+
+For each stage, emit a `rewire` entry for the enable pin:
+```json
+{ "change_type": "rewire",
+  "cell_name": "<cell_name_per_stage>",
+  "pin": "<CE|EN|WE|E>",
+  "old_net": "<old_enable_net>",
+  "new_net": "<new_enable_net>",
+  "confirmed": true,
+  "reason": "enable_swap: CE pin rewired from old condition to new condition",
+  "cell_name_per_stage": {"Synthesize": "...", "PrePlace": "...", "Route": "..."} }
+```
+
+For bus DFFs: emit N rewire entries (one per bit cell), all sharing the same enable pin name and old/new net names.
+
+**Step 3 — Emit new_logic_gate entries for the new enable condition gates:**
+
+From `new_enable_gate_chain[]` in the RTL diff, emit one `new_logic_gate` entry per gate — same as wire_swap condition gate chain handling. These gates produce `new_enable_net` from its sub-expressions.
+
+Log: `ENABLE_SWAP: <target_register> CE pin rewired from <old_enable_net> → <new_enable_net> | <N> gate(s) inserted`
 
 ---
 

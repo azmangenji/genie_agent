@@ -280,6 +280,13 @@ def main():
     port_conns = {}   # Pass 3: {instance_name: [{port, net}]}
     rewires    = {}   # Pass 4: {cell_name: [{pin, old, new}]}
     statuses   = []   # list of {instance_name, status, reason}
+    # Bus DFF groups: (mod, target_reg) → set of bit indices.
+    # After the main loop we emit ONE  wire [N-1:0] target_reg;  per group so
+    # the new bus signal is properly declared in the module body.  Individual
+    # per-bit DFF cells produce only bit-slice implicit wires (e.g. sig[3]);
+    # the full bus declaration is required for consumers that reference the
+    # whole bus (e.g. port connections using the signal as a bus operand).
+    bus_dff_groups = {}   # (mod, target_reg) → set of int bit indices
 
     for e in entries:
         if not e.get('confirmed', True):
@@ -303,6 +310,25 @@ def main():
 
         # ── new_logic_gate / new_logic_dff ───────────────────────────────────
         if ct in ('new_logic_gate', 'new_logic_dff', 'new_logic'):
+            # Bus vector tracking — covers both bus DFFs (is_bus_dff_bit) and bus
+            # combinational gates (is_bus_gate_bit).  After the loop we emit ONE
+            # wire [N-1:0] sig;  per group so consumers that reference the whole
+            # bus (e.g. port connections, downstream gate inputs) see a declared net.
+            if e.get('is_bus_dff_bit') and mod:
+                bit_idx = e.get('bus_bit_index')
+                target_reg = re.sub(r'_reg_\d+_$', '', inst)
+                if bit_idx is not None and target_reg:
+                    key = (mod, target_reg)
+                    bus_dff_groups.setdefault(key, set()).add(int(bit_idx))
+            if e.get('is_bus_gate_bit') and mod:
+                bit_idx = e.get('bus_bit_index')
+                # output_net for a bus gate bit: e.g. "wdbptr_org0_d2_nxt[3]"
+                out_net = e.get('output_net', '')
+                base_net = re.sub(r'\[\d+\]$', '', out_net)
+                if bit_idx is not None and base_net:
+                    key = (mod, base_net)
+                    bus_dff_groups.setdefault(key, set()).add(int(bit_idx))
+
             # GAP-7: existing-signal reuse — skip cell insertion entirely when
             # the studier marked this gate as reusing an existing wire. The
             # downstream gate that consumed this entry's output should already
@@ -742,6 +768,32 @@ def main():
         else:
             statuses.append({'name': inst, 'status':'UNHANDLED',
                              'reason': f'{ct} — not handled by eco_perl_spec'})
+
+    # ── Bus vector wire declarations (bus DFFs + bus combinational gates) ────────
+    # Each bus DFF/gate was expanded into N per-bit entries (is_bus_dff_bit /
+    # is_bus_gate_bit=true).  Both share the same bus_dff_groups dict and the
+    # Individual Q-pin connections create implicit bit-slice wires (e.g. sig[3])
+    # but NOT an explicit bus declaration.  Consumers that reference the whole
+    # bus need  wire [N-1:0] sig;  in the module body.  We emit it here as a
+    # wire_decl entry — the Perl template writes  wire [N-1:0] sig ;  and the
+    # already_declared dedup in the Perl prevents double-declaration on re-runs.
+    for (mod, target_reg), bits in bus_dff_groups.items():
+        if not bits:
+            continue
+        max_bit = max(bits)
+        decl    = f'[{max_bit}:0] {target_reg}'   # → "wire [7:0] sig ;"
+        if mod not in changes:
+            changes[mod] = {'wire_decls': [], 'wire_removes': [], 'gates': []}
+        # Dedup: skip if already queued or already exists in PostEco (round 2+)
+        if decl in changes[mod]['wire_decls']:
+            continue
+        if zgrep_count(target_reg, posteco) > 0:
+            statuses.append({'name': target_reg, 'status': 'INFO',
+                             'reason': f'bus wire_decl SKIPPED for {decl}: signal already in PostEco'})
+            continue
+        changes[mod]['wire_decls'].append(decl)
+        statuses.append({'name': target_reg, 'status': 'INFO',
+                         'reason': f'bus wire_decl queued: wire {decl} ; in {mod} ({len(bits)} bit entries)'})
 
     # ── Write Perl script ─────────────────────────────────────────────────────
     perl_lines = [
