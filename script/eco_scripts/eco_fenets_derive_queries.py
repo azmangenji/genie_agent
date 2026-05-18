@@ -242,6 +242,32 @@ def derive(rtl_diff, tile=''):
                 'source':                    f'changes[{idx}].condition_inputs_to_query',
             })
 
+        # Cat 10: enable_swap — query old_enable_net so the studier can locate
+        # the CE/WE/EN pin on the existing DFF cell to rewire, and query chain
+        # leaf inputs from new_enable_gate_chain for per-stage rename resolution.
+        if ct == 'enable_swap':
+            oen = c.get('old_enable_net')
+            if oen:
+                out.append({
+                    'net_path': _abs_path(tile, scope, oen),
+                    'signal':   oen,
+                    'category': 10,
+                    'source':   f'changes[{idx}].old_enable_net',
+                })
+            for g in (c.get('new_enable_gate_chain') or []):
+                for inp in (g.get('inputs') or []):
+                    if not isinstance(inp, str):
+                        continue
+                    base = inp.split('[')[0]
+                    if base.startswith(_SKIP_INPUT_PREFIXES) or not base:
+                        continue
+                    out.append({
+                        'net_path': _abs_path(tile, scope, base),
+                        'signal':   base,
+                        'category': 10,
+                        'source':   f'changes[{idx}].enable_chain[{g.get("seq","?")}]',
+                    })
+
     # Deduplicate by net_path (preserve first source)
     seen, unique = set(), []
     for q in out:
