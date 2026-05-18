@@ -1925,61 +1925,113 @@ def main():
     # cells add 1 to the parity count. Stop at: DFF.Q output, primary
     # input port, or after 8 hops. Compare parity across stages.
     _INV_RE = re.compile(r'^(INV|INVD|INVSKR|INVLLKG|INVTX|INVSK|INVFE)', re.IGNORECASE)
-    def _net_parity_in_stage(net, host_module, ref_dir, stage, max_hops=8):
-        """Return (parity, terminal_kind) where parity is 0/1 (count of INVs
-        mod 2 from net upstream to first DFF.Q / primary input). Returns
-        None if traversal stalls / can't be done deterministically."""
+    _OUT_PIN_RE = re.compile(r'\.\s*(Z|ZN|ZN1|Q|QN|CO|S)\s*\(\s*(\w+)\s*\)')
+    _INPUT_PORT_DECL_RE = re.compile(r'^\s*input\s+(?:\[[^\]]+\]\s+)?(\w+)\s*[;,]', re.MULTILINE)
+    _INST_HEAD_RE = re.compile(r'^([A-Z][A-Z0-9_]+)\s+([A-Za-z_]\w*)\s*\(', re.MULTILINE)
+    # Cache: (stage, host_module) → ({net → (cell_type, inst, inv_input_net)}, primary_inputs_set)
+    _MODULE_INDEX_CACHE = {}
+
+    def _index_module_body(host_module, ref_dir, stage):
+        """Parse <host>'s PreEco body once and build:
+          driver_map: { output_net : (cell_type, inst_name, inv_input_net|None) }
+          primary_inputs: { signal_name, ... }
+        Tries `<host>` then `<host>_0` (Route uniquification). Cached.
+        Indexes INV cells with their .I() input net for fast walking.
+        Non-INV cells: stored but inv_input_net=None (parity walk stops there).
+        """
+        key = (stage, host_module)
+        if key in _MODULE_INDEX_CACHE:
+            return _MODULE_INDEX_CACHE[key]
         gz = Path(ref_dir) / 'data' / 'PreEco' / f'{stage}.v.gz'
         if not gz.is_file():
-            return None
+            _MODULE_INDEX_CACHE[key] = (None, None); return _MODULE_INDEX_CACHE[key]
         try:
-            cmd = (f"zcat {gz} | awk '/^module {re.escape(host_module)}"
-                   f"(?:_0)?[ \\t(]/,/^endmodule/'")
+            cmd = (
+                f"zcat {gz} | awk '/^module {re.escape(host_module)}[ \\t(]/,/^endmodule/'; "
+                f"zcat {gz} | awk '/^module {re.escape(host_module)}_0[ \\t(]/,/^endmodule/'"
+            )
             txt = subprocess.run(cmd, shell=True, capture_output=True,
-                                 text=True, timeout=60).stdout
+                                 text=True, timeout=120).stdout
         except Exception:
-            return None
+            _MODULE_INDEX_CACHE[key] = (None, None); return _MODULE_INDEX_CACHE[key]
         if not txt:
-            return None
-        # Strip Verilog comments to avoid '//' lines confusing depth scan
+            _MODULE_INDEX_CACHE[key] = (None, None); return _MODULE_INDEX_CACHE[key]
+        # Strip comments
         txt = re.sub(r'//[^\n]*', '', txt)
         txt = re.sub(r'/\*.*?\*/', '', txt, flags=re.DOTALL)
-        cur = net.strip()
+        # Primary inputs of the module (port direction declarations)
+        primary_inputs = set(_INPUT_PORT_DECL_RE.findall(txt))
+        # Walk instance heads and parse each block by balanced () matching
+        driver_map = {}
+        inst_iter = list(_INST_HEAD_RE.finditer(txt))
+        for idx, m in enumerate(inst_iter):
+            cell_type, inst_name = m.group(1), m.group(2)
+            # Skip Verilog keywords / module decls / port decls
+            if cell_type in ('module','endmodule','input','output','inout',
+                             'wire','reg','tri','wand','wor','assign','always',
+                             'initial','parameter','localparam','function','task',
+                             'generate','endgenerate'):
+                continue
+            # Block bounds: from this match's '(' to balanced ')'
+            open_pos = m.end() - 1
+            depth = 0; close_pos = -1
+            # Cap scan to next instance head (or +20k chars) to keep bounded
+            scan_end = inst_iter[idx+1].start() if idx+1 < len(inst_iter) else min(open_pos + 20000, len(txt))
+            for j in range(open_pos, scan_end):
+                c = txt[j]
+                if c == '(': depth += 1
+                elif c == ')':
+                    depth -= 1
+                    if depth == 0: close_pos = j; break
+            if close_pos < 0:
+                continue
+            block = txt[open_pos+1:close_pos]
+            # Find output pin's net
+            inv_input = None
+            is_inv = bool(_INV_RE.match(cell_type))
+            if is_inv:
+                # Extract .I(<wire>)
+                im = re.search(r'\.\s*I\s*\(\s*(\w+)\s*\)', block)
+                if im: inv_input = im.group(1)
+            for op_m in _OUT_PIN_RE.finditer(block):
+                out_pin, out_net = op_m.group(1), op_m.group(2)
+                # Tag DFF outputs distinctly
+                terminal_kind = ('dff_q' if out_pin == 'Q' else
+                                 'dff_qn' if out_pin == 'QN' else
+                                 'dff_co' if out_pin == 'CO' else
+                                 'dff_s' if out_pin == 'S' else
+                                 'comb')
+                # Keep first writer per net (in Verilog each wire has one driver)
+                driver_map.setdefault(out_net, (cell_type, inst_name, inv_input, terminal_kind, is_inv))
+        _MODULE_INDEX_CACHE[key] = (driver_map, primary_inputs)
+        return _MODULE_INDEX_CACHE[key]
+
+    def _net_parity_in_stage(net, host_module, ref_dir, stage, max_hops=8):
+        """Parity 0/1 + terminal kind via indexed driver_map (fast)."""
+        driver_map, primary_inputs = _index_module_body(host_module, ref_dir, stage)
+        if driver_map is None:
+            return None
+        cur = (net or '').strip()
         parity = 0
         for hop in range(max_hops):
-            # Find any cell whose output pin (Z/ZN/ZN1/Q/QN/CO/S) drives `cur`
-            m = re.search(
-                rf'^\s*([A-Z][A-Z0-9_]+)\s+([A-Za-z_]\w*)\s*\(' rf'[^)]*?'
-                rf'\.\s*(Z|ZN|ZN1|Q|QN|CO|S)\s*\(\s*{re.escape(cur)}\s*\)',
-                txt, re.MULTILINE | re.DOTALL)
-            if not m:
-                # Check if it's a primary input port of the module
-                if re.search(rf'^\s*input\s+(?:\[[^\]]+\]\s+)?{re.escape(cur)}\s*[;,]',
-                             txt, re.MULTILINE):
-                    return parity, 'primary_input'
+            if cur in primary_inputs:
+                return parity, 'primary_input'
+            d = driver_map.get(cur)
+            if d is None:
                 return parity, 'unresolved'
-            cell_type, inst_name, out_pin = m.group(1), m.group(2), m.group(3)
-            # DFF: Q/QN/CO/S terminates traversal
-            if out_pin in ('Q', 'QN', 'CO', 'S'):
-                if out_pin == 'QN':
-                    parity ^= 1
-                return parity, f'dff_{inst_name}'
-            # INV cell adds parity
-            if _INV_RE.match(cell_type):
+            cell_type, inst_name, inv_input, terminal_kind, is_inv = d
+            if terminal_kind == 'dff_qn':
                 parity ^= 1
-            # Step to the input pin of this cell — for INVs that's `.I`,
-            # for non-INVs we can't generically pick "the" input; bail.
-            if _INV_RE.match(cell_type):
-                # Extract .I(<wire>) from this instance block
-                blk_m = re.search(
-                    rf'\b{re.escape(inst_name)}\s*\([^)]*?\.\s*I\s*\(\s*(\w+)\s*\)',
-                    txt, re.DOTALL)
-                if not blk_m:
+                return parity, f'dff_{inst_name}'
+            if terminal_kind in ('dff_q','dff_co','dff_s'):
+                return parity, f'dff_{inst_name}'
+            # Combinational
+            if is_inv:
+                parity ^= 1
+                if inv_input is None:
                     return parity, 'unresolved_inv'
-                cur = blk_m.group(1)
+                cur = inv_input
                 continue
-            # Non-INV combinational cell — can't deterministically continue
-            # without ambiguity. Return current parity with marker.
             return parity, f'comb_{cell_type[:8]}'
         return parity, 'max_hops'
 
