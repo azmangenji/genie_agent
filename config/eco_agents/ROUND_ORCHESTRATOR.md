@@ -463,7 +463,7 @@ Pass that JSON path (not the original SPEC_SOURCES dict) to eco_netlist_re_studi
 
 **Tune file updates are PROHIBITED. The AI flow must NEVER modify any file under `tune/`.**
 
-If `eco_fm_analysis_round<ROUND>.json` contains `"action": "tune_file_update"` entries, **skip them entirely**. Do NOT read or write any `tune/FmTargets/*.tcl` file. Escalate to MANUAL_ONLY and stop the fix loop. An engineer must apply tune directives manually if required.
+If `eco_fm_analysis_round<ROUND>.json` contains `"action": "tune_file_update"` entries, **skip them entirely** and proceed to the next round as normal. Do NOT read or write any `tune/FmTargets/*.tcl` file. MANUAL_ONLY is only triggered when max rounds is reached without convergence — not because a tune action was skipped.
 
 ---
 

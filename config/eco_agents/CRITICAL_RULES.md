@@ -544,8 +544,8 @@ FM ABORTS (N/A)
 | Priority | Action | When |
 |----------|--------|------|
 | **1 — Netlist fix** | Rewire, re-insert, fix_named_wire, correct port connections | ALWAYS — this is the only valid fix |
-| **2 — MANUAL_ONLY** | Report to engineer; stop the fix loop | When Priority 1 is exhausted |
-| **NEVER** | Tune file update (`tune/FmTargets/*.tcl`) | AI flow is PROHIBITED from touching tune files |
+| **2 — MANUAL_ONLY** | Report to engineer; stop the fix loop | Only when max rounds reached without convergence |
+| **NEVER** | Tune file update (`tune/FmTargets/*.tcl`) | AI flow is PROHIBITED from touching tune files — skip any tune actions and continue next round |
 | **NEVER** | SVF updates (`set_dont_verify`, `set_user_match` in EcoChange.svf) | AI flow is PROHIBITED from modifying EcoChange.svf |
 
 **HFS net rename = netlist fix, not SVF:**
