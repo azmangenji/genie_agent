@@ -85,15 +85,16 @@ def _parse_fm_verify_rpt(rpt_path: Path) -> dict | None:
         m = _re.search(
             rf'{_re.escape(tgt)}\s*[:\|]\s*(PASS|FAIL|ABORT\S*)'
             rf'(?:'
-            rf'\s*\[failing(?:_count)?:\s*(\d+)\]'   # [failing_count: N] or [failing: N]
-            rf'|\s*\([^)]*?(\d+)\s+failing'             # (... N failing point...)
-            rf'|\s*\|\s*(\d+)'                           # | N (pipe-separated)
+            rf'\s*\[failing(?:_count)?:\s*(\d+)\]'           # [failing_count: N] or [failing: N]
+            rf'|\s*\([^)]*?failing\s*=\s*(\d+)[^)]*\)'        # (...failing=N...) — Step 6 RPT format
+            rf'|\s*\([^)]*?(\d+)\s+failing'                   # (... N failing point...)
+            rf'|\s*\|\s*(\d+)'                                # | N (pipe-separated)
             rf')?',
             text
         )
         if m:
             status = m.group(1)
-            raw_count = m.group(2) or m.group(3) or m.group(4)  # groups: [N], (N failing, | N
+            raw_count = m.group(2) or m.group(3) or m.group(4) or m.group(5)
             count = int(raw_count) if raw_count else (0 if status == "PASS" else "—")
             result["per_target"][tgt] = {"status": status, "failing_count": count}
     return result if result["per_target"] else None
