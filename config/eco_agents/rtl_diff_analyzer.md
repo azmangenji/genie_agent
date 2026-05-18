@@ -63,6 +63,26 @@ When a `wire_swap` diff adds an extra `& ~<NewSignal>` term to an existing expre
 
 Classify as `and_term` (NOT `wire_swap`). `old_token` = the final output net of the existing expression, `new_token` = `<NewSignal>` (the new term being added). The applier will: find the existing gate driving the output net, insert a new AND/NAND gate in series with `~<NewSignal>` as additional input.
 
+**MANDATORY — Record old driver polarity for `and_term` chains:**
+
+After FM resolves the gate driving `old_token`, record in the change entry:
+```json
+"old_driver_cell_type": "<cell_type_from_FM>",
+"old_driver_inverting": true|false
+```
+`old_driver_inverting` = true if the cell type starts with an inverting prefix (AOI, OAI, NOR, NAND, INV, NR, ND, IND, XNOR, XNR).
+
+**Gate chain selection rule (critical — wrong polarity caused 3000 FM failures in real run):**
+
+The chain must compute: `output = old_expression & ~new_term`. The renamed old driver output carries either `~old_expression` (inverting driver) or `old_expression` (non-inverting driver). Choose the final gate accordingly:
+
+| Old driver | Renamed output value | Correct final gate (no extra INV) | With extra INV first |
+|---|---|---|---|
+| **Inverting** (AOI/NOR/NAND/INV) | `~old_expression` | `NOR2(renamed, new_term)` → `old & ~new` ✓ | INV then `INR2(old, new_term)` → `old & ~new` ✓ |
+| **Non-inverting** (AND/OR/BUF) | `old_expression` | `INR2(renamed, new_term)` → `old & ~new` ✓ | — |
+
+**Common mistake:** For an inverting old driver, inserting `INV` first (to get `old_expression`) and then using `NOR2` gives `~(old | new) = ~old & ~new` — **WRONG**. After an INV the gate must switch from NOR2 to INR2.
+
 **CRITICAL — `and_term` vs `wire_swap + intermediate_net_insertion`:**  
 `and_term` is ONLY for simple single-gate gating (one new term added to one existing expression). If the RTL diff shows **multiple new conditions prepended before the old expression as a default fallback** (priority chain pattern: `new_cond_1 ? val1 : new_cond_2 ? val2 : <old_expr>`), this is **NOT `and_term`** — it MUST be classified as `wire_swap` with `fallback_strategy: "intermediate_net_insertion"`. The key test: if the `new_condition_gate_chain` requires MUX2 gates, it is `wire_swap + intermediate_net_insertion`, not `and_term`. Misclassifying as `and_term` causes the studier to do a simple gate modification and skip the full MUX cascade — the ECO logic is never applied.
 
