@@ -2141,6 +2141,69 @@ def main():
                     f"polarity-correct wire (e.g. the DFF Q output directly, "
                     f"or FM's resolved pin location's actual wire).")
 
+    # ── FM cell/pin format check (GAP-1) ────────────────────────────────────
+    # FM returns i:/FMWORK.../<cell>/<pin> — the studier must convert to the
+    # actual wire name by grepping the netlist. Any port_connections value that
+    # looks like "<CELL>/<pin>" is an FM location address, not a wire name —
+    # the applier will grep for it in the netlist, find nothing, and SKIP the gate.
+    import re as _re
+    _fm_pin_re = _re.compile(r'^[A-Za-z][A-Za-z0-9_]+/[A-Za-z0-9]+$')
+    _skip_prefixes = ("1'b", "1'B", "n_eco_", "ECO_", "PENDING", "SEQMAP",
+                      "FxPrePlace_", "FxPlace_", "FxOptCts_", "FxCts_",
+                      "dftopt", "tmp_net", "copt_net", "PCECO_")
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            inst = e.get('instance_name', '?')
+            for pc_label, pc_dict in [
+                ('port_connections', e.get('port_connections') or {}),
+                *[(f'port_connections_per_stage[{stage}]',
+                   (e.get('port_connections_per_stage') or {}).get(stage) or {})],
+            ]:
+                for pin, net in pc_dict.items():
+                    if pin in ('Z', 'ZN', 'Q', 'QN', 'CO', 'Y', 'S'): continue
+                    if not isinstance(net, str): continue
+                    if any(net.startswith(p) for p in _skip_prefixes): continue
+                    if net.startswith("1'"): continue
+                    if _fm_pin_re.match(net):
+                        issues.append(
+                            f"CRITICAL/GAP1-FM-PIN-FORMAT: {stage} {inst} {pc_label}.{pin} = "
+                            f"'{net}' is an FM cell/pin location address, not a wire name. "
+                            f"Apply GAP-1: grep '<cell>' in PreEco/{stage}.v.gz, read "
+                            f"'.<pin>(<actual_wire>)' and use <actual_wire> instead. "
+                            f"Applier will SKIP this gate because it cannot find this string "
+                            f"as a wire in the netlist.")
+
+    # ── PENDING_FM_RESOLUTION in study port connections ─────────────────────
+    # All PENDING_FM_RESOLUTION placeholders must be resolved before study exits.
+    # An unresolved PENDING in port_connections means the gate will be inserted
+    # with a missing/floating pin, causing FM elaboration errors or wrong function.
+    for stage in ('Synthesize', 'PrePlace', 'Route'):
+        for e in study.get(stage, []):
+            inst = e.get('instance_name', '?')
+            change_type = e.get('change_type', '')
+            if change_type in ('rewire', 'port_declaration', 'port_connection',
+                               'port_promotion', 'undo_instance'):
+                continue  # these don't have input port_connections to check
+            for pc_label, pc_dict in [
+                ('port_connections', e.get('port_connections') or {}),
+                *[(f'port_connections_per_stage[{s}]',
+                   (e.get('port_connections_per_stage') or {}).get(s) or {})
+                  for s in ('Synthesize', 'PrePlace', 'Route')],
+            ]:
+                for pin, net in pc_dict.items():
+                    if pin in ('Z', 'ZN', 'Q', 'QN', 'CO', 'Y', 'S'): continue
+                    if not isinstance(net, str): continue
+                    if 'PENDING_FM_RESOLUTION' in net:
+                        sig = net.replace('PENDING_FM_RESOLUTION:', '').replace(
+                              'PENDING_FM_RESOLUTION', '').strip(':')
+                        issues.append(
+                            f"CRITICAL/PENDING-UNRESOLVED: {stage} {inst} {pc_label}.{pin} = "
+                            f"PENDING_FM_RESOLUTION:{sig} — not resolved before study exit. "
+                            f"Apply Priority 3 structural trace: find Synth driver of the "
+                            f"resolved Synth net, grep for its input net (e.g. ctmn_*) in "
+                            f"PreEco PP/Route to find FxPrePlace_*/tmp_net equivalent. "
+                            f"A floating pin on an inserted gate causes FM elaboration error.")
+
     # ── Stage Fallback rewire cone check ─────────────────────────────────────
     # When a rewire entry used STAGE_FALLBACK, the verifier grepped for old_net
     # and may have picked the wrong cell (e.g. a cell not in the target DFF cone).
