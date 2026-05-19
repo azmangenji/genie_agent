@@ -2253,9 +2253,11 @@ def main():
                         issues.append(
                             f"CRITICAL/NET-ABSENT-IN-STAGE: {stage_check} {inst}.{pin} = "
                             f"'{net}' has 0 occurrences in PreEco {stage_check} — wrong net. "
-                            f"Structural trace found an unrelated cell. Re-run Priority 3 "
-                            f"trace starting from the correct Synth driver of the resolved "
-                            f"Synth net, verify the Route/PP equivalent actually exists.")
+                            f"If backward structural trace failed (entire driver cone absent "
+                            f"in {stage_check} due to PD restructuring), switch to forward "
+                            f"consumer search: find cells in Synth PreEco that consume the "
+                            f"resolved Synth net, locate those consumer cells in {stage_check}, "
+                            f"read the net on the same input pin — that is the P&R equivalent.")
                 except Exception:
                     pass
 

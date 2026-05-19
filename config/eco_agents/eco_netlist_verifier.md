@@ -599,7 +599,19 @@ For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
    - If driver cell found → read its output net → **verify the output net exists in the stage** (`zgrep -cw "<output_net>" PreEco/<stage>.v.gz` ≥ 1) → use as P&R alias ✓. If the output net has 0 occurrences → the driver cell was found but its output was renamed — search its input net's equivalent instead.
    - If driver cell **absent** in P&R (P&R renamed/merged it) → **search one level deeper**:
      find driver_cell's input nets in Synthesize → find their drivers → search those upstream cells in P&R. **After each step, verify the candidate output net actually exists in the stage** — accept only a net with ≥ 1 occurrences. Never accept a net that has 0 occurrences in the target stage.
-3. **Still not found after upstream search** → mark `UNRESOLVABLE:<signal>`. **Do NOT use `1'b0` as a constant** — substituting a constant changes the ECO logic and may be architecturally wrong (P&R may have optimized away the cell for reasons unrelated to the signal being constant).
+   - If the entire backward cone is absent (all driver cells at every level are absent in P&R — PD completely restructured the logic) → **switch to forward consumer search**:
+     ```bash
+     # Find cells in Synth PreEco that consume the resolved net (forward direction)
+     grep "( <synth_net> )" /tmp/eco_verify_<TAG>_Synthesize.v | grep -v "\.Z[N]\?\s*(" | head -5
+     # For each consumer cell and its input pin:
+     consumer_cell = extract_instance_name(that_line)
+     input_pin     = extract_pin_name(that_line)   # e.g. .A2, .B1
+     # Find consumer_cell in P&R stage
+     grep -cw "<consumer_cell>" /tmp/eco_verify_<TAG>_<Stage>.v
+     # If found → read the net on the same input_pin → that is the P&R equivalent
+     ```
+     Rationale: consumers of the signal are more likely to survive P&R renaming than the signal's own driver chain. The consumer's input pin in P&R carries the P&R-equivalent net.
+3. **Still not found after both backward and forward search** → mark `UNRESOLVABLE:<signal>`. **Do NOT use `1'b0` as a constant** — substituting a constant changes the ECO logic and may be architecturally wrong (P&R may have optimized away the cell for reasons unrelated to the signal being constant).
 
 **CRITICAL: Do NOT leave `PENDING_FM_RESOLUTION` after a rerun returned FM-036.** Resolve via structural trace or mark `UNRESOLVABLE` — never leave as PENDING.
 
