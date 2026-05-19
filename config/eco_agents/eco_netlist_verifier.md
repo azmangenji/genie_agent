@@ -600,17 +600,33 @@ For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
    - If driver cell **absent** in P&R (P&R renamed/merged it) → **search one level deeper**:
      find driver_cell's input nets in Synthesize → find their drivers → search those upstream cells in P&R. **After each step, verify the candidate output net actually exists in the stage** — accept only a net with ≥ 1 occurrences. Never accept a net that has 0 occurrences in the target stage.
    - If the entire backward cone is absent (all driver cells at every level are absent in P&R — PD completely restructured the logic) → **switch to forward consumer search**:
+
+     **Step F1 — Find consumers of the Synth resolved net:**
      ```bash
-     # Find cells in Synth PreEco that consume the resolved net (forward direction)
-     grep "( <synth_net> )" /tmp/eco_verify_<TAG>_Synthesize.v | grep -v "\.Z[N]\?\s*(" | head -5
-     # For each consumer cell and its input pin:
-     consumer_cell = extract_instance_name(that_line)
-     input_pin     = extract_pin_name(that_line)   # e.g. .A2, .B1
-     # Find consumer_cell in P&R stage
-     grep -cw "<consumer_cell>" /tmp/eco_verify_<TAG>_<Stage>.v
-     # If found → read the net on the same input_pin → that is the P&R equivalent
+     # Find input-pin usages of the resolved net in Synth (not its output — exclude .ZN/.Z/.Q lines)
+     grep -n "\( <synth_net> \)" /tmp/eco_verify_<TAG>_Synthesize.v \
+       | grep -v "\.ZN\|\.Z\s*(\|\.Q\s*(" | head -5
+     # Each result line looks like:
+     #   CELLTYPE CONSUMER_CELL ( ... .<INPUT_PIN> ( <synth_net> ) ... )
+     # Extract CONSUMER_CELL name and INPUT_PIN name from each result.
      ```
-     Rationale: consumers of the signal are more likely to survive P&R renaming than the signal's own driver chain. The consumer's input pin in P&R carries the P&R-equivalent net.
+
+     **Step F2 — Search each consumer cell in P&R stage:**
+     ```bash
+     grep -n "<CONSUMER_CELL>" /tmp/eco_verify_<TAG>_<Stage>.v | head -3
+     # If found → the same cell exists in P&R. Read the full instantiation block.
+     ```
+
+     **Step F3 — Read the net on the same input pin in P&R:**
+     ```bash
+     # From the consumer cell block in P&R, read .<INPUT_PIN>(<actual_net>)
+     grep -A20 "<CONSUMER_CELL>" /tmp/eco_verify_<TAG>_<Stage>.v \
+       | grep "\.<INPUT_PIN>\s*(" | head -1
+     # The net inside the parentheses is the P&R equivalent of <synth_net>.
+     # Verify it exists: grep -cw "<actual_net>" /tmp/eco_verify_<TAG>_<Stage>.v ≥ 1
+     ```
+
+     Try multiple consumers until one is found in P&R. Accept the first net that exists in the stage.
 3. **Still not found after both backward and forward search** → mark `UNRESOLVABLE:<signal>`. **Do NOT use `1'b0` as a constant** — substituting a constant changes the ECO logic and may be architecturally wrong (P&R may have optimized away the cell for reasons unrelated to the signal being constant).
 
 **CRITICAL: Do NOT leave `PENDING_FM_RESOLUTION` after a rerun returned FM-036.** Resolve via structural trace or mark `UNRESOLVABLE` — never leave as PENDING.
