@@ -583,23 +583,20 @@ If found → set `driven_by_submodule: true`, `driver_type: "submodule_bus_outpu
 For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
 
 1. **Check condition_input_resolutions first** — read `<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if it exists. For any entry whose `original_signal` matches the PENDING signal, immediately set `port_connections_per_stage[Synthesize][pin] = resolved_gate_level_net`. This avoids waiting for a re_study round. If file absent, fall through to step 2.
-2. **For P&R stages** (not Synthesize): do NOT use the RTL signal name — use Priority 3 structural trace from the Synthesize-confirmed net:
+2. **For P&R stages** (not Synthesize): trace each PENDING_FM_RESOLUTION signal **independently** from its own Synth driver chain. **NEVER copy or reuse the P&R result from a different PENDING_FM_RESOLUTION signal** — different synthesis-internal signals (e.g. phfnn_2405075 and N2408127) come from different driver cells and resolve to different P&R nets.
+
    ```bash
-   # Find driver cell of synth_net in Synthesize PreEco
+   # For EACH pending signal, independently:
+   # Find driver cell of THIS signal's synth_net in Synthesize PreEco
    grep -n "\.<output_pin>( <synth_net> )" /tmp/eco_verify_<TAG>_Synthesize.v | head -1
    driver_cell = extract_instance_name(that_line)
 
-   # Search driver_cell in P&R stage
+   # Search THIS driver_cell in P&R stage
    grep -cw "<driver_cell>" /tmp/eco_verify_<TAG>_<Stage>.v
    ```
    - If driver cell found → read its output net → use as P&R alias ✓
    - If driver cell **absent** in P&R (P&R renamed/merged it) → **search one level deeper**:
-     ```bash
-     # Find what drives driver_cell's inputs in Synthesize
-     # grep driver_cell's input pins in Synthesize → get input nets → find their drivers
-     # Search those upstream driver cells in P&R → read their outputs
-     ```
-     This handles P&R cell renaming where the instance itself is gone but its logical source still exists under a different name.
+     find driver_cell's input nets in Synthesize → find their drivers → search those upstream cells in P&R
 3. **Still not found after upstream search** → mark `UNRESOLVABLE:<signal>`. **Do NOT use `1'b0` as a constant** — substituting a constant changes the ECO logic and may be architecturally wrong (P&R may have optimized away the cell for reasons unrelated to the signal being constant).
 
 **CRITICAL: Do NOT leave `PENDING_FM_RESOLUTION` after a rerun returned FM-036.** Resolve via structural trace or mark `UNRESOLVABLE` — never leave as PENDING.

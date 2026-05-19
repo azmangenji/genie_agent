@@ -2141,6 +2141,41 @@ def main():
                     f"polarity-correct wire (e.g. the DFF Q output directly, "
                     f"or FM's resolved pin location's actual wire).")
 
+    # ── port_declaration output driver check ─────────────────────────────────
+    # Hierarchical netlists use port_declaration(output) instead of port_promotion.
+    # Same driver requirement: if the signal has no driver in PreEco Synthesize AND
+    # no new_logic_gate in the study drives it, the output port is undriven → FM fail.
+    import subprocess as _sp2
+    _pre_synth_gz2 = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz') \
+                     if args.ref_dir else ''
+    for stage in ('Synthesize',):
+        gate_output_nets_all = {e.get('output_net', '') for e in study.get(stage, [])
+                                if e.get('change_type') in ('new_logic_gate', 'new_logic')}
+        for e in study.get(stage, []):
+            if e.get('change_type') != 'port_declaration':
+                continue
+            if e.get('declaration_type') != 'output':
+                continue
+            sig = e.get('signal_name') or e.get('new_token') or '?'
+            if sig in gate_output_nets_all:
+                continue  # driven by ECO gate ✓
+            has_preeco_driver = False
+            if _pre_synth_gz2 and os.path.exists(_pre_synth_gz2):
+                try:
+                    r = _sp2.run(
+                        f'zgrep -cE "\\.({"{"}ZN|Z|Q{"}"})\\s*\\(\\s*{sig}\\s*\\)" {_pre_synth_gz2}',
+                        shell=True, capture_output=True, text=True, timeout=30)
+                    has_preeco_driver = int(r.stdout.strip() or 0) > 0
+                except Exception:
+                    pass
+            if not has_preeco_driver:
+                issues.append(
+                    f"CRITICAL/PORT-DECL-NO-DRIVER: port_declaration(output) for '{sig}' "
+                    f"in module '{e.get('module_name','?')}' — no driver cell in PreEco "
+                    f"Synthesize and no new_logic_gate in study drives it. "
+                    f"Emit INV+INV buffer chain entries (same as step 0i for port_promotion). "
+                    f"Undriven output port → FM globally unmatched → cascading failures.")
+
     # ── port_promotion buffer chain check ────────────────────────────────────
     # Every port_promotion must result in the promoted signal being driven — either
     # by an existing driver cell in PreEco Synthesize OR by a new_logic_gate in

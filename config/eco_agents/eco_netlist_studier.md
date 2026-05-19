@@ -486,6 +486,7 @@ On (A)+(B) miss, emit `cell_name_per_stage[stage]: null` and `confirmed_per_stag
 2. Detect netlist type: `grep -c "^module " /tmp/eco_study_<TAG>_Synthesize.v` — count > 1 = hierarchical
 3. **Implicit wire check:** if `context_line` has only `wire` AND ≥ 2 `port_connection` changes reference it → skip port_declaration, set `no_wire_decl_needed: true` on those port_connection entries, note in entry.
 4. If hierarchical: validate module name — `grep -c "^module <module_name>\b"`. If 0 → try `<module_name>_0`. Not found → `confirmed: false`.
+5. **Output port driver check (MANDATORY when `declaration_type=output`):** verify the signal has a driver cell in the PreEco Synthesize module scope: `grep -cE "\.(ZN|Z|Q)\s*\(\s*<signal_name>\s*\)" /tmp/eco_study_<TAG>_Synthesize.v`. If 0 (no driver) → the signal is undriven after port_declaration — emit INV+INV buffer chain entries exactly as step 0i does for `port_promotion` with `needs_buffer_chain: true`. Without a driver the output port is undriven → FM globally unmatched.
 
 ### 0h — Process `port_connection` changes → `port_connection` study entries
 
