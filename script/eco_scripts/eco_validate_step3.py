@@ -2211,6 +2211,39 @@ def main():
                     f"entries directly into study JSON (not via verifier). Undriven output "
                     f"port → FM globally unmatched → cascading failures.")
 
+    # ── rewire cell_name_per_stage existence check ────────────────────────────
+    # For each rewire entry, verify the cell named in cell_name_per_stage exists
+    # in that stage's PreEco netlist. If absent, the applier will SKIP the rewire
+    # in that stage — leaving the original driver unrenewed → double driver or
+    # undriven companion net.
+    for stage_check in ('Synthesize', 'PrePlace', 'Route'):
+        gz = _gz.get(stage_check, '')
+        if not gz or not os.path.exists(gz):
+            continue
+        for e in study.get(stage_check, []):
+            if e.get('change_type') != 'rewire':
+                continue
+            cpst = e.get('cell_name_per_stage') or {}
+            cell_for_stage = cpst.get(stage_check) or e.get('cell_name', '')
+            if not cell_for_stage:
+                continue
+            try:
+                import subprocess as _sp4
+                r = _sp4.run(f'zgrep -cw "{cell_for_stage}" {gz}',
+                             shell=True, capture_output=True, text=True, timeout=30)
+                cnt = int(r.stdout.strip() or 0)
+                if cnt == 0:
+                    issues.append(
+                        f"CRITICAL/REWIRE-CELL-ABSENT: {stage_check} rewire "
+                        f"'{e.get('old_net','')}→{e.get('new_net','')}' uses cell "
+                        f"'{cell_for_stage}' which has 0 occurrences in PreEco "
+                        f"{stage_check}. Applier will SKIP this rewire — original driver "
+                        f"not renamed → double driver or undriven companion net. "
+                        f"Set correct cell_name_per_stage for {stage_check} from the "
+                        f"FM rename_map or Stage Fallback.")
+            except Exception:
+                pass
+
     # ── per-stage net existence check ────────────────────────────────────────
     # Every resolved net in port_connections_per_stage must exist in that stage's
     # PreEco netlist. A net that resolves to 0 occurrences is a wrong net — the
