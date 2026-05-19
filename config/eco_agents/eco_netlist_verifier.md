@@ -242,6 +242,21 @@ if len(set(entry['pin_per_stage'].values())) > 1:
 
 eco_applier reads `pin_per_stage` (or `per_stage_pin`) to use the correct pin name per stage.
 
+**MANDATORY — `cell_name_per_stage` resolution for every rewire entry:**
+
+The verifier MUST populate `cell_name_per_stage` for all 3 stages using the rename_map and step2 fenets rpt. **Never default PP/Route to the Synth cell name** — Synth cells are frequently renamed or absent in P&R stages.
+
+Resolution priority per stage:
+1. **Read rename_map** (`<TAG>_eco_fenets_rename_map.json`) — look up `<scope>/<old_token>` and use the per-stage cell extracted from the qualifying impl result
+2. **Read step2 fenets rpt** "Qualifying cells passed to Step 3" section — this explicitly lists the per-stage driver cell for each net
+3. **Stage Fallback (GAP-5)** — grep the stage PreEco for the old_token and find its driver cell
+
+After setting each stage's cell, verify it exists:
+```bash
+zgrep -cw "<cell_name>" PreEco/<stage>.v.gz  # must be ≥ 1
+```
+If 0 → wrong cell, re-run resolution. Do NOT write a cell that has 0 occurrences in the target stage.
+
 **Scan alias rejection — MANDATORY before accepting any resolved net:**
 
 A resolved net is a scan alias if it matches tool-generated DFT naming conventions AND has no functional driver in PreEco Synthesize. Check both conditions — do NOT reject on name pattern alone (a user-named signal could match):
