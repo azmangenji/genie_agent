@@ -2478,13 +2478,15 @@ def main():
                     if pin in ('Z', 'ZN', 'Q', 'QN', 'CO', 'Y', 'S'): continue
                     if not isinstance(net, str): continue
                     if ('PENDING_FM_RESOLUTION' in net or net.startswith('UNRESOLVABLE')
-                            or net.startswith('MODE_H_ROUTE_SKIP')):
+                            or net.startswith('MODE_H_ROUTE_SKIP')
+                            or (net.startswith('NEEDS_NAMED_WIRE') and ':' in net)):
                         sig = (net.replace('PENDING_FM_RESOLUTION:', '')
                                   .replace('PENDING_FM_RESOLUTION', '')
                                   .replace('UNRESOLVABLE:', '')
                                   .replace('MODE_H_ROUTE_SKIP:', '').strip(':'))
                         kind = ('UNRESOLVABLE' if net.startswith('UNRESOLVABLE')
                                 else 'MODE_H_ROUTE_SKIP' if net.startswith('MODE_H_ROUTE_SKIP')
+                                else 'NEEDS_NAMED_WIRE' if net.startswith('NEEDS_NAMED_WIRE')
                                 else 'PENDING_FM_RESOLUTION')
                         fix = ("Use forward consumer search (eco_netlist_verifier.md Check 12 F1-F3): "
                                "find cells in Synth that consume the resolved net, locate them in "
