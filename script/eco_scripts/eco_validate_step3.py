@@ -2211,6 +2211,87 @@ def main():
                     f"entries directly into study JSON (not via verifier). Undriven output "
                     f"port → FM globally unmatched → cascading failures.")
 
+    # ── per-stage net existence check ────────────────────────────────────────
+    # Every resolved net in port_connections_per_stage must exist in that stage's
+    # PreEco netlist. A net that resolves to 0 occurrences is a wrong net — the
+    # structural trace found an unrelated cell. The validator must catch this before
+    # Apply silently skips or inserts broken gates.
+    _gz = {s: os.path.join(args.ref_dir, 'data', 'PreEco', f'{s}.v.gz')
+           for s in ('Synthesize', 'PrePlace', 'Route')} if args.ref_dir else {}
+    _skip_net_prefixes = ("1'b", "n_eco_", "ECO_", "PENDING", "SEQMAP", "NEEDS_NAMED_WIRE")
+    _skip_net_suffixes = ("_orig",)
+    # New ECO ports declared in this ECO — absent in PreEco by design, skip existence check
+    _new_eco_ports = {c.get('new_token','') or c.get('signal_name','')
+                      for c in rtl_diff.get('changes',[])
+                      if c.get('change_type') in ('new_port','port_declaration','port_promotion')}
+    for stage_check in ('Synthesize', 'PrePlace', 'Route'):
+        gz = _gz.get(stage_check, '')
+        if not gz or not os.path.exists(gz):
+            continue
+        for e in study.get(stage_check, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            inst = e.get('instance_name', '?')
+            pps = e.get('port_connections_per_stage') or {}
+            pc_for_stage = pps.get(stage_check) or {}
+            ifnp = e.get('input_from_new_port', '')  # new ECO port — doesn't exist in PreEco
+            for pin, net in pc_for_stage.items():
+                if not isinstance(net, str): continue
+                if pin in ('ZN', 'Z', 'Q', 'CO', 'Y', 'S'): continue
+                if any(net.startswith(p) for p in _skip_net_prefixes): continue
+                if any(net.endswith(s) for s in _skip_net_suffixes): continue
+                if net.startswith("1'"): continue
+                if net == ifnp: continue  # new ECO port (input_from_new_port) — absent in PreEco by design
+                if net.split('[')[0] in _new_eco_ports: continue  # new ECO port from rtl_diff
+                base = net.split('[')[0]
+                try:
+                    import subprocess as _sp3
+                    r = _sp3.run(f'zgrep -cw "{base}" {gz}',
+                                 shell=True, capture_output=True, text=True, timeout=30)
+                    cnt = int(r.stdout.strip() or 0)
+                    if cnt == 0:
+                        issues.append(
+                            f"CRITICAL/NET-ABSENT-IN-STAGE: {stage_check} {inst}.{pin} = "
+                            f"'{net}' has 0 occurrences in PreEco {stage_check} — wrong net. "
+                            f"Structural trace found an unrelated cell. Re-run Priority 3 "
+                            f"trace starting from the correct Synth driver of the resolved "
+                            f"Synth net, verify the Route/PP equivalent actually exists.")
+                except Exception:
+                    pass
+
+    # ── condition input identity check ───────────────────────────────────────
+    # When a gate has multiple condition inputs (from different PENDING_FM_RESOLUTION signals)
+    # that resolved to DIFFERENT nets in Synthesize, they must also resolve to DIFFERENT
+    # nets in PP/Route. If they collapse to the same PP/Route net, the structural trace
+    # found the wrong cell for one of them.
+    for e in study.get('Synthesize', []):
+        if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+            continue
+        pps = e.get('port_connections_per_stage') or {}
+        synth_pins = {pin: net for pin, net in (pps.get('Synthesize') or {}).items()
+                      if pin not in ('ZN', 'Z', 'Q', 'CO', 'Y', 'S')
+                      and isinstance(net, str)
+                      and not any(net.startswith(p) for p in _skip_net_prefixes)
+                      and not net.startswith("1'")}
+        if len(set(synth_pins.values())) <= 1:
+            continue  # all same or only one pin — no identity check needed
+        for stage_id in ('PrePlace', 'Route'):
+            stage_pins = {pin: net for pin, net in (pps.get(stage_id) or {}).items()
+                          if pin in synth_pins}
+            if len(stage_pins) < 2:
+                continue
+            nets = list(stage_pins.values())
+            if len(set(nets)) < len(nets):  # duplicates exist
+                inst = e.get('instance_name', '?')
+                dups = [n for n in nets if nets.count(n) > 1]
+                issues.append(
+                    f"CRITICAL/CONDITION-INPUT-COLLAPSED: {stage_id} {inst} — "
+                    f"multiple condition inputs collapsed to same net {list(set(dups))}. "
+                    f"In Synthesize they resolve to different nets but in {stage_id} they "
+                    f"are identical — structural trace found wrong P&R equivalent for one. "
+                    f"Each PENDING_FM_RESOLUTION signal must be traced independently "
+                    f"(eco_netlist_verifier.md Check 12).")
+
     # ── and_term companion rewire check ──────────────────────────────────────
     # Every new_logic_gate with an input ending in _orig (renamed intermediate net)
     # must have a companion rewire entry that creates that net. Without the rewire
