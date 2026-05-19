@@ -73,7 +73,7 @@ def read_condition_resolutions(step2_rpt):
 # ── per-issue fixers ──────────────────────────────────────────────────────────
 
 def fix_andterm_wrong_polarity(study, issue_text, raw_rpts):
-    """ANDTERM-WRONG-POLARITY: flip gate function based on FM polarity."""
+    """ANDTERM-WRONG-POLARITY: flip gate function and remap pins based on FM polarity."""
     inst_m = re.search(r"'(eco_\w+)'\s+uses\s+(NOR2|INR2)\s+but.*\(([+\-])\)", issue_text)
     if not inst_m:
         return False
@@ -81,15 +81,26 @@ def fix_andterm_wrong_polarity(study, issue_text, raw_rpts):
     correct = 'INR2' if fm_pol == '+' else 'NOR2'
     if wrong == correct:
         return False
-    # INR2 cell: A1&~B1 / NOR2 cell: ~(A1|A2)
     cell_map = {'INR2': 'INR2D1BWP136P5M156H3P48CPDLVT',
                 'NOR2': 'NR2D1SPG1AMDBWP136P5M156H3P48CPDLVT'}
+    # Pin remapping: NOR2 uses A2; INR2 uses B1 for the second input
+    pin_remap = {}
+    if wrong == 'NOR2' and correct == 'INR2':
+        pin_remap = {'A2': 'B1'}  # NOR2.A2 → INR2.B1
+    elif wrong == 'INR2' and correct == 'NOR2':
+        pin_remap = {'B1': 'A2'}  # INR2.B1 → NOR2.A2
     fixed = 0
     for stage in STAGES:
         for e in study.get(stage, []):
             if e.get('instance_name') == inst and e.get('gate_function') == wrong:
                 e['gate_function'] = correct
                 e['cell_type'] = cell_map.get(correct, correct)
+                # Remap pins in port_connections and port_connections_per_stage
+                for pc in [e.get('port_connections') or {}] + \
+                          list((e.get('port_connections_per_stage') or {}).values()):
+                    for old_pin, new_pin in pin_remap.items():
+                        if old_pin in pc:
+                            pc[new_pin] = pc.pop(old_pin)
                 fixed += 1
     return fixed > 0
 

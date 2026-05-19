@@ -2533,6 +2533,43 @@ def main():
                     f"the Synth cell's output net, trace 1 hop forward to the consumer, "
                     f"then back to find the correct {stage} cell.")
 
+    # ── cell pin name vs library check ────────────────────────────────────────
+    # Verify that pin names used in port_connections actually exist on the cell type.
+    # Common mismatch: NOR2 uses A2; INR2 uses B1. Flipping gate without remapping
+    # pins causes FE-LINK-7 ABORT in FM (pin has no corresponding port on library cell).
+    _pin_map = {
+        'INR2': {'inputs': ('A1', 'B1'), 'outputs': ('ZN',)},
+        'NOR2': {'inputs': ('A1', 'A2'), 'outputs': ('ZN',)},
+        'IND2': {'inputs': ('A1', 'B1'), 'outputs': ('ZN',)},
+        'AND2': {'inputs': ('A1', 'A2'), 'outputs': ('Z',)},
+        'AN2':  {'inputs': ('A1', 'A2'), 'outputs': ('Z',)},
+        'NR2':  {'inputs': ('A1', 'A2'), 'outputs': ('ZN',)},
+        'INV':  {'inputs': ('I',),        'outputs': ('ZN',)},
+        'OR3':  {'inputs': ('A1', 'A2', 'A3'), 'outputs': ('Z',)},
+        'OA21': {'inputs': ('A1', 'A2', 'B'),  'outputs': ('Z',)},
+        'OA12': {'inputs': ('A1', 'A2', 'B'),  'outputs': ('Z',)},
+    }
+    for stage in ('Synthesize',):
+        for e in study.get(stage, []):
+            if e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            fn = (e.get('gate_function') or '').upper()
+            # Find matching library entry (prefix match)
+            lib_entry = next((v for k, v in _pin_map.items() if fn.startswith(k)), None)
+            if not lib_entry:
+                continue
+            pcs = e.get('port_connections') or {}
+            inst = e.get('instance_name', '?')
+            for pin in pcs:
+                if pin in lib_entry['outputs']:
+                    continue  # output pin — skip
+                if pin not in lib_entry['inputs']:
+                    issues.append(
+                        f"CRITICAL/CELL-PIN-MISMATCH: {stage} {inst} uses pin '{pin}' "
+                        f"but {fn} cell only has inputs {lib_entry['inputs']}. "
+                        f"Likely gate function was changed without remapping pins "
+                        f"(e.g. NOR2.A2 → INR2.B1). Fix: rename '{pin}' to correct pin name.")
+
     # ── and_term FM-polarity gate function check ──────────────────────────────
     # NOR2 vs INR2 must match FM raw rpt polarity (+/-), not cell-type prefix estimate.
     # FM(+) → renamed=+old → INR2.  FM(-) → renamed=~old → NOR2.
