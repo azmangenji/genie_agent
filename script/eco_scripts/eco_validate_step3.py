@@ -2533,6 +2533,56 @@ def main():
                     f"the Synth cell's output net, trace 1 hop forward to the consumer, "
                     f"then back to find the correct {stage} cell.")
 
+    # ── and_term FM-polarity gate function check ──────────────────────────────
+    # NOR2 vs INR2 must match FM raw rpt polarity (+/-), not cell-type prefix estimate.
+    # FM(+) → renamed=+old → INR2.  FM(-) → renamed=~old → NOR2.
+    _step2_dir = os.path.dirname(args.study)
+    import glob as _glob
+    _raw_rpts = _glob.glob(os.path.join(_step2_dir, '*_find_equivalent_nets_raw*.rpt'))
+    _raw_text = ''
+    for _rp in sorted(_raw_rpts):
+        try:
+            _raw_text += open(_rp).read()
+        except Exception:
+            pass
+    if _raw_text:
+        for _c in rtl_diff.get('changes', []):
+            if _c.get('change_type') != 'and_term':
+                continue
+            _old_tok = _c.get('old_token', '')
+            # Find old driver cell instance from study rewire entries
+            _cell_inst = ''
+            for _e in study.get('Synthesize', []):
+                if _e.get('change_type') == 'rewire' and _e.get('old_net') == _old_tok:
+                    _cell_inst = (_e.get('cell_name_per_stage') or {}).get('Synthesize') or \
+                                  _e.get('cell_name', '')
+                    break
+            if not _cell_inst:
+                continue
+            # Find polarity: "Impl  Net  +/- i:/.../CELL_INST/ZN"
+            import re as _re_pol
+            _pol_m = _re_pol.search(
+                r'Impl\s+Net\s+([+\-])\s+i:[^\n]+/' + _re_pol.escape(_cell_inst) + r'/',
+                _raw_text)
+            if not _pol_m:
+                continue
+            _fm_pol = _pol_m.group(1)
+            _expected = 'INR2' if _fm_pol == '+' else 'NOR2'
+            # Find and_term gate entry in study
+            for _e in study.get('Synthesize', []):
+                if _e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                    continue
+                if _e.get('output_net') != _old_tok:
+                    continue
+                _actual = _e.get('gate_function', '')
+                if _actual and _actual != _expected:
+                    issues.append(
+                        f"CRITICAL/ANDTERM-WRONG-POLARITY: '{_e.get('instance_name','?')}' "
+                        f"uses {_actual} but FM raw rpt shows ({_fm_pol}) polarity for "
+                        f"'{_cell_inst}' → renamed=({'+'  if _fm_pol=='+' else '~'}old) → "
+                        f"correct gate is {_expected}. "
+                        f"Use FM raw rpt polarity, not cell-type prefix estimate.")
+
     # ── and_term gate chain boolean function check ────────────────────────────
     # For each and_term change, find its gate chain in the Synthesize study entries
     # and verify the boolean function = old_expression & ~new_term.
