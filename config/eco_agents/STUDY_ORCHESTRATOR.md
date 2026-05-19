@@ -747,9 +747,41 @@ python3 script/eco_scripts/eco_validate_step3.py \
     --tag      <TAG> \
     --output   data/<TAG>_eco_validate_step3.json
 ```
-**HARD GATE.** Any `passed: false` from Step 3 validator BLOCKS Phase A handoff — every issue (HIGH or CRITICAL) must be resolved before writing `phase_a_handoff.json`. Do NOT proceed with HIGH-only issues unaddressed; HIGH severity is non-negotiable for this gate. If issues cannot be resolved after re-spawning eco_netlist_studier with the appropriate hint, write `phase_a_handoff.json` with `phase_a_status: "BLOCKED_STEP3_VALIDATOR"` and EXIT.
+**CATCH-AND-FIX LOOP (max 3 iterations):** If validator returns `passed: false`, run `eco_study_fixer.py` to auto-apply deterministic fixes, then re-validate:
 
-If exit code = 1 → issues found → fix before proceeding. Read `data/<TAG>_eco_validate_step3.json` for specific issues. Common fixes:
+```bash
+for i in 1 2 3; do
+  # Run validator
+  python3 script/eco_scripts/eco_validate_step3.py \
+      --study data/<TAG>_eco_preeco_study.json \
+      --rtl-diff data/<TAG>_eco_rtl_diff.json \
+      --ref-dir <REF_DIR> --tag <TAG> \
+      --output data/<TAG>_eco_validate_step3.json
+  [ $? -eq 0 ] && break  # PASS — exit loop
+
+  # Auto-fix deterministic issues
+  python3 script/eco_scripts/eco_study_fixer.py \
+      --study   data/<TAG>_eco_preeco_study.json \
+      --issues  data/<TAG>_eco_validate_step3.json \
+      --rtl-diff data/<TAG>_eco_rtl_diff.json \
+      --ref-dir <REF_DIR> \
+      --raw-rpts data/*_find_equivalent_nets_raw*.rpt \
+      --step2-rpt data/<TAG>_eco_step2_fenets.rpt \
+      --output  data/<TAG>_eco_preeco_study.json
+done
+```
+
+**eco_study_fixer.py** handles deterministic issues automatically:
+- `ANDTERM-WRONG-POLARITY` — flips NOR2↔INR2 based on FM raw rpt polarity
+- `NET-ABSENT-IN-STAGE` — runs `eco_resolve_synth_internal.py` to find correct P&R net
+- `PENDING-UNRESOLVED` — same; runs resolve script
+- `CONDITION-POLARITY` — replaces wrong Synth net with condition_input_resolutions value
+
+After 3 iterations: if `passed: false` remains → only non-deterministic issues left (e.g. UNRESOLVABLE requiring manual F1-F3 forward consumer search). Read remaining issues and fix manually, then re-validate once more.
+
+**HARD GATE.** Any `passed: false` after the catch-and-fix loop BLOCKS Phase A handoff. If issues cannot be resolved, write `phase_a_handoff.json` with `phase_a_status: "BLOCKED_STEP3_VALIDATOR"` and EXIT.
+
+Remaining manual fixes for non-deterministic issues:
 - Incomplete chain entries → re-run `eco_expand_chains.py`
 - Missing fields (module_name, port_connections_per_stage, etc.) → re-spawn `eco_netlist_studier`
 - **Mode I gap** (`parent rename ... but no paired child-scope port_connection`) → the validator message includes the exact JSON entry to add: `module_name=<child>`, `bus_bit_index=<N>`, `net_name=<port>[<bit>]`. Append it to the study JSON OR re-spawn studier with `MODE_I_HINT="add paired child-scope port_connection per validator output"`.

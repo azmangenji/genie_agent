@@ -301,7 +301,15 @@ This bounds the retry budget to 1 per round so the loop can never get stuck on a
 - `needs_rerun_fenets: true` → NOT a reason to stop — Step 6f-FENETS re-queries the missing signals; eco_netlist_studier_round_N resolves PENDING_FM_RESOLUTION inputs from the rerun results; continue to next round
 - `failure_mode: ABORT_NETLIST` → NOT a reason to stop — eco_applier corrupted the netlist; revert is already done in 6b; revised_changes will re-apply the affected entries correctly
 - `failure_mode: E` (pre-existing) → revised_changes contains `manual_only` entries. These failures existed before this ECO — the AI flow cannot fix them. Report in FINAL_ORCHESTRATOR summary for engineer review. Engineer decides whether SVF `set_dont_verify` is appropriate. Do NOT apply SVF in the AI flow.
-- `failure_mode: G` (structural stage mismatch) → first attempt `fix_named_wire` (Mode H path) for any ECO gate with a P&R-renamed net. If Priority 3 structural trace confirms no fixable net → revised_changes contains `manual_only` entries. Report for engineer review. Do NOT apply SVF.
+- `failure_mode: G` (structural stage mismatch) → for any ECO gate whose input pin is absent or placeholder in the failing P&R stage, run `eco_resolve_synth_internal.py` first:
+  ```bash
+  python3 script/eco_scripts/eco_resolve_synth_internal.py \
+      --ref-dir <REF_DIR> --synth-net <synth_net_for_pin> \
+      --stage <PrePlace|Route> --output /tmp/resolve.json
+  # If resolved_net != UNRESOLVABLE: update study JSON pin, set force_reapply:true
+  ```
+  If UNRESOLVABLE → apply manual F1-F3 forward consumer search (eco_netlist_verifier.md Check 12 F1→F2→F3): find Synth consumers of the net, locate in P&R, read same input pin.
+  If still unresolved → `fix_named_wire` (Mode H path). If no fixable net found → `manual_only`. Do NOT apply SVF.
 - `failure_mode: F` (manual_only — `d_input_decompose_failed`) → check `revised_changes`:
   - If ALL entries have `action: manual_only` **AND NEXT_ROUND ≥ max_rounds** → exit with `status: MAX_ROUNDS`, spawn FINAL_ORCHESTRATOR (this is a MAX_ROUNDS exit, NOT a manual_only early exit)
   - If ALL entries have `action: manual_only` **AND NEXT_ROUND < max_rounds** → **DO NOT exit early**. eco_fm_analyzer has queued progressive strategies (invert_cmux_constants, try_strategy_A_andterm, try_alternative_pivot). Continue to Steps 6e/6f/4/5 — the studier will attempt the next strategy. `manual_only` means "no fix found YET", not "no fix possible ever".
