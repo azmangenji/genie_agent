@@ -2109,11 +2109,16 @@ def main():
             v = val.strip()
             if v.startswith(("1'b","0'b","1'h","0'h","n_eco_")): continue
             # Get per-stage net values (fall back to Synth value if absent)
+            # (skip parity check if any stage has an unresolvable/placeholder net)
             per_stage_nets = {
                 'Synthesize': v,
                 'PrePlace':   (pcs_per_stage.get('PrePlace') or {}).get(pin) or v,
                 'Route':      (pcs_per_stage.get('Route')   or {}).get(pin) or v,
             }
+            # Skip polarity check if any per-stage net is a placeholder (unresolvable/mode_h)
+            _placeholder_prefixes = ("MODE_H_ROUTE_SKIP", "UNRESOLVABLE", "PENDING_FM_RESOLUTION", "NEEDS_NAMED_WIRE")
+            if any(str(psn).startswith(_placeholder_prefixes) for psn in per_stage_nets.values() if psn):
+                continue
             parities = {}
             for stg, n in per_stage_nets.items():
                 if not n: continue
@@ -2216,8 +2221,10 @@ def main():
     # in that stage's PreEco netlist. If absent, the applier will SKIP the rewire
     # in that stage — leaving the original driver unrenewed → double driver or
     # undriven companion net.
+    _rewire_gz = {s: os.path.join(args.ref_dir, 'data', 'PreEco', f'{s}.v.gz')
+               for s in ('Synthesize', 'PrePlace', 'Route')} if args.ref_dir else {}
     for stage_check in ('Synthesize', 'PrePlace', 'Route'):
-        gz = _gz.get(stage_check, '')
+        gz = _rewire_gz.get(stage_check, '')
         if not gz or not os.path.exists(gz):
             continue
         for e in study.get(stage_check, []):
@@ -2251,7 +2258,7 @@ def main():
     # Apply silently skips or inserts broken gates.
     _gz = {s: os.path.join(args.ref_dir, 'data', 'PreEco', f'{s}.v.gz')
            for s in ('Synthesize', 'PrePlace', 'Route')} if args.ref_dir else {}
-    _skip_net_prefixes = ("1'b", "n_eco_", "ECO_", "PENDING", "SEQMAP", "NEEDS_NAMED_WIRE")
+    _skip_net_prefixes = ("1'b", "n_eco_", "ECO_", "PENDING", "SEQMAP", "NEEDS_NAMED_WIRE", "MODE_H_ROUTE_SKIP", "UNRESOLVABLE")
     _skip_net_suffixes = ("_orig",)
     # New ECO ports declared in this ECO — absent in PreEco by design, skip existence check
     _new_eco_ports = {c.get('new_token','') or c.get('signal_name','')
