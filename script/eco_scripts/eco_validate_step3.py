@@ -2533,6 +2533,57 @@ def main():
                     f"the Synth cell's output net, trace 1 hop forward to the consumer, "
                     f"then back to find the correct {stage} cell.")
 
+    # ── gate cell type in PreEco module scope check ───────────────────────────
+    # For every new_logic_gate, verify that the cell_type (e.g. OA21D8, NR2D2)
+    # actually exists in the PreEco Synthesize netlist within the declaring module.
+    # If synthesis never used that cell type in that module, the agent likely invented
+    # an alternate gate decomposition → scan-enable structural divergence between
+    # Synth ECO and PP ECO → thousands of FM failures even with correct logic.
+    _synth_gz_ct = os.path.join(args.ref_dir, 'data', 'PreEco', 'Synthesize.v.gz') \
+                   if args.ref_dir else ''
+    _synth_text_ct = ''
+    if _synth_gz_ct and os.path.exists(_synth_gz_ct):
+        try:
+            import gzip as _gz_ct
+            with _gz_ct.open(_synth_gz_ct, 'rt', errors='replace') as _f_ct:
+                _synth_text_ct = _f_ct.read()
+        except Exception:
+            pass
+    if _synth_text_ct:
+        import re as _re_ct
+        for _e in study.get('Synthesize', []):
+            if _e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            _ct = _e.get('cell_type', '')
+            _mod = _e.get('module_name', '')
+            if not _ct or not _mod:
+                continue
+            # Extract cell type prefix (strip drive strength/suffix): OA21D8 → OA21
+            _ct_prefix = _re_ct.match(r'^([A-Z][A-Z0-9]+)', _ct)
+            if not _ct_prefix:
+                continue
+            _prefix = _ct_prefix.group(1)
+            # Find the module body in PreEco and check if cell type exists
+            _mod_m = _re_ct.search(
+                rf'^module\s+{_re_ct.escape(_mod)}\b.*?^endmodule\b',
+                _synth_text_ct, _re_ct.MULTILINE | _re_ct.DOTALL)
+            if not _mod_m:
+                continue
+            _mod_body = _mod_m.group(0)
+            if _re_ct.search(rf'\b{_re_ct.escape(_ct)}\b', _mod_body):
+                continue  # exact cell type found in module ✅
+            # Check if ANY cell with same prefix exists in module
+            _prefix_found = bool(_re_ct.search(rf'\b{_re_ct.escape(_prefix)}\w*\b', _mod_body))
+            if not _prefix_found:
+                issues.append(
+                    f"WARN/GATE-TYPE-NOT-IN-PREECO: {_e.get('instance_name','?')} "
+                    f"uses cell_type '{_ct}' (prefix {_prefix}) but this cell family "
+                    f"has 0 occurrences in PreEco module '{_mod}'. "
+                    f"Synthesis never used this cell type in that module — likely an "
+                    f"invented gate decomposition. Use E4c: grep PreEco Synthesize for "
+                    f"cells implementing the same boolean function near the pivot cone "
+                    f"and use that exact cell type instead.")
+
     # ── cell pin name vs library check ────────────────────────────────────────
     # Verify that pin names used in port_connections actually exist on the cell type.
     # Common mismatch: NOR2 uses A2; INR2 uses B1. Flipping gate without remapping
