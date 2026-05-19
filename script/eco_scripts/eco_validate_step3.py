@@ -2259,6 +2259,71 @@ def main():
                 except Exception:
                     pass
 
+    # ── condition input Synth polarity check ──────────────────────────────────
+    # For PENDING_FM_RESOLUTION condition inputs, the Synth resolved net from
+    # condition_input_resolutions must be used directly in Synth port_connections.
+    # Tracing to the source net (one level deeper) changes polarity — the source
+    # of an INV output has the opposite sign. Read condition_input_resolutions
+    # from the step2 fenets rpt and verify Synth values match.
+    _step2_rpt = os.path.join(os.path.dirname(args.study),
+                              f'{args.tag}_eco_step2_fenets.rpt')
+    _cond_resolutions = {}  # signal_name → resolved_synth_net
+    if os.path.exists(_step2_rpt):
+        import re as _re2
+        with open(_step2_rpt) as _f2:
+            for _line in _f2:
+                _m = _re2.match(r'\s+(\w+):\s+resolved=(\S+)', _line)
+                if _m:
+                    _cond_resolutions[_m.group(1)] = _m.group(2)
+    # Build map: gate_instance → {pin → expected_resolved_net} for PENDING pins
+    if _cond_resolutions:
+        # Map each gate's PENDING_FM_RESOLUTION pins to their expected resolved net
+        _gate_expected = {}  # inst_name → {pin → expected_net}
+        for _c in rtl_diff.get('changes', []):
+            for _g in (_c.get('new_condition_gate_chain') or []):
+                _inst = _g.get('seq') or _g.get('instance_name', '')
+                _inputs = _g.get('inputs') or []
+                for _idx, _inp in enumerate(_inputs):
+                    if 'PENDING_FM_RESOLUTION' in str(_inp):
+                        _sig = str(_inp).replace('PENDING_FM_RESOLUTION:', '').split('[')[0]
+                        if _sig in _cond_resolutions:
+                            _gate_expected.setdefault(_inst, {})[_idx] = _cond_resolutions[_sig]
+        # For each study gate, check if its Synth pin values match expected resolved nets
+        _gz_s = _gz.get('Synthesize', '')
+        for _e in study.get('Synthesize', []):
+            if _e.get('change_type') not in ('new_logic_gate', 'new_logic'):
+                continue
+            _inst = _e.get('instance_name', '')
+            # Match by instance name suffix (seq like c006/c007)
+            _expected_map = next(
+                (_gate_expected[k] for k in _gate_expected if _inst.endswith(k) or k in _inst),
+                {})
+            if not _expected_map:
+                continue
+            _pps = (_e.get('port_connections_per_stage') or {}).get('Synthesize') or {}
+            _pins = [p for p in _pps if p not in ('ZN', 'Z', 'Q', 'CO', 'Y', 'S')]
+            for _idx, _pin in enumerate(_pins):
+                if _idx not in _expected_map:
+                    continue
+                _expected = _expected_map[_idx]
+                _actual = _pps.get(_pin, '')
+                if _actual == _expected:
+                    continue
+                # Both exist in Synth but different → likely polarity swap
+                if _gz_s and os.path.exists(_gz_s) and isinstance(_actual, str):
+                    try:
+                        _r = _sp3.run(f'zgrep -cw "{_expected}" {_gz_s}',
+                                      shell=True, capture_output=True, text=True, timeout=15)
+                        if int(_r.stdout.strip() or 0) > 0:
+                            issues.append(
+                                f"CRITICAL/CONDITION-POLARITY: Synthesize "
+                                f"{_inst}.{_pin} = '{_actual}' but condition_input_resolutions "
+                                f"resolved this input to '{_expected}'. Both exist in Synth — "
+                                f"wrong net used (likely traced to source instead of using "
+                                f"resolved net directly). Use '{_expected}' verbatim in Synth.")
+                    except Exception:
+                        pass
+
     # ── condition input identity check ───────────────────────────────────────
     # When a gate has multiple condition inputs (from different PENDING_FM_RESOLUTION signals)
     # that resolved to DIFFERENT nets in Synthesize, they must also resolve to DIFFERENT

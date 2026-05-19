@@ -583,7 +583,9 @@ If found → set `driven_by_submodule: true`, `driver_type: "submodule_bus_outpu
 For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
 
 1. **Check condition_input_resolutions first** — read `<BASE_DIR>/data/<TAG>_eco_fenets_rerun_round<ROUND>.json` if it exists. For any entry whose `original_signal` matches the PENDING signal, immediately set `port_connections_per_stage[Synthesize][pin] = resolved_gate_level_net`. This avoids waiting for a re_study round. If file absent, fall through to step 2.
-2. **For P&R stages** (not Synthesize): trace each PENDING_FM_RESOLUTION signal **independently** from its own Synth driver chain. **NEVER copy or reuse the P&R result from a different PENDING_FM_RESOLUTION signal** — different synthesis-internal signals (e.g. phfnn_2405075 and N2408127) come from different driver cells and resolve to different P&R nets.
+2. **For Synthesize stage**: use the `condition_input_resolutions` resolved net **directly** — do NOT trace one level deeper to its source. The resolved net is the correct gate-level name with the correct polarity; tracing to its driver input changes polarity (e.g. an INV output used as a gate input ≠ the INV input). Verify it exists (`zgrep -cw <resolved_net> PreEco/Synthesize.v.gz ≥ 1`) then use it verbatim.
+
+   **For P&R stages** (not Synthesize): trace each PENDING_FM_RESOLUTION signal **independently** from its own Synth driver chain. **NEVER copy or reuse the P&R result from a different PENDING_FM_RESOLUTION signal** — different synthesis-internal signals come from different driver cells and must resolve to different P&R nets.
 
    ```bash
    # For EACH pending signal, independently:
