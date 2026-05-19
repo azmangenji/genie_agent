@@ -2115,13 +2115,12 @@ def main():
                 'PrePlace':   (pcs_per_stage.get('PrePlace') or {}).get(pin) or v,
                 'Route':      (pcs_per_stage.get('Route')   or {}).get(pin) or v,
             }
-            # Skip polarity check if any per-stage net is a placeholder (unresolvable/mode_h)
+            # Skip parity check only for the specific stages that have placeholder nets
             _placeholder_prefixes = ("MODE_H_ROUTE_SKIP", "UNRESOLVABLE", "PENDING_FM_RESOLUTION", "NEEDS_NAMED_WIRE")
-            if any(str(psn).startswith(_placeholder_prefixes) for psn in per_stage_nets.values() if psn):
-                continue
             parities = {}
             for stg, n in per_stage_nets.items():
                 if not n: continue
+                if any(str(n).startswith(p) for p in _placeholder_prefixes): continue  # skip only this stage
                 p = _net_parity_in_stage(n, host, args.ref_dir, stg)
                 if p is not None:
                     parities[stg] = p
@@ -2258,7 +2257,7 @@ def main():
     # Apply silently skips or inserts broken gates.
     _gz = {s: os.path.join(args.ref_dir, 'data', 'PreEco', f'{s}.v.gz')
            for s in ('Synthesize', 'PrePlace', 'Route')} if args.ref_dir else {}
-    _skip_net_prefixes = ("1'b", "n_eco_", "ECO_", "PENDING", "SEQMAP", "NEEDS_NAMED_WIRE", "MODE_H_ROUTE_SKIP", "UNRESOLVABLE")
+    _skip_net_prefixes = ("1'b", "n_eco_", "ECO_", "PENDING", "SEQMAP", "NEEDS_NAMED_WIRE", "MODE_H_ROUTE_SKIP")
     _skip_net_suffixes = ("_orig",)
     # New ECO ports declared in this ECO — absent in PreEco by design, skip existence check
     _new_eco_ports = {c.get('new_token','') or c.get('signal_name','')
@@ -2475,15 +2474,18 @@ def main():
                 for pin, net in pc_dict.items():
                     if pin in ('Z', 'ZN', 'Q', 'QN', 'CO', 'Y', 'S'): continue
                     if not isinstance(net, str): continue
-                    if 'PENDING_FM_RESOLUTION' in net:
+                    if 'PENDING_FM_RESOLUTION' in net or net.startswith('UNRESOLVABLE'):
                         sig = net.replace('PENDING_FM_RESOLUTION:', '').replace(
-                              'PENDING_FM_RESOLUTION', '').strip(':')
+                              'PENDING_FM_RESOLUTION', '').replace('UNRESOLVABLE:', '').strip(':')
+                        kind = 'UNRESOLVABLE' if net.startswith('UNRESOLVABLE') else 'PENDING_FM_RESOLUTION'
+                        fix = ("Use forward consumer search (eco_netlist_verifier.md Check 12 F1-F3): "
+                               "find cells in Synth that consume the resolved net, locate them in "
+                               "PP/Route, read the net on the same input pin."
+                               if net.startswith('UNRESOLVABLE') else
+                               "Apply Priority 3 structural trace or forward consumer search.")
                         issues.append(
                             f"CRITICAL/PENDING-UNRESOLVED: {stage} {inst} {pc_label}.{pin} = "
-                            f"PENDING_FM_RESOLUTION:{sig} — not resolved before study exit. "
-                            f"Apply Priority 3 structural trace: find Synth driver of the "
-                            f"resolved Synth net, grep for its input net (e.g. ctmn_*) in "
-                            f"PreEco PP/Route to find FxPrePlace_*/tmp_net equivalent. "
+                            f"{kind}:{sig} — not resolved before study exit. {fix} "
                             f"A floating pin on an inserted gate causes FM elaboration error.")
 
     # ── Stage Fallback rewire cone check ─────────────────────────────────────
