@@ -2295,11 +2295,13 @@ def main():
                         issues.append(
                             f"CRITICAL/NET-ABSENT-IN-STAGE: {stage_check} {inst}.{pin} = "
                             f"'{net}' has 0 occurrences in PreEco {stage_check} — wrong net. "
-                            f"If backward structural trace failed (entire driver cone absent "
-                            f"in {stage_check} due to PD restructuring), switch to forward "
-                            f"consumer search: find cells in Synth PreEco that consume the "
-                            f"resolved Synth net, locate those consumer cells in {stage_check}, "
-                            f"read the net on the same input pin — that is the P&R equivalent.")
+                            f"FIX: run eco_resolve_synth_internal.py with the resolved Synth net "
+                            f"to find the correct {stage_check} equivalent: "
+                            f"python3 script/eco_scripts/eco_resolve_synth_internal.py "
+                            f"--ref-dir <REF_DIR> --synth-net <synth_net> --stage {stage_check} "
+                            f"--output /tmp/resolve.json. "
+                            f"If script returns UNRESOLVABLE, use manual F1-F3 forward consumer "
+                            f"search (eco_netlist_verifier.md Check 12).")
                 except Exception:
                     pass
 
@@ -2488,11 +2490,12 @@ def main():
                                 else 'MODE_H_ROUTE_SKIP' if net.startswith('MODE_H_ROUTE_SKIP')
                                 else 'NEEDS_NAMED_WIRE' if net.startswith('NEEDS_NAMED_WIRE')
                                 else 'PENDING_FM_RESOLUTION')
-                        fix = ("Use forward consumer search (eco_netlist_verifier.md Check 12 F1-F3): "
-                               "find cells in Synth that consume the resolved net, locate them in "
-                               "PP/Route, read the net on the same input pin."
-                               if net.startswith('UNRESOLVABLE') else
-                               "Apply Priority 3 structural trace or forward consumer search.")
+                        fix = ("FIX: run eco_resolve_synth_internal.py with the resolved Synth net: "
+                               "python3 script/eco_scripts/eco_resolve_synth_internal.py "
+                               "--ref-dir <REF_DIR> --synth-net <synth_net> --stage <stage> "
+                               "--output /tmp/resolve.json  "
+                               "If script returns UNRESOLVABLE, use manual F1-F3 forward consumer "
+                               "search (eco_netlist_verifier.md Check 12).")
                         issues.append(
                             f"CRITICAL/PENDING-UNRESOLVED: {stage} {inst} {pc_label}.{pin} = "
                             f"{kind}:{sig} — not resolved before study exit. {fix} "
