@@ -5,18 +5,30 @@ synthesis-internal net whose backward driver chain is absent in P&R.
 
 Uses targeted zgrep calls (fast) instead of loading full netlist into memory.
 
+WHEN TO RUN:
+  Run this script whenever the verifier or study has any of these placeholders
+  in port_connections_per_stage for a P&R stage:
+    - UNRESOLVABLE:<signal>
+    - MODE_H_ROUTE_SKIP:<signal>
+    - NEEDS_NAMED_WIRE:<signal>
+  Also run when validator flags CRITICAL/PENDING-UNRESOLVED or
+  CRITICAL/NET-ABSENT-IN-STAGE. Run BEFORE attempting manual F1-F3 search.
+
 Strategy (in order):
   1. DIRECT      — net exists in stage by same name → use it
-  2. BACKWARD    — find driver cell in Synth, search it in stage, read output
-  3. FORWARD     — find consumers of net in Synth, find them in stage, read same pin
-  4. UNRESOLVABLE
+  2. BACKWARD    — find driver cell in Synth, search in stage, read output
+                   (recurses up to 3 levels if intermediate cells absent)
+  3. FORWARD     — find consumers of net in Synth, find them in stage,
+                   read net on same input pin. 2-hop fallback if consumers absent.
+  4. UNRESOLVABLE — both failed → fall back to manual F1-F3 in verifier MD
 
 Usage:
-    python3 eco_resolve_synth_internal.py \\
+    python3 script/eco_scripts/eco_resolve_synth_internal.py \\
         --ref-dir <REF_DIR> \\
-        --synth-net <net_name>  e.g. N2408127, N197617 \\
+        --synth-net <net_name>  e.g. N2408127, N197617, phfnn_2405075 \\
         --stage <PrePlace|Route> \\
-        --output <json_file>
+        --output /tmp/resolve_<net>.json
+    # Use resolved_net from JSON directly if not UNRESOLVABLE
 """
 import argparse, json, os, re, subprocess, sys
 
