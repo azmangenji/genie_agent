@@ -2272,7 +2272,10 @@ def main():
                 continue
             inst = e.get('instance_name', '?')
             pps = e.get('port_connections_per_stage') or {}
-            pc_for_stage = pps.get(stage_check) or {}
+            base_pcs = e.get('port_connections') or {}
+            # Use per-stage overrides if present; fall back to base port_connections
+            # so entries with no per-stage map still get existence-checked per stage
+            pc_for_stage = pps.get(stage_check) or base_pcs
             ifnp = e.get('input_from_new_port', '')  # new ECO port — doesn't exist in PreEco
             for pin, net in pc_for_stage.items():
                 if not isinstance(net, str): continue
@@ -2474,10 +2477,15 @@ def main():
                 for pin, net in pc_dict.items():
                     if pin in ('Z', 'ZN', 'Q', 'QN', 'CO', 'Y', 'S'): continue
                     if not isinstance(net, str): continue
-                    if 'PENDING_FM_RESOLUTION' in net or net.startswith('UNRESOLVABLE'):
-                        sig = net.replace('PENDING_FM_RESOLUTION:', '').replace(
-                              'PENDING_FM_RESOLUTION', '').replace('UNRESOLVABLE:', '').strip(':')
-                        kind = 'UNRESOLVABLE' if net.startswith('UNRESOLVABLE') else 'PENDING_FM_RESOLUTION'
+                    if ('PENDING_FM_RESOLUTION' in net or net.startswith('UNRESOLVABLE')
+                            or net.startswith('MODE_H_ROUTE_SKIP')):
+                        sig = (net.replace('PENDING_FM_RESOLUTION:', '')
+                                  .replace('PENDING_FM_RESOLUTION', '')
+                                  .replace('UNRESOLVABLE:', '')
+                                  .replace('MODE_H_ROUTE_SKIP:', '').strip(':'))
+                        kind = ('UNRESOLVABLE' if net.startswith('UNRESOLVABLE')
+                                else 'MODE_H_ROUTE_SKIP' if net.startswith('MODE_H_ROUTE_SKIP')
+                                else 'PENDING_FM_RESOLUTION')
                         fix = ("Use forward consumer search (eco_netlist_verifier.md Check 12 F1-F3): "
                                "find cells in Synth that consume the resolved net, locate them in "
                                "PP/Route, read the net on the same input pin."
