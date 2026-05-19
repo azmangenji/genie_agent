@@ -636,7 +636,13 @@ Script error → E4c.
 
 ---
 
-#### E4c — PreEco Compound Gate Discovery (PRIORITY 1 — run before E4d RTL decomposition)
+#### E4c — PreEco Compound Gate Discovery (MANDATORY FIRST — before any RTL decomposition)
+
+**RULE: For every new condition sub-expression in the priority chain, find an EXISTING cell in the PreEco Synthesize netlist that implements the same boolean function, and use that EXACT cell type and pin mapping. Never invent a gate structure from RTL decomposition alone.**
+
+Why: synthesis chose specific compound gate types (OA12, OAI21, AN3, ND3, etc.) based on the library and RTL pattern. PD stages handle these consistently between Synth and PP. FM can verify them structurally without needing SVF. Any gate structure that diverges from what synthesis produces causes scan-enable path structural differences between Synth ECO and PP ECO → thousands of FM failures.
+
+How: grep the PreEco Synthesize netlist for cells near the pivot cone that implement each sub-expression's boolean function (OA21 for `(A|B)&C`, OA12 for `(A|B)&~C`, etc.). Use that cell type verbatim — don't substitute a logically-equivalent alternative.
 
 **Before decomposing conditions into simple gates from RTL, search the PreEco backward cone of the pivot net for existing compound gates.** This is always more reliable than RTL-decomposed simple gates because:
 - Compound gates already exist in the library and in the PreEco netlist → cell types confirmed valid
