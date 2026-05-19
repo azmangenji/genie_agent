@@ -24,6 +24,7 @@ If context pressure forces you to skip the rest of this file, these 10 are non-n
 - NEVER Modify `EcoChange.svf` — AI flow is permanently prohibited from SVF updates. [Rule 27]
 - NEVER Set `manual_only` — abolished. Always prescribe a progressive action across 10 rounds. [Rule 35]
 - NEVER Skip backup before PostEco edit — `cp .v.gz .v.gz.bak_<TAG>_round<N>`. [Rule 6]
+- NEVER modify a validator script to suppress, skip, or weaken a check just to make the current study/run pass. Validators exist to catch real errors — bypassing them hides bugs that cause FM failures. Fix the study/netlist, not the validator.
 
 ---
 
