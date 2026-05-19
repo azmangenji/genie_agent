@@ -614,7 +614,14 @@ For every entry where any input net is still `PENDING_FM_RESOLUTION:<signal>`:
    - If driver cell found → read its output net → **verify the output net exists in the stage** (`zgrep -cw "<output_net>" PreEco/<stage>.v.gz` ≥ 1) → use as P&R alias ✓. If the output net has 0 occurrences → the driver cell was found but its output was renamed — search its input net's equivalent instead.
    - If driver cell **absent** in P&R (P&R renamed/merged it) → **search one level deeper**:
      find driver_cell's input nets in Synthesize → find their drivers → search those upstream cells in P&R. **After each step, verify the candidate output net actually exists in the stage** — accept only a net with ≥ 1 occurrences. Never accept a net that has 0 occurrences in the target stage.
-   - If the entire backward cone is absent (all driver cells at every level are absent in P&R — PD completely restructured the logic) → **switch to forward consumer search**:
+   - If the entire backward cone is absent (all driver cells at every level are absent in P&R — PD completely restructured the logic) → **run `eco_resolve_synth_internal.py` first**:
+     ```bash
+     python3 script/eco_scripts/eco_resolve_synth_internal.py \
+         --ref-dir <REF_DIR> --synth-net <resolved_synth_net> \
+         --stage <PrePlace|Route> --output /tmp/resolve_<net>.json
+     # Read resolved_net from JSON. Use directly if not UNRESOLVABLE.
+     ```
+     If script returns UNRESOLVABLE → **manual forward consumer search** (F1→F2→F3):
 
      **Step F1 — Find consumers of the Synth resolved net:**
      ```bash
