@@ -2779,13 +2779,20 @@ def main():
                 f"FM(+)/non-inverting: use INR2(renamed, new_term). "
                 f"old_driver_inverting must be set from FM polarity (+/-), not cell type prefix.")
 
-    # ── BUS-CONST-DECODE: IND2/IND3 mis-used to decode bus equality constant ─
-    # Source of truth is the rtl_diff new_condition_gate_chain (has RTL context).
-    # A gate with IND2/IND3/IND4 + multiple bus-bit inputs only correctly decodes
-    # ~(bus==all-ones).  For any other constant, zero-bits need INV before the NAND.
-    # Also cross-checks the study JSON: if IND2/IND3 appears for a gate with bus-bit
-    # inputs but no companion INV for the zero-bit positions → FAIL.
+    # ── BUS-CONST-DECODE: IND2/IND3/IND4 mis-used to decode bus equality constant ─
+    # Source: rtl_diff new_condition_gate_chain (has RTL context with the constant).
+    # Handles binary (2'b), hex (4'h), decimal (4'd), octal (3'o).
     import re as _re3
+    def _vlog_const_to_bin_s3(width_str, base, val_str):
+        try:
+            w = int(width_str)
+            b = {'b': 2, 'h': 16, 'd': 10, 'o': 8}.get(base.lower())
+            if b is None:
+                return None
+            return format(int(val_str.replace('_', ''), b), f'0{w}b')
+        except (ValueError, TypeError):
+            return None
+
     for rc in rtl_diff.get('changes', []):
         chain_src = rc.get('new_condition_gate_chain') or rc.get('d_input_gate_chain') or []
         ctx_line  = str(rc.get('context_line', ''))
@@ -2797,15 +2804,15 @@ def main():
             bus_bits = [str(i) for i in raw_inputs if '[' in str(i)]
             if len(bus_bits) < 2:
                 continue
-            # Find constant from gate's own rtl_condition or surrounding context_line
             ctx = str(g.get('rtl_condition', '')) + ctx_line
-            m = _re3.search(r"==\s*[0-9]+'b([01]+)", ctx)
+            m = _re3.search(r"==\s*([0-9]+)'([bBhHdDoO])([0-9a-fA-F_]+)", ctx)
             if not m:
                 continue
-            const_bits = m.group(1)
+            const_bits = _vlog_const_to_bin_s3(m.group(1), m.group(2), m.group(3))
+            if const_bits is None:
+                continue
             if const_bits == '1' * len(const_bits):
-                continue  # all-ones: IND is correct
-            # Find corresponding study entry to include instance name
+                continue  # all-ones: IND-N correct
             study_inst = '?'
             for e in study.get('Synthesize', []):
                 if (e.get('gate_function') or '').upper() == fn:
@@ -2817,8 +2824,9 @@ def main():
             issues.append(
                 f"CRITICAL/BUS-CONST-DECODE: study '{study_inst}' uses "
                 f"{fn}({', '.join(str(i) for i in raw_inputs)}) which computes "
-                f"~(bus=={'1'*len(const_bits)}) but RTL condition is ~(bus==2'b{const_bits}). "
-                f"Zero-bit positions in the constant need INV before the ND gate. "
+                f"~(bus==all-ones) but RTL condition is "
+                f"~(bus=={m.group(0).split('==')[1].strip()}) (binary={const_bits}). "
+                f"Zero-bit positions need INV before the ND gate. "
                 f"Fix: INV for each 0-bit input, then ND{len(bus_bits)} of all inputs. "
                 f"See rtl_diff_analyzer.md §E2.5 rule 2b.")
 

@@ -818,14 +818,23 @@ def main():
                     f"See rtl_diff_analyzer.md §E2.5.")
                 overall_pass = False
 
-    # Check 9f-BUS-CONST-DECODE — detect IND2/IND3 used to decode a bus equality
-    # condition against a non-all-ones constant.  IND2(A,B)=~(A&B) only matches
-    # ~(bus==2'b11); for any other constant some bits need inversion first.
-    # Pattern to catch: a gate with gate_function in (IND2,IND3,IND4) whose
-    # inputs are two or more *different* bus bits (detected by [N] suffix or
-    # distinct signal names) and whose context_comment or surrounding RTL
-    # condition contains '== 2'b' (written into the chain by the rtl_diff_analyzer).
+    # Check 9f-BUS-CONST-DECODE — detect IND2/IND3/IND4 used to decode a bus
+    # equality against a non-all-ones constant.  IND-N(A,B,...)=~(A&B&...) only
+    # correctly decodes ~(bus==all-ones).  For any other constant, zero-bit positions
+    # need INV cells before the NAND gate.  Handles binary (2'b), hex (4'h), decimal.
     import re as _re_bcd
+    def _vlog_const_to_bin(width_str, base, val_str):
+        """Convert Verilog constant to binary string padded to width. Returns None on error."""
+        try:
+            w = int(width_str)
+            b = {'b': 2, 'h': 16, 'd': 10, 'o': 8}.get(base.lower())
+            if b is None:
+                return None
+            n = int(val_str.replace('_', ''), b)
+            return format(n, f'0{w}b')
+        except (ValueError, TypeError):
+            return None
+
     for idx, c in enumerate(rtl_diff.get('changes', [])):
         chain = c.get('new_condition_gate_chain') or c.get('d_input_gate_chain') or []
         tgt   = c.get('target_register', c.get('new_token', '?'))
@@ -838,16 +847,23 @@ def main():
             if len(bus_bits) < 2:
                 continue
             ctx = str(g.get('rtl_condition', '')) + str(c.get('context_line', ''))
-            m = _re_bcd.search(r"==\s*[0-9]+'b([01]+)", ctx)
-            if m and m.group(1) != '1' * len(m.group(1)):
-                chain_compact_issues.append(
-                    f"changes[{idx}] target={tgt} [FAIL/9f-BUS-CONST-DECODE]: "
-                    f"{fn}({', '.join(str(i) for i in inputs)}) decodes ~(bus=={'1'*len(m.group(1))}) "
-                    f"but RTL condition is ~(bus=={m.group(1)}). "
-                    f"Bits equal to 0 in the constant require INV before the NAND gate — "
-                    f"use INV(bus[i]) for each 0-bit then ND{len(bus_bits)}(...). "
-                    f"See rtl_diff_analyzer.md §E2.5 rule 2b.")
-                overall_pass = False
+            m = _re_bcd.search(r"==\s*([0-9]+)'([bBhHdDoO])([0-9a-fA-F_]+)", ctx)
+            if not m:
+                continue
+            const_bits = _vlog_const_to_bin(m.group(1), m.group(2), m.group(3))
+            if const_bits is None:
+                continue
+            if const_bits == '1' * len(const_bits):
+                continue  # all-ones: IND-N is correct
+            chain_compact_issues.append(
+                f"changes[{idx}] target={tgt} [FAIL/9f-BUS-CONST-DECODE]: "
+                f"{fn}({', '.join(str(i) for i in inputs)}) decodes ~(bus==all-ones) "
+                f"but RTL condition is ~(bus=={m.group(0).split('==')[1].strip()})"
+                f" (binary={const_bits}). "
+                f"Zero-bit positions need INV before the ND gate — "
+                f"use INV(bus[i]) for each 0-bit then ND{len(bus_bits)}(...). "
+                f"See rtl_diff_analyzer.md §E2.5 rule 2b.")
+            overall_pass = False
 
     # Check 9e — Compound gate preference: detect consecutive gate pairs (gate_i →
     # gate_i+1) where gate_i's output feeds ONLY gate_i+1 and the combined function
