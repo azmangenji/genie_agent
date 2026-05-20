@@ -2779,37 +2779,47 @@ def main():
                 f"FM(+)/non-inverting: use INR2(renamed, new_term). "
                 f"old_driver_inverting must be set from FM polarity (+/-), not cell type prefix.")
 
-    # ── BUS-CONST-DECODE: gate chain IND2/IND3 mis-used for bus equality ────
-    # When a condition gate chain contains IND2/IND3 whose inputs are two or more
-    # distinct bus bits (signals containing '['), check whether the surrounding
-    # context (gate output_net name or rtl_condition comment) implies a non-all-ones
-    # constant.  IND2(A,B)=~(A&B) only correctly decodes ~(bus==2'b11).  For any
-    # other constant pattern some bits must be inverted before the NAND.
+    # ── BUS-CONST-DECODE: IND2/IND3 mis-used to decode bus equality constant ─
+    # Source of truth is the rtl_diff new_condition_gate_chain (has RTL context).
+    # A gate with IND2/IND3/IND4 + multiple bus-bit inputs only correctly decodes
+    # ~(bus==all-ones).  For any other constant, zero-bits need INV before the NAND.
+    # Also cross-checks the study JSON: if IND2/IND3 appears for a gate with bus-bit
+    # inputs but no companion INV for the zero-bit positions → FAIL.
     import re as _re3
-    for stage in ('Synthesize',):
-        for e in study.get(stage, []):
-            fn = (e.get('gate_function') or '').upper()
+    for rc in rtl_diff.get('changes', []):
+        chain_src = rc.get('new_condition_gate_chain') or rc.get('d_input_gate_chain') or []
+        ctx_line  = str(rc.get('context_line', ''))
+        for g in chain_src:
+            fn = (g.get('gate_function') or '').upper()
             if fn not in ('IND2', 'IND3', 'IND4'):
                 continue
-            pcs    = e.get('port_connections') or {}
-            inputs = [v for k, v in pcs.items() if k not in ('ZN', 'Z', 'Q', 'Y')]
-            bus_bits = [str(v) for v in inputs if '[' in str(v)]
+            raw_inputs = g.get('inputs') or []
+            bus_bits = [str(i) for i in raw_inputs if '[' in str(i)]
             if len(bus_bits) < 2:
                 continue
-            # Look for a constant hint in the output net name or rtl_condition field
-            ctx = str(e.get('rtl_condition', '')) + str(e.get('output_net', ''))
-            m   = _re3.search(r"==\s*[0-9]+'b([01]+)", ctx)
+            # Find constant from gate's own rtl_condition or surrounding context_line
+            ctx = str(g.get('rtl_condition', '')) + ctx_line
+            m = _re3.search(r"==\s*[0-9]+'b([01]+)", ctx)
             if not m:
                 continue
             const_bits = m.group(1)
             if const_bits == '1' * len(const_bits):
-                continue  # all-ones: IND2/IND3 is correct
+                continue  # all-ones: IND is correct
+            # Find corresponding study entry to include instance name
+            study_inst = '?'
+            for e in study.get('Synthesize', []):
+                if (e.get('gate_function') or '').upper() == fn:
+                    pcs = e.get('port_connections') or {}
+                    sv  = set(str(v) for k, v in pcs.items() if k not in ('ZN','Z','Q','Y'))
+                    if sv == set(str(i) for i in raw_inputs):
+                        study_inst = e.get('instance_name', '?')
+                        break
             issues.append(
-                f"CRITICAL/BUS-CONST-DECODE: {stage} '{e.get('instance_name','?')}' "
-                f"uses {fn}({', '.join(str(v) for v in inputs)}) which computes "
-                f"~(bus=={'1'*len(const_bits)}) but condition requires ~(bus==2'b{const_bits}). "
-                f"Bits equal to 0 in the constant need INV before the ND gate. "
-                f"Fix: emit INV for each 0-bit input, then ND{len(bus_bits)} of all inputs. "
+                f"CRITICAL/BUS-CONST-DECODE: study '{study_inst}' uses "
+                f"{fn}({', '.join(str(i) for i in raw_inputs)}) which computes "
+                f"~(bus=={'1'*len(const_bits)}) but RTL condition is ~(bus==2'b{const_bits}). "
+                f"Zero-bit positions in the constant need INV before the ND gate. "
+                f"Fix: INV for each 0-bit input, then ND{len(bus_bits)} of all inputs. "
                 f"See rtl_diff_analyzer.md §E2.5 rule 2b.")
 
     # ── Result ───────────────────────────────────────────────────────────────

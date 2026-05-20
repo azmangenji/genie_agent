@@ -825,7 +825,8 @@ def main():
     # inputs are two or more *different* bus bits (detected by [N] suffix or
     # distinct signal names) and whose context_comment or surrounding RTL
     # condition contains '== 2'b' (written into the chain by the rtl_diff_analyzer).
-    for c in changes:
+    import re as _re_bcd
+    for idx, c in enumerate(rtl_diff.get('changes', [])):
         chain = c.get('new_condition_gate_chain') or c.get('d_input_gate_chain') or []
         tgt   = c.get('target_register', c.get('new_token', '?'))
         for g in chain:
@@ -833,19 +834,16 @@ def main():
             if fn not in ('IND2', 'IND3', 'IND4'):
                 continue
             inputs = g.get('inputs') or []
-            # Heuristic: inputs look like bus bits (contain '[')
             bus_bits = [i for i in inputs if '[' in str(i)]
             if len(bus_bits) < 2:
                 continue
-            # Check if any RTL context hints at a non-all-ones constant
             ctx = str(g.get('rtl_condition', '')) + str(c.get('context_line', ''))
-            import re as _re
-            m = _re.search(r"==\s*[0-9]+'b([01]+)", ctx)
+            m = _re_bcd.search(r"==\s*[0-9]+'b([01]+)", ctx)
             if m and m.group(1) != '1' * len(m.group(1)):
                 chain_compact_issues.append(
-                    f"changes[{changes.index(c)}] target={tgt} [FAIL/9f-BUS-CONST-DECODE]: "
-                    f"{fn}({', '.join(inputs)}) decodes ~(bus=={'1'*len(m.group(1))}) "
-                    f"but RTL condition is ~(bus=={m.group(0).split('b')[1]}). "
+                    f"changes[{idx}] target={tgt} [FAIL/9f-BUS-CONST-DECODE]: "
+                    f"{fn}({', '.join(str(i) for i in inputs)}) decodes ~(bus=={'1'*len(m.group(1))}) "
+                    f"but RTL condition is ~(bus=={m.group(1)}). "
                     f"Bits equal to 0 in the constant require INV before the NAND gate — "
                     f"use INV(bus[i]) for each 0-bit then ND{len(bus_bits)}(...). "
                     f"See rtl_diff_analyzer.md §E2.5 rule 2b.")
