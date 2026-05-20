@@ -670,6 +670,21 @@ If 0 → check PrePlace and Route. Record per-stage `instance_confirmed` flags. 
 
 ---
 
+## Check 13b — BUS-CONST-DECODE: Bus Equality Constant Gate Verification
+
+For every `new_logic_gate` entry in Synthesize where `gate_function` is `IND2`, `IND3`, or `IND4` and the inputs include two or more bus-bit signals (contain `[`):
+
+1. Locate the original RTL condition that generated this gate (check `rtl_condition` field or surrounding context in the rtl_diff `new_condition_gate_chain`).
+2. If the condition is `~(bus[N:0] == K)` for some constant K:
+   - Count zero-bits in K. Each zero-bit means that bus bit must be **inverted** before entering the NAND gate.
+   - If K has any zero-bits AND the study entry has no companion INV gate for those bits → **FAIL `BUS-CONST-DECODE`**: the IND-N with raw bus bits computes `~(bus==all-ones)`, not `~(bus==K)`. Correct by emitting an `INV` entry for each zero-bit bus signal before the ND-N gate, and changing the ND-N inputs to use the INV outputs.
+   - If K is all-ones → IND-N with raw bus bits is correct, skip.
+
+**Example of wrong:** `IND2(bus[1], bus[0])` for `~(bus[1:0]==2'b01)` — computes `~(bus==2'b11)`.
+**Example of correct:** `INV(bus[1])` → `ND2(~bus[1], bus[0])` for `~(bus[1:0]==2'b01)`.
+
+---
+
 ## Check 14 — Strategy A/B Fallback for d_input_decompose_failed
 
 For every entry with `d_input_decompose_failed: true` that has no `intermediate_net_strategy` set:
